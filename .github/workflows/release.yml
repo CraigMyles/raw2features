@@ -24,7 +24,8 @@ jobs:
       name: pypi
       url: https://pypi.org/p/raw2features
     permissions:
-      id-token: write # OIDC token for Trusted Publishing (the only credential needed)
+      id-token: write # OIDC token for Trusted Publishing
+      contents: read # actions/checkout needs read access (required while the repo is private)
     steps:
       - uses: actions/checkout@v5
       - uses: astral-sh/setup-uv@v7

@@ -1,0 +1,1228 @@
+# Feature-extractor registry. Every entry is provenance-complete: the
+# preprocessing (mean/std/input_size) and create_model call are transcribed from
+# the model's authoritative card/repo (transform_source_url).
+#
+# Pitfall (learned from mSTAR): a model's timm `pretrained_cfg` mean/std can be an
+# un-overridden base-arch default (e.g. vit_large/small_patch16_224 default to
+# [0.5, 0.5, 0.5]), not the authors' real transform. Source mean/std from the authors'
+# usage code/paper, not from the config field. `transform_source: pretrained_cfg` adopts
+# and asserts the config value, which catches registry-vs-config drift but cannot tell you
+# the config itself is a wrong default (mSTAR's config said [0.5]; its README used ImageNet).
+#
+# Note: raw2features delivers exact-MPP patches at `input_size`, so embedders
+# normalise only (no eval-time resize/crop). mean/std below are what we apply.
+#
+# inference_amp (optional, default "fp32"): the precision the model's card uses
+# for inference. `--amp auto` (the default) resolves to it per model. Most models
+# below run fp32 in their card example; a few set `inference_amp: fp16` where the
+# card recommends it (Virchow2, H-optimus-0), sourced like mean/std.
+#
+# recommended_mpp (optional): the DEFAULT extraction scale, microns/px (0.5 == 20x). This
+# is a convention, not a card-mandated value - most cards state no MPP, so 0.5 is inferred
+# from each paper (the pathology-FM norm); a few are card/code-stated (see per-model notes,
+# e.g. retccl=1.0). The best scale is task-dependent. input_size is the patch size in px,
+# so the field of view is input_size * recommended_mpp microns. It drives the default
+# --mpp: when the user omits --mpp, the pipeline extracts at the requested models'
+# recommended_mpp (a single shared value; it errors if they disagree). An explicit --mpp
+# always wins (and prints an informational note if it differs). The ImageNet baselines
+# (resnet50, dinov2) are scale-agnostic (no recommended_mpp → default 1.0). See docs/MODELS.md.
+
+resnet50:
+  family: torchvision
+  source: "torchvision://resnet50?weights=IMAGENET1K_V2"
+  embedding_dim: 2048
+  input_size: 224
+  pooling: pooled
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://pytorch.org/vision/stable/models/generated/torchvision.models.resnet50.html"
+  weights_revision: "IMAGENET1K_V2"
+  doi: "10.1109/CVPR.2016.90"
+  license: "BSD-3-Clause (torchvision)"
+  gated: false
+  notes: "ImageNet floor baseline; fc removed, global-avg-pool -> 2048-d."
+
+dinov2:
+  family: timm
+  source: "hf-hub:timm/vit_large_patch14_dinov2.lvd142m"
+  embedding_dim: 1024
+  input_size: 224
+  pooling: cls
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/timm/vit_large_patch14_dinov2.lvd142m"
+  weights_sha256: "0424a5d1b515278cba3c6640ccbeaacc41de59d3a93df0dd5e494285eea2b355"
+  weights_revision: "4741e1cafbf45415e77074bb0cb42dba76c8684a"
+  doi: "10.48550/arXiv.2304.07193"
+  license: "Apache-2.0 (DINOv2)"
+  gated: false
+  timm_kwargs:
+    img_size: 224
+    num_classes: 0
+    dynamic_img_size: true
+  notes: "ViT-L/14 DINOv2, self-supervised non-domain control."
+
+uni:
+  family: timm
+  source: "hf-hub:MahmoodLab/uni"
+  recommended_mpp: 0.5   # 20x (card says 'at 20x resolution'; not µm/px - 0.5 by convention). Also used at 10x (1.0)
+  embedding_dim: 1024
+  input_size: 224
+  pooling: cls
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://huggingface.co/MahmoodLab/UNI"
+  weights_sha256: "56ef09b44a25dc5c7eedc55551b3d47bcd17659a7a33837cf9abc9ec4e2ffb40"
+  weights_revision: "b55a5ec6cade1a39edfe6534189a9b8ca7a022f0"
+  doi: "10.1038/s41591-024-02857-3"
+  license: "CC-BY-NC-ND-4.0 (UNI, non-commercial)"
+  gated: true
+  timm_kwargs:
+    init_values: 1.0e-5
+    num_classes: 0
+    dynamic_img_size: true
+  notes: "ViT-L/16. Card transform: Resize(224)+ToTensor+ImageNet norm (no crop)."
+
+uni2_h:
+  family: timm
+  source: "hf-hub:MahmoodLab/UNI2-h"
+  recommended_mpp: 0.5   # 20x via MahmoodLab/UNI2-h-features dataset (card omits MPP); 0.5 by convention; also 10x
+  embedding_dim: 1536
+  input_size: 224
+  pooling: cls
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://huggingface.co/MahmoodLab/UNI2-h"
+  weights_sha256: "6e077eda234bebc595868d918d3458d9dd32a050199b0ff04443b2f46a0a3b1e"
+  weights_revision: "d517a8dd47902dd7c308b3c36f63bce47e7b9a43"
+  doi: "10.1038/s41591-024-02857-3"
+  license: "CC-BY-NC-ND-4.0 (UNI2, non-commercial)"
+  gated: true
+  timm_kwargs:
+    img_size: 224
+    patch_size: 14
+    depth: 24
+    num_heads: 24
+    init_values: 1.0e-5
+    embed_dim: 1536
+    mlp_ratio: 5.33334  # 2.66667 * 2 (per model card)
+    num_classes: 0
+    no_embed_class: true
+    reg_tokens: 8
+    dynamic_img_size: true
+    mlp_layer: "timm.layers.SwiGLUPacked"
+    act_layer: "torch.nn.SiLU"
+  notes: "ViT-H/14 + SwiGLU + 8 register tokens, per UNI2-h card."
+
+path_orchestra:
+  family: timm
+  source: "hf-hub:AI4Pathology/PathOrchestra"
+  recommended_mpp: 0.5   # card omits MPP; 20x (0.5) by pathology-FM convention
+  embedding_dim: 1024
+  input_size: 224
+  pooling: cls
+  mean: [0.485, 0.456, 0.406]   # README transform: Resize(224)+ToTensor+ImageNet Normalize
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://huggingface.co/AI4Pathology/PathOrchestra"
+  weights_sha256: "3bcf28a162ed187d63ce42b41096eb298702b6d1be8640555660b053354db912"
+  weights_revision: "8280b11a63919f25e4610f3315c2646b5f38bbb5"
+  doi: "10.48550/arXiv.2503.24345"   # PathOrchestra; published npj Digit Med 2025
+  license: "CC-BY-NC-ND-4.0 (PathOrchestra, non-commercial)"
+  gated: true
+  timm_kwargs:
+    init_values: 1.0e-5   # LayerScale -- the checkpoint has ls1/ls2.gamma
+    dynamic_img_size: true
+    num_classes: 0
+  notes: "DINOv2 ViT-L/16, 1024-d. arch from config (vit_large_patch16_224); needs
+    init_values + dynamic_img_size or the state_dict won't load."
+
+virchow2:
+  family: timm
+  source: "hf-hub:paige-ai/Virchow2"
+  recommended_mpp: 0.5   # card states FOUR scales 2.0/1.0/0.5/0.25 µm/px (5x/10x/20x/40x); 0.5 is a convention default
+  embedding_dim: 2560        # concat(class_token[1280], mean patch_tokens[1280])
+  input_size: 224
+  pooling: cls_concat_meanpatch
+  reg_tokens: 4              # tokens 1-4 are register tokens, skipped (per card)
+  # mean/std/interpolation are resolved from the model's pretrained_cfg at load
+  # (the card builds its transform via resolve_data_config(model.pretrained_cfg)).
+  # The values below are the card-documented fallback used offline (no weights);
+  # the embedder asserts they match the loaded pretrained_cfg.
+  transform_source: pretrained_cfg
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/paige-ai/Virchow2"
+  weights_sha256: "8d6cea947eb2418c3b0dff48cfb9b238e47744ab0dfca21b2b0637b140769b4b"
+  weights_revision: "3158645804b69e3f3bc4439d4116edddf0840a72"
+  doi: "10.48550/arXiv.2408.00738"
+  license: "CC-BY-NC-ND-4.0 (Virchow2, non-commercial)"
+  gated: true
+  inference_amp: fp16        # card "highly recommends" fp16 via torch.autocast
+  timm_kwargs:
+    mlp_layer: "timm.layers.SwiGLUPacked"
+    act_layer: "torch.nn.SiLU"
+  notes: >-
+    ViT-H/14 + SwiGLU + 4 register tokens (Paige Virchow2). Returns the full
+    token sequence [B,261,1280]; embedding = concat(class token, mean of the 256
+    patch tokens) = 2560-d, per the card. Loaded without num_classes=0 so the
+    tokens are available to the cls_concat_meanpatch pooling.
+
+virchow:
+  family: timm
+  source: "hf-hub:paige-ai/Virchow"
+  recommended_mpp: 0.5   # card states '0.5 microns per pixel (20x)' verbatim - sourced; single-scale
+  embedding_dim: 2560        # concat(class_token[1280], mean patch_tokens[1280])
+  input_size: 224
+  pooling: cls_concat_meanpatch
+  reg_tokens: 0             # Virchow v1 has no register tokens (unlike Virchow2)
+  transform_source: pretrained_cfg
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/paige-ai/Virchow"
+  weights_sha256: "3416891b37a2349a2d9ce7ecf00b64a6277011b41351436c1ceb0abb80805408"
+  weights_revision: "19eebc84ae33e79f1b2d866e6ff90ae50e522f9a"
+  doi: "10.1038/s41591-024-03141-0"
+  license: "Apache-2.0 (Virchow v1, Paige AI; commercial use permitted, gated by acceptance)"
+  gated: true
+  inference_amp: fp16
+  timm_kwargs:
+    mlp_layer: "timm.layers.SwiGLUPacked"
+    act_layer: "torch.nn.SiLU"
+  notes: >-
+    ViT-H/14 + SwiGLU (Paige Virchow v1) -- no register tokens (unlike Virchow2). Returns the
+    full token sequence [B,257,1280]; embedding = concat(class token, mean of the 256 patch
+    tokens) = 2560-d. Loaded without num_classes=0. Apache-2.0 weights -> embeddings
+    unrestricted (unlike virchow2's CC-BY-NC-ND).
+
+gigapath:
+  family: timm
+  source: "hf-hub:prov-gigapath/prov-gigapath"
+  recommended_mpp: 0.5   # paper Methods state 0.5 µm/px / 20x (10.1038/s41586-024-07441-w); card silent; single-scale
+  embedding_dim: 1536
+  input_size: 224
+  pooling: cls            # num_classes=0 -> forward returns the [B,1536] pooled feature
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/prov-gigapath/prov-gigapath"
+  weights_sha256: "877947214318afa9e011754b74bbc3894a1f480a253afc7bc8045b8321dedd63"
+  weights_revision: "eba85dd46097c3eedfcc2a3a9a930baecb6bcc19"
+  doi: "10.1038/s41586-024-07441-w"
+  license: "Apache-2.0 (Prov-GigaPath; open, gated only by HF login)"
+  gated: true
+  inference_amp: fp32      # card gives no precision recommendation -> faithful fp32
+  timm_kwargs:
+    num_classes: 0
+    dynamic_img_size: true
+  notes: >-
+    Prov-GigaPath tile encoder (ViT-giant/14, Microsoft x Providence), loaded via
+    timm.create_model("hf-hub:prov-gigapath/prov-gigapath"). num_classes=0 -> the
+    forward returns the pooled 1536-d tile embedding directly (pooling: cls is a
+    pass-through for the already-pooled 2-D output). ImageNet norm, 224 px, bicubic
+    per the card. Weights are Apache-2.0 (gated only by HF login), so unlike the
+    CC-BY-NC-ND models its embeddings are unrestricted.
+
+conch:
+  family: conch            # optional family: needs the `conch` pip extra
+  source: "hf_hub:MahmoodLab/conch"
+  recommended_mpp: 0.5   # scale-agnostic: paper has both 20x encoder-pretraining and 10x MIL; 0.5 is a convention default, not authoritative
+  embedding_dim: 512
+  input_size: 448          # CONCH operates at 448 px (from its own preprocess), not 224
+  pooling: pooled          # encode_image(proj_contrast=False) returns the 512-d vector
+  mean: [0.48145466, 0.4578275, 0.40821073]   # OpenAI-CLIP norm, from CONCH's preprocess
+  std: [0.26862954, 0.26130258, 0.27577711]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/MahmoodLab/CONCH"
+  weights_sha256: "40a9644b9ba0e83a74576e0a5e5f7313599fa9c9cdaf3c20f8a3e271b0e9ae7c"
+  weights_revision: "f9ca9f877171a28ade80228fb195ac5d79003357"
+  doi: "10.1038/s41591-024-02856-4"
+  license: "CC-BY-NC-ND-4.0 (CONCH, non-commercial)"
+  gated: true
+  inference_amp: fp32      # card documents fp16 AMP for TRAINING only -> faithful fp32
+  notes: >-
+    CONCH image encoder (MahmoodLab, ViT-B/16 @ 448 px). Needs the optional `conch`
+    package: pip install "raw2features[conch]". Loaded via
+    create_model_from_pretrained("conch_ViT-B-16", "hf_hub:MahmoodLab/conch");
+    embedding = encode_image(x, proj_contrast=False, normalize=False) = 512-d (the
+    pre-contrastive image features, CONCH's recommended downstream representation).
+    CLIP normalisation + 448 px are sourced from CONCH's own preprocess transform and
+    asserted at load.
+
+conch_v1_5:
+  family: conch_v1_5       # custom CONCH v1.5 tower, bundled in the gated TITAN model
+  source: "hf-hub:MahmoodLab/TITAN"   # loaded via AutoModel(TITAN).return_conch()
+  recommended_mpp: 0.5   # 20x (TITAN card: '512px @ 20x'; not µm/px - 0.5 by convention); single-scale
+  recommended_patch_px: 512   # extract 512 px @ 20x; the shared transform then resizes to the 448 input (per TITAN card)
+  embedding_dim: 768
+  input_size: 448          # model input; TITAN extracts 512 px @ 20x then resizes to 448
+  pooling: pooled          # the tower's forward returns the 768-d feature directly
+  mean: [0.485, 0.456, 0.406]   # ImageNet, per CONCH v1.5's eval transform
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear  # CONCH v1.5 uses Resize(448, BILINEAR)
+  transform_source_url: "https://huggingface.co/MahmoodLab/conch_v1_5"
+  weights_sha256: "09daf1912a016512e084636f9c76eee7c42f5c1f09b0461bb76082a3e0fecfa5"
+  weights_revision: "dac6773d9961cfc75503440676ff157a2c6e8d2e"
+  doi: "10.1038/s41591-025-03982-3"   # introduced with TITAN (Ding et al., Nat Med 2025)
+  license: "CC-BY-NC-ND-4.0 (CONCH v1.5, non-commercial)"
+  gated: true
+  inference_amp: fp16      # the card runs CONCH v1.5 under fp16 autocast
+  notes: >-
+    CONCH v1.5 tile encoder (MahmoodLab) - the 768-d patch encoder TITAN consumes.
+    Loaded via AutoModel("MahmoodLab/TITAN", trust_remote_code=True).return_conch(), so
+    it needs the [models] extra + an accepted TITAN gate. Extract at 512 px @ 20x
+    (--patch-size 512); the shared transform resizes to 448 + ImageNet norm, matching its
+    eval transform, and the store's level0_patch then equals TITAN's patch_size_lv0.
+    Pair with `-s titan` for slide embeddings. Validated full-slide on real WSIs.
+
+h_optimus_0:
+  family: timm
+  source: "hf-hub:bioptimus/H-optimus-0"
+  recommended_mpp: 0.5   # card states 'extracted at 0.5 microns per pixel' verbatim - sourced; single-scale
+  embedding_dim: 1536
+  input_size: 224
+  pooling: cls             # num_classes=0 -> forward returns the [B,1536] pooled feature
+  # H-optimus-0 uses a MODEL-SPECIFIC normalisation (not ImageNet); resolved from the
+  # loaded pretrained_cfg and asserted against this card-documented fallback.
+  transform_source: pretrained_cfg
+  mean: [0.707223, 0.578729, 0.703617]
+  std: [0.211883, 0.230117, 0.177517]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/bioptimus/H-optimus-0"
+  weights_sha256: "bf47b8467403079798661601b6ab06533be789da48d3f8b510aaefe2fbc55cd3"
+  weights_revision: "b145cc1e6c6b30d3251aa8b1f844e6974188a743"
+  # No paper - an open-weights model release; cite the software (HF artifact above).
+  license: "Apache-2.0 (H-optimus-0, Bioptimus; open, gated by HF login)"
+  gated: true
+  inference_amp: fp16      # card recommends torch.autocast(dtype=torch.float16)
+  timm_kwargs:
+    init_values: 1.0e-5
+    dynamic_img_size: false
+    num_classes: 0
+  notes: >-
+    Bioptimus H-optimus-0 (ViT-g/14 + 4 register tokens, 1.1B). timm hf-hub one-liner;
+    num_classes=0 -> pooled 1536-d CLS feature. Normalisation is model-specific (not
+    ImageNet) and resolved from pretrained_cfg at load. Apache-2.0 weights -> its
+    embeddings are unrestricted.
+
+h_optimus_1:
+  family: timm
+  source: "hf-hub:bioptimus/H-optimus-1"
+  recommended_mpp: 0.5   # card states 'extracted at 0.5 microns per pixel' verbatim - sourced; single-scale
+  embedding_dim: 1536
+  input_size: 224
+  pooling: cls             # num_classes=0 -> [B,1536] pooled feature
+  transform_source: pretrained_cfg
+  mean: [0.707223, 0.578729, 0.703617]   # model-specific (not ImageNet), asserted vs pretrained_cfg
+  std: [0.211883, 0.230117, 0.177517]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/bioptimus/H-optimus-1"
+  weights_sha256: "c4f1e5b457ddf00679626053b0bf2899be6a19c3a04ad191c87ad1cdfd1abfe1"
+  weights_revision: "3592cb220dec7a150c5d7813fb56e68bd57473b9"
+  doi: "10.1158/1538-7445.AM2026-LB174"
+  license: "CC-BY-NC-ND-4.0 (H-optimus-1, Bioptimus; non-commercial)"
+  gated: true
+  inference_amp: fp16
+  timm_kwargs:
+    init_values: 1.0e-5
+    dynamic_img_size: false
+    num_classes: 0
+  notes: >-
+    Bioptimus H-optimus-1 (ViT-g/14, 1.1B). timm hf-hub one-liner; num_classes=0 -> pooled
+    1536-d CLS. Model-specific normalisation (not ImageNet), resolved from pretrained_cfg.
+    NOTE: licence is CC-BY-NC-ND-4.0 -- a regression from H-optimus-0's Apache-2.0, so
+    H-optimus-1 embeddings are restricted (non-commercial). fp16.
+
+gpfm:
+  family: timm
+  source: "vit_large_patch14_dinov2.lvd142m"   # base arch; weights from checkpoint below
+  recommended_mpp: 0.5   # no single training mpp: pretrained on 512px @ native level-0 (varied mag; card recommends 40x), resized to 224. 40x=0.25 native; 0.5 = 20x-equiv convention (FOV-faithful ~0.57). NOT card-stated
+  checkpoint:
+    repo: "majiabo/GPFM"
+    filename: "GPFM.pth"
+  embedding_dim: 1024
+  input_size: 224
+  pooling: cls
+  mean: [0.485, 0.456, 0.406]   # ImageNet, per the GPFM card
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/majiabo/GPFM"
+  weights_sha256: "ebde1a9d7d9098848034bcff30f8771034c8d0b69e32846fa266940f2fd4604c"
+  weights_revision: "c2e0c6c7cea4d7ae67151c3375d780712f82254e"
+  doi: "10.1038/s41551-025-01488-4"
+  # LICENCE CONFLICT (verified from primary sources 2026-06): the HF card metadata
+  # (majiabo/GPFM) declares `license: mit`, but the authors' source repo
+  # (github.com/birkhoffkiki/GPFM) ships a LICENSE file that is verbatim CC-BY-NC-ND-4.0.
+  # The two disagree; we record both and leave the call to the user. See docs/MODELS.md
+  # footnote 7 + docs/MODEL_LICENSES.md.
+  license: "MIT (HF metadata) / CC-BY-NC-ND-4.0 (repo LICENSE) - CONFLICT, verify"
+  gated: false
+  inference_amp: fp32      # DINOv2 ViT-L; card gives no precision rec -> faithful fp32
+  timm_kwargs:
+    img_size: 224
+    init_values: 1.0e-5
+    num_classes: 0
+  notes: >-
+    GPFM (HKUST Smart Lab) DINOv2 ViT-L/14. Published as a bare GPFM.pth (no timm
+    pretrained_cfg), so we build vit_large_patch14_dinov2.lvd142m (pretrained=False)
+    and load the checkpoint (strict; missing=0/unexpected=0). CLS pooling -> 1024-d,
+    ImageNet norm at 224 px bicubic per the card. Not gated. Licence is contested: the HF
+    card metadata says MIT but the source repo's LICENSE file is CC-BY-NC-ND-4.0 -- we
+    record both and leave the determination to the user (verify before use).
+
+midnight:
+  family: transformers
+  source: "kaiko-ai/midnight"
+  recommended_mpp: 0.5   # paper trains multi-scale 2/1/0.5/0.25 µm/px (arXiv:2504.05186); 0.5 = mid default; multi-scale
+  embedding_dim: 3072        # concat(CLS[1536], mean patch tokens[1536]), per the card
+  input_size: 224
+  pooling: cls_concat_meanpatch
+  reg_tokens: 0              # no register tokens; the patch mean is over tokens[1:]
+  mean: [0.5, 0.5, 0.5]      # card transform: Resize(224)+CenterCrop(224)+Normalize(0.5)
+  std: [0.5, 0.5, 0.5]
+  interpolation: bilinear    # v2.Resize default in the card's transform
+  transform_source_url: "https://huggingface.co/kaiko-ai/midnight"
+  weights_sha256: "52c14f20386ca17c2af8a7bf32c31c352668a8fbf6aefc88d86be6eaa0c72ca1"
+  weights_revision: "adc6b15679c981cce6f9b018bbad09d16eeeda9f"
+  doi: "10.1007/978-3-032-04984-1_55"
+  license: "MIT (Midnight, kaiko.ai; open, not gated)"
+  gated: false
+  inference_amp: fp32        # card specifies fp32
+  notes: >-
+    kaiko.ai Midnight, DINOv2 ViT (hidden 1536) via transformers AutoModel. Embedding =
+    concat(CLS, mean of patch tokens) = 3072-d, the card's recommended classification
+    representation (no register tokens). mean/std 0.5 at 224 px. MIT + not gated -> its
+    embeddings are unrestricted.
+
+phikon:
+  family: transformers
+  source: "owkin/phikon"
+  recommended_mpp: 0.5   # Owkin HistoSSLscaling repo states '0.5 µm/px (20x)' - sourced; card silent; single-scale
+  embedding_dim: 768
+  input_size: 224
+  pooling: cls               # iBOT ViT-B/16; CLS token of last_hidden_state -> [B,768]
+  mean: [0.485, 0.456, 0.406]   # ImageNet, from preprocessor_config.json (do_normalize)
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear       # ViTImageProcessor default (no resample key pinned)
+  transform_source_url: "https://huggingface.co/owkin/phikon/raw/main/preprocessor_config.json"
+  weights_sha256: "d01642bfeb683c6b039622eca273e0a8e4208065a4595b63edba178c1c4cfa68"
+  weights_revision: "057cc0295895c2df3dd7681a89680da6015cbefe"
+  doi: "10.1101/2023.07.21.23292757"
+  license: "Owkin non-commercial (HF 'other'); non-commercial research only"
+  gated: false
+  inference_amp: fp32
+  notes: >-
+    Phikon (Owkin) -- iBOT-pretrained ViT-B/16 on 40M pan-cancer TCGA tiles, via transformers
+    AutoModel (vanilla ViTModel, no trust_remote_code). CLS token -> 768-d, ImageNet norm at
+    224 px. Non-commercial weights; our loader stays MIT (see docs/MODEL_LICENSES.md).
+
+phikon_v2:
+  family: transformers
+  source: "owkin/phikon-v2"
+  recommended_mpp: 0.5   # card '20x' + paper (arXiv:2409.09173) tie 20x to 0.5 µm/px - sourced; single-scale
+  embedding_dim: 1024
+  input_size: 224
+  pooling: cls               # DINOv2 ViT-L/16; CLS token of last_hidden_state -> [B,1024]
+  mean: [0.485, 0.456, 0.406]   # ImageNet, from preprocessor_config.json (BitImageProcessor)
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic        # preprocessor_config resample:3 = PIL BICUBIC
+  transform_source_url: "https://huggingface.co/owkin/phikon-v2/raw/main/preprocessor_config.json"
+  weights_sha256: "261ae680fa699b3b951597fd57aa19c02ef735805acb104b93af69b36d928569"
+  weights_revision: "2ae989a9c40cffaa27f0a6cb29cc94d1d6f9a5fd"
+  doi: "10.48550/arXiv.2409.09173"
+  license: "Owkin non-commercial (HF 'other'); non-commercial research only"
+  gated: false
+  inference_amp: fp32
+  notes: >-
+    Phikon-v2 (Owkin) -- DINOv2 ViT-L/16, via transformers AutoModel (native Dinov2Model, no
+    trust_remote_code). CLS token -> 1024-d, ImageNet norm at 224 px. Non-commercial weights;
+    our loader stays MIT (see docs/MODEL_LICENSES.md).
+
+# Lunit SSL baselines (Kang et al., CVPR 2023) - 5 public timm checkpoints via the 1aurent
+# mirror. transform_source: pretrained_cfg adopts + asserts each variant's normalisation at
+# load: only vit_small_patch16 (lunit_dino) uses [0.5]; the other four use ImageNet.
+lunit_dino:
+  family: timm
+  source: "hf-hub:1aurent/vit_small_patch16_224.lunit_dino"
+  recommended_mpp: 0.5   # paper pretrains dual-scale 20x(0.5)+40x(0.25) (arXiv:2212.04690); card silent; multi-scale
+  embedding_dim: 384
+  input_size: 224
+  pooling: cls               # ViT-S/16, global_pool=token + num_classes=0 -> [B,384]
+  transform_source: pretrained_cfg
+  mean: [0.5, 0.5, 0.5]      # not ImageNet - asserted against pretrained_cfg at load
+  std: [0.5, 0.5, 0.5]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/1aurent/vit_small_patch16_224.lunit_dino"
+  weights_sha256: "a19eb37d6cf038a7e8a34c7e9ec50698d02759b2f49dd799492f6ce7e4cb5937"
+  weights_revision: "9ed09909d93f9d39a092d8e49717ae48f9b44e6f"
+  doi: "10.48550/arXiv.2212.04690"
+  license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+  notes: >-
+    Lunit-DINO (Kang et al., CVPR 2023) -- DINO ViT-S/16 SSL on ~19M TCGA H&E patches; a
+    Wölflein top-3 extractor. 1aurent timm mirror. Norm [0.5] is the timm vit_small_patch16_224
+    default (= what resolve_data_config yields); Lunit ship no explicit transform, so we adopt
+    it from pretrained_cfg rather than guess. 384-d.
+
+lunit_dino8:
+  family: timm
+  source: "hf-hub:1aurent/vit_small_patch8_224.lunit_dino"
+  recommended_mpp: 0.5   # paper pretrains dual-scale 20x(0.5)+40x(0.25) (arXiv:2212.04690); card silent; multi-scale
+  embedding_dim: 384
+  input_size: 224
+  pooling: cls
+  transform_source: pretrained_cfg
+  mean: [0.485, 0.456, 0.406]   # ImageNet (ViT-S/8 variant), asserted vs pretrained_cfg
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/1aurent/vit_small_patch8_224.lunit_dino"
+  weights_sha256: "0b7e0236ce430064b31485bbb6f85e661dc5eca0cde709e8f04d59f1c2b23e0b"
+  weights_revision: "c23bc01cfbe022bc1f2a8a9306125a07818e4eb4"
+  doi: "10.48550/arXiv.2212.04690"
+  license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+  notes: >-
+    Lunit-DINO ViT-S/8 (finer 8px patches, 4x tokens) -- same pretraining as lunit_dino but
+    ImageNet norm. 384-d.
+
+lunit_bt:
+  family: timm
+  source: "resnet50"   # base arch; official lunit-io release weights from checkpoint below
+  recommended_mpp: 0.5   # paper pretrains dual-scale 20x(0.5)+40x(0.25) (arXiv:2212.04690); card silent; multi-scale
+  checkpoint:
+    url: "https://github.com/lunit-io/benchmark-ssl-pathology/releases/download/pretrained-weights/bt_rn50_ep200.torch"
+  embedding_dim: 2048
+  input_size: 224
+  pooling: pooled            # ResNet-50 global-avg-pool + num_classes=0 -> [B,2048]
+  mean: [0.485, 0.456, 0.406]   # ImageNet
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://github.com/lunit-io/benchmark-ssl-pathology"
+  weights_sha256: "1ecf2f0888b598708e912cab689e797db099ec48df07d3b0b1fac04bc767f899"
+  weights_revision: "pretrained-weights"   # immutable GitHub release (URL + sha256 pin)
+  doi: "10.48550/arXiv.2212.04690"
+  license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+  notes: >-
+    Lunit Barlow Twins -- ResNet-50 SSL on TCGA H&E (Kang et al.). Loaded from the official
+    lunit-io release asset (URL-pinned + sha256-verified) so BatchNorm running stats are
+    byte-faithful (the 1aurent timm mirror's BN stats differ). Global-avg-pool -> 2048-d,
+    ImageNet norm.
+
+lunit_mocov2:
+  family: timm
+  source: "resnet50"   # base arch; official lunit-io release weights from checkpoint below
+  recommended_mpp: 0.5   # paper pretrains dual-scale 20x(0.5)+40x(0.25) (arXiv:2212.04690); card silent; multi-scale
+  checkpoint:
+    url: "https://github.com/lunit-io/benchmark-ssl-pathology/releases/download/pretrained-weights/mocov2_rn50_ep200.torch"
+  embedding_dim: 2048
+  input_size: 224
+  pooling: pooled
+  mean: [0.485, 0.456, 0.406]   # ImageNet
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://github.com/lunit-io/benchmark-ssl-pathology"
+  weights_sha256: "caddcff7980577722e9227fb90e61364556f15978483b19a1729831e770733b6"
+  weights_revision: "pretrained-weights"   # immutable GitHub release (URL + sha256 pin)
+  doi: "10.48550/arXiv.2212.04690"
+  license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+  notes: >-
+    Lunit MoCo v2 -- ResNet-50 SSL on TCGA H&E (Kang et al.). Loaded from the official lunit-io
+    release asset (URL-pinned + sha256-verified) so BatchNorm running stats are byte-faithful.
+    Global-avg-pool -> 2048-d, ImageNet norm.
+
+lunit_swav:
+  family: timm
+  source: "resnet50"   # base arch; official lunit-io release weights from checkpoint below
+  recommended_mpp: 0.5   # paper pretrains dual-scale 20x(0.5)+40x(0.25) (arXiv:2212.04690); card silent; multi-scale
+  checkpoint:
+    url: "https://github.com/lunit-io/benchmark-ssl-pathology/releases/download/pretrained-weights/swav_rn50_ep200.torch"
+  embedding_dim: 2048
+  input_size: 224
+  pooling: pooled
+  mean: [0.485, 0.456, 0.406]   # ImageNet
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://github.com/lunit-io/benchmark-ssl-pathology"
+  weights_sha256: "bf99442e9ce3367e3895e80b4d24e7f21d74b3c791347970b91eb82bcefa366f"
+  weights_revision: "pretrained-weights"   # immutable GitHub release (URL + sha256 pin)
+  doi: "10.48550/arXiv.2212.04690"
+  license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+  notes: >-
+    Lunit SwAV -- ResNet-50 SSL on TCGA H&E (Kang et al.). Loaded from the official lunit-io
+    release asset (URL-pinned + sha256-verified) so BatchNorm running stats are byte-faithful.
+    Global-avg-pool -> 2048-d, ImageNet norm.
+
+sp22m:
+  family: timm
+  source: "vit_small_patch16_224"   # base arch; weights from checkpoint below
+  recommended_mpp: 0.5   # paper-stated 0.5 µm/px (Campanella et al.); card silent; single-scale
+  checkpoint:
+    repo: "MountSinaiCompPath/SP22M"
+    filename: "pytorch_model.bin"
+    strip_prefixes: ["encoder."]    # state_dict wraps the ViT as self.encoder
+  embedding_dim: 384
+  input_size: 224
+  pooling: cls               # DINO ViT-S/16, global_pool=token + num_classes=0 -> [B,384]
+  mean: [0.485, 0.456, 0.406]   # ImageNet, from the card's example.py (registry, not pretrained_cfg)
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/MountSinaiCompPath/SP22M"
+  weights_sha256: "4776892690a941a5728157c38d64aab549d7b861394a328cf3a5620222c4ff41"
+  weights_revision: "8f636e50446c6b45008fa8cecf30f7bc92633a11"
+  doi: "10.48550/arXiv.2310.07033"   # SP22M origin (Campanella et al., "...Three Billion Images"); named/benchmarked in arXiv:2407.06508. NOT 2403.04865 (a different Campanella paper)
+  license: "CC-BY-NC-SA-4.0 (Mount Sinai SP22M; non-commercial, share-alike)"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+  notes: >-
+    Campanella SP22M (Mount Sinai) -- DINO ViT-S/16 SSL, published as a bare state_dict (keys
+    prefixed 'encoder.') built on timm vit_small_patch16_224. CLS -> 384-d, ImageNet norm.
+    Original DINO ViT (no register tokens / SwiGLU). CC-BY-NC-SA weights.
+
+retccl:
+  family: timm
+  source: "resnet50"   # base arch; weights from checkpoint below
+  recommended_mpp: 1   # 1.0 µm/px (10x) - repo README recommends trying 1.0 first (author-stated); multi-scale
+  checkpoint:
+    repo: "jamesdolezal/RetCCL"
+    filename: "retccl.pth"
+  embedding_dim: 2048
+  input_size: 256        # official transform is Resize(256), no center crop
+  pooling: pooled         # resnet50 global-avg-pool + num_classes=0 -> [B,2048]
+  mean: [0.485, 0.456, 0.406]   # ImageNet, from official get_feature.py
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear        # PIL Resize default
+  transform_source_url: "https://github.com/Xiyue-Wang/RetCCL/blob/main/get_feature.py"
+  weights_sha256: "931956f31d3f1a3f6047f3172b9e59ee3460d29f7c0c2bb219cbc8e9207795ff"
+  weights_revision: "076c6d18dd11f9ca951c6e294c31a021b42df494"
+  doi: "10.1016/j.media.2022.102645"
+  license: "GPL-3.0 (RetCCL/CCL, Xiyue Wang et al.; COPYLEFT weights, non-commercial academic)"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+  notes: >-
+    RetCCL (CCL, Wang et al.) -- ResNet-50 clustering-guided contrastive SSL. Bare checkpoint
+    (gpfm pattern) on timm resnet50, global-avg-pool -> 2048-d. NOTE: 256 px @ 1.0 µm/px (not
+    the 224/0.5 of the other models) -> run with explicit --mpp 1.0 --patch-size 256; it cannot
+    share a default-MPP run with the 0.5 models. GPL-3.0 COPYLEFT weights (see docs/MODEL_LICENSES.md).
+
+hipt:
+  family: timm
+  source: "vit_small_patch16_224"   # 224 base (checkpoint pos_embed=197); pos_embed is interpolated to the 256px grid at forward
+  recommended_mpp: 0.5   # 20x - repo+paper (patch dirs 'extracted_mag20x_...'); 0.5 by convention; single-scale
+  checkpoint:
+    repo: "JWonderLand/HIPT_unofficial"
+    filename: "vit256_small_dino.pth"
+    state_dict_key: "teacher"
+    strip_prefixes: ["module.", "backbone."]
+    strict: false        # DINO projection-head keys are absent from the backbone
+  embedding_dim: 384
+  input_size: 256
+  pooling: cls
+  mean: [0.5, 0.5, 0.5]   # symmetric 0.5 norm (not ImageNet), from HIPT hipt_model_utils.py
+  std: [0.5, 0.5, 0.5]
+  interpolation: bicubic
+  transform_source_url: "https://github.com/mahmoodlab/HIPT/blob/master/HIPT_4K/hipt_model_utils.py"
+  weights_sha256: "6960cd5a8657dc8bb214671aa0c6dbd3f5b698e84386884955836487ddc89e24"
+  weights_revision: "3529ea3d95a390e210768ca4db29fa7cae39ded9"
+  doi: "10.48550/arXiv.2206.02647"
+  license: "Apache-2.0 WITH Commons Clause (Mahmood Lab HIPT; non-commercial)"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+    dynamic_img_size: true   # interpolate the 197-token pos_embed to the 256px grid at forward
+  notes: >-
+    HIPT ViT-256 patch tower (Chen et al., Mahmood Lab) -- DINO ViT-S/16. Built on the timm 224
+    base (checkpoint pos_embed=197); dynamic_img_size interpolates pos_embed to the 256px grid at
+    forward, exactly as HIPT's own get_vit256 does. Loads the 'teacher' sub-dict of the ~700MB
+    DINO checkpoint (strip module./backbone., strict=False -> only backbone tensors consumed).
+    0.5 norm (not ImageNet), 256 px @ 0.5 µm/px.
+    Via the JWonderLand mirror, byte-identical to upstream GitHub LFS (sha256-verified before
+    load). Apache-2.0 + Commons Clause (non-commercial). Patch tower only (no ViT-4K aggregation).
+
+mstar:
+  family: timm
+  source: "hf-hub:Wangyh/mSTAR"
+  recommended_mpp: 0.5   # 20x-equivalent - paper (arXiv:2407.15362); card omits MPP; 0.5 by convention; single-scale
+  embedding_dim: 1024
+  input_size: 224
+  pooling: cls               # ViT-L/16, num_classes=0 -> [B,1024] pooled CLS
+  mean: [0.485, 0.456, 0.406]   # ImageNet, from the card's own usage code (transforms.Normalize)
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://huggingface.co/Wangyh/mSTAR"
+  weights_sha256: "13b2df84648420bbc0fd2eca43ddfb5b7c9764920149988b3e015f39ed6f07ee"
+  weights_revision: "162ae5da9897d4ff8b9a4c2daea175ae45012ef7"
+  doi: "10.1038/s41467-025-66220-x"
+  license: "CC-BY-NC-ND-4.0 (mSTAR, Wang et al.; non-commercial)"
+  gated: true
+  inference_amp: fp32
+  timm_kwargs:
+    init_values: 1.0e-5
+    num_classes: 0
+    dynamic_img_size: true
+  notes: >-
+    mSTAR (Wang et al.) -- ViT-L/16 multimodal-pretrained patch encoder. timm hf-hub
+    one-liner; num_classes=0 -> 1024-d CLS. ImageNet normalisation, sourced from the card's
+    own usage code (transforms.Normalize(ImageNet)). The HF pretrained_cfg reports [0.5], but
+    that is the un-overridden timm vit_large_patch16_224 default, not mSTAR's transform -- so
+    we use registry norm (not pretrained_cfg). CC-BY-NC-ND weights, gated.
+
+kaiko_vitl:
+  family: timm
+  source: "hf-hub:1aurent/vit_large_patch14_reg4_224.kaiko_ai_towards_large_pathology_fms"
+  recommended_mpp: 0.5   # CONVENTION (unsourced): kaiko "Towards Training Large..." (arXiv:2404.15217) states no single MPP; 0.5 by convention
+  embedding_dim: 1024
+  input_size: 224
+  pooling: cls               # DINOv2 ViT-L/14 + 4 reg tokens, num_classes=0 -> [B,1024] pooled CLS
+  mean: [0.5, 0.5, 0.5]      # kaiko card transform (v2.Resize(224)+CenterCrop+Normalize(0.5)); NOT the pretrained_cfg ImageNet default
+  std: [0.5, 0.5, 0.5]
+  interpolation: bilinear    # card uses torchvision v2.Resize (default bilinear)
+  transform_source_url: "https://huggingface.co/1aurent/vit_large_patch14_reg4_224.kaiko_ai_towards_large_pathology_fms"
+  weights_sha256: "149c8b21c60a7115a17572073b09ef142411c91b5194c84a99ebba8b83f20e69"   # HF LFS x-linked-etag; verify on first download
+  weights_revision: "fb802e347d2c59f05207b70ad75f7df30019c188"
+  doi: "10.48550/arXiv.2404.15217"
+  license: "Kaiko Non-Commercial Public License v1 (kaiko.ai; non-commercial)"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    num_classes: 0
+    dynamic_img_size: true   # config.json fixes 518; run at 224 via pos-embed interpolation
+  notes: >-
+    kaiko.ai "Towards Training Large-Scale Pathology Foundation Models" (Aben et al., 2024)
+    DINOv2 ViT-L/14 + 4 register tokens, via the 1aurent timm mirror (ungated). num_classes=0
+    -> 1024-d pooled CLS. IMPORTANT: normalisation is symmetric [0.5] from the kaiko card's
+    own transform, NOT the pretrained_cfg ImageNet default (a base-arch leftover, same trap
+    as mSTAR / lunit_dino) -- so mean/std are set explicitly here rather than via
+    transform_source: pretrained_cfg. Distinct from `midnight` (kaiko's later MIT model).
+    Non-commercial weights.
+
+ctranspath:
+  family: timm
+  source: "hf-hub:1aurent/swin_tiny_patch4_window7_224.CTransPath"
+  recommended_mpp: 0.5   # paper pretrains 20x BUT authors' repo recommends 1.0/10x downstream (10.1016/j.media.2022.102559); multi-scale
+  embedding_dim: 768
+  input_size: 224
+  pooling: pooled          # Swin global-pool; num_classes=0 -> [B,768]
+  transform_source: pretrained_cfg
+  mean: [0.485, 0.456, 0.406]   # ImageNet, resolved from pretrained_cfg + asserted
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/1aurent/swin_tiny_patch4_window7_224.CTransPath"
+  weights_sha256: "158e29683f19cfb0018d040b95610802b640db60d38b00b25ea7db674cd141e4"
+  weights_revision: "59c740e4ed91dda4ebe094b64e4cd2e015c31810"
+  doi: "10.1016/j.media.2022.102559"
+  license: "GPL-3.0 (CTransPath / TransPath; COPYLEFT weights)"
+  gated: false
+  inference_amp: fp32
+  timm_kwargs:
+    embed_layer: "raw2features.embedders.convstem.ConvStem"
+    num_classes: 0
+  notes: >-
+    CTransPath (Wang et al., TransPath) -- the first pathology foundation model (2022,
+    SRCL on a Swin-Tiny). Custom ConvStem patch-embed (embedders/convstem.py), loaded via
+    the 1aurent modern-timm mirror so no pinned timm fork / ancient Python is needed. Swin
+    global-pool -> 768-d, ImageNet norm. Weights are GPL-3.0 (COPYLEFT) -- our loader code
+    stays MIT; see docs/MODEL_LICENSES.md.
+
+hibou_l:
+  family: transformers
+  source: "histai/hibou-L"
+  recommended_mpp: 0.5   # CONVENTION (unsourced): card+paper state no MPP/magnification - a default, not authoritative
+  embedding_dim: 1024
+  input_size: 224
+  pooling: cls             # Dinov2 last_hidden_state[:,0]
+  mean: [0.7068, 0.5755, 0.722]   # HistAI norm (from hibou-L preprocessor_config), not ImageNet
+  std: [0.195, 0.2316, 0.1816]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/histai/hibou-L"
+  weights_sha256: "a63d1699448143ceccf2b7e1c4bf35b995c51f86ef8a6efb471af2eee210b79c"
+  weights_revision: "31a3b9fee16554c8552cb643d311733bce8faf7c"
+  doi: "10.48550/arXiv.2406.05074"
+  license: "Apache-2.0 (Hibou-L, HistAI; open, gated by HF login)"
+  gated: true
+  inference_amp: fp32
+  timm_kwargs:
+    trust_remote_code: true   # Dinov2ModelWithRegisters (custom modeling code)
+  notes: >-
+    Hibou-L (HistAI) DINOv2 ViT-L + registers, via transformers AutoModel
+    (trust_remote_code). 1024-d CLS; HistAI normalisation sourced from
+    preprocessor_config.json. Apache-2.0 -> embeddings unrestricted. requires the
+    `[hibou]` extra: its remote code imports the removed transformers.onnx, so it needs
+    transformers<5 (pip install "raw2features[hibou]"). Not validated under transformers 5
+    -- the validated path is the [hibou] extra.
+
+hibou_b:
+  family: transformers
+  source: "histai/hibou-b"
+  recommended_mpp: 0.5   # CONVENTION (unsourced): only an author forum approximation (~0.25/0.5), 20x scan - a default
+  embedding_dim: 768
+  input_size: 224
+  pooling: cls
+  mean: [0.7068, 0.5755, 0.722]   # HistAI norm, mirrored from hibou-L (see note)
+  std: [0.195, 0.2316, 0.1816]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/histai/hibou-b"
+  weights_sha256: "2121db3cac83bc9abf13a458a37b0740e2ce725609ff8d4b8e6b6c56c30c3ab6"
+  weights_revision: "7fdc8cce365ebfd9e7e60ee6ee9a8d4d59388f3c"
+  doi: "10.48550/arXiv.2406.05074"
+  license: "Apache-2.0 (Hibou-B, HistAI; open, gated by HF login)"
+  gated: true
+  inference_amp: fp32
+  timm_kwargs:
+    trust_remote_code: true
+  notes: >-
+    Hibou-B (HistAI) DINOv2 ViT-B + registers, 768-d CLS. Same HistAI pipeline as
+    hibou_l; norm is mirrored from hibou-L; hibou-b's mean/std were not independently
+    re-sourced from its own (gated) preprocessor_config, so verify them if you accept the gate. requires the `[hibou]`
+    extra (transformers<5). Not validated under transformers 5.
+
+# --- Multiplex (spatial proteomics) - a SECOND modality, not H&E ----------
+kronos:
+  family: kronos           # optional family: needs the `kronos` pip extra
+  modality: multiplex      # CODEX / Phenocycler marker stacks - not brightfield H&E
+  source: "hf_hub:MahmoodLab/kronos"
+  embedding_dim: 384       # KRONOSv1 ViT-S/16 patch embedding
+  input_size: 224
+  pooling: pooled          # the model returns the patch embedding directly
+  # Per-marker normalisation is resolved at runtime from the model's published
+  # marker_metadata.csv (marker name -> id + mean/std); the RGB-style mean/std below
+  # are unused for multiplex (kept only to satisfy the shared ModelSpec contract).
+  mean: [0.0, 0.0, 0.0]
+  std: [1.0, 1.0, 1.0]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/MahmoodLab/kronos"
+  weights_sha256: "a0bc5cced0543ebf2f66634510991992fc689431a1d3b53ee61133d8824a7aaa"
+  weights_revision: "8edc2719ad67b2e2b766073b35c6cf8e6f5da516"
+  doi: "10.48550/arXiv.2506.03373"
+  license: "CC-BY-NC-ND-4.0 (KRONOS, non-commercial)"
+  gated: true
+  notes: >-
+    KRONOSv1 (MahmoodLab) - a panel-agnostic MULTIPLEX (spatial-proteomics) encoder,
+    not H&E. Needs the optional `kronos` package: pip install "raw2features[kronos]".
+    Consumes a marker stack [B,M,224,224]: each channel is standardised by its marker's
+    mean/std and tagged with a marker id (sinusoidal marker-identity embedding), both
+    resolved from the public v1 marker_metadata.csv; markers outside its 175-marker vocab
+    (blanks/empties/unknown) are dropped. ViT-S/16 -> 384-d patch embedding. The reader
+    surfaces channel_names; the embedder's set_panel() binds them per slide. Uses torch
+    SDPA (flash attention) by default -- no xFormers; much faster and far lighter on memory than KRONOS's
+    upstream naive-attention fallback, so the default batch fits. Opt out with `sdpa: false`. Validated full-slide on real CODEX multiplex data.
+
+musk:
+  family: musk
+  source: "hf-hub:xiangjx/musk"
+  recommended_mpp: 0.5   # CONVENTION (unsourced): no card/repo/paper MPP; heterogeneous vision-language corpus - a default
+  embedding_dim: 1024
+  input_size: 384
+  pooling: cls               # the musk family forward returns the 1024-d vision feature directly
+  mean: [0.5, 0.5, 0.5]      # inception-style norm (MUSK README), 384px
+  std: [0.5, 0.5, 0.5]
+  interpolation: bicubic
+  transform_source_url: "https://github.com/lilab-stanford/MUSK/blob/main/README.md"
+  weights_sha256: "83d9f2429ec3f04fc3bdc4bc6d8e6c78035ea196fdce9fe05d76ea0e8cad0375"
+  weights_revision: "de1ffed28608c197d2903f6fa42b491a3fbf0fb8"
+  doi: "10.1038/s41586-024-08378-w"
+  license: "CC-BY-NC-ND-4.0 (MUSK, Stanford/Harvard; non-commercial, no-derivatives)"
+  gated: true
+  inference_amp: fp16
+  notes: >-
+    MUSK (Xiang et al., Nature 2024) -- BEiT3 vision-language model; we use the image tower
+    (musk_large_patch16_384) -> 1024-d. Loaded via the `musk` package ([musk] extra; deferred
+    import) on top of timm; forward model(image, with_head=False, out_norm=True, ms_aug=False).
+    Inception [0.5] norm @ 384 px -> run with --patch-size 384. CC-BY-NC-ND weights, gated.
+
+# --- Vision-language CLIP image towers (open_clip family) ------------------
+quiltnet:
+  family: open_clip          # optional family: needs the `open_clip` pip extra
+  source: "hf-hub:wisdomik/QuiltNet-B-32"
+  recommended_mpp: 0.5   # CONVENTION (unsourced): VLM trained on heterogeneous web images; no card/paper MPP
+  embedding_dim: 512
+  input_size: 224
+  pooling: pooled          # encode_image returns the 512-d projected image embedding directly
+  mean: [0.48145466, 0.4578275, 0.40821073]   # OpenAI-CLIP norm, from open_clip_config.json preprocess_cfg
+  std: [0.26862954, 0.26130258, 0.27577711]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/wisdomik/QuiltNet-B-32"
+  weights_sha256: "e88815d05f50493a54fc2bab7ccf54075d24339d7b217e6f173c0c158ace92e7"   # open_clip_pytorch_model.bin
+  weights_revision: "8ce77289ce35a90b2f1db1137dfa4bc2df175e33"
+  doi: "10.48550/arXiv.2306.11207"   # Quilt-1M (Ikezogwo et al., NeurIPS 2023)
+  license: "MIT (QuiltNet, Ikezogwo et al.)"
+  gated: false
+  inference_amp: fp32
+  notes: >-
+    QuiltNet-B-32 (Ikezogwo et al., NeurIPS 2023) -- a CLIP ViT-B/32 image-text model
+    trained on Quilt-1M (1M histopathology image-text pairs from educational video). We use
+    the image tower: open_clip create_model_from_pretrained("hf-hub:wisdomik/QuiltNet-B-32")
+    -> model.encode_image -> 512-d projected embedding (returned RAW, not L2-normalised --
+    that is the PLIP/QuiltNet downstream patch feature). OpenAI-CLIP normalisation @ 224 px,
+    sourced from the open_clip preprocess transform and asserted at load. MIT, ungated.
+
+biomedclip:
+  family: open_clip
+  source: "hf-hub:microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  recommended_mpp: 0.5   # CONVENTION (unsourced): general-biomedical VLM (PMC figures), not pathology-native; no card MPP
+  embedding_dim: 512
+  input_size: 224
+  pooling: pooled
+  mean: [0.48145466, 0.4578275, 0.40821073]   # OpenAI-CLIP norm, from open_clip_config.json preprocess_cfg
+  std: [0.26862954, 0.26130258, 0.27577711]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
+  weights_sha256: "52cc993c5c5ff962bd0c60931874bc001e7e9b41666a385530f4a036294576be"   # open_clip_pytorch_model.bin
+  weights_revision: "9f341de4b7a3f86baf8a0b09fa4d3afca6a3a86b"
+  doi: "10.48550/arXiv.2303.00915"   # BiomedCLIP (Zhang et al.)
+  license: "MIT (BiomedCLIP, Microsoft)"
+  gated: false
+  inference_amp: fp32
+  notes: >-
+    BiomedCLIP (Zhang et al.) -- CLIP ViT-B/16 image tower + PubMedBERT, trained on PMC-15M
+    (15M figure-caption pairs from PubMed Central). General-biomedical, not pathology-native:
+    a VLM baseline, not an H&E specialist. open_clip
+    create_model_from_pretrained("hf-hub:microsoft/BiomedCLIP-...") -> encode_image -> 512-d
+    projected embedding. OpenAI-CLIP norm @ 224 px, asserted at load. MIT, ungated.
+
+plip:
+  family: clip_hf          # optional family: transformers CLIPModel (in the [models] extra)
+  source: "vinid/plip"
+  recommended_mpp: 0.5   # CONVENTION (unsourced): VLM (medical-Twitter image-text); no card/paper MPP
+  embedding_dim: 512
+  input_size: 224
+  pooling: pooled          # get_image_features returns the 512-d projected embedding directly
+  mean: [0.48145466, 0.4578275, 0.40821073]   # OpenAI-CLIP norm, from preprocessor_config.json
+  std: [0.26862954, 0.26130258, 0.27577711]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/vinid/plip"
+  weights_sha256: "98a7f8d2a1f4a8fc8f6dedb3a16ff7efbe02a7ef67c93904c80bca9767c69630"   # pytorch_model.bin
+  weights_revision: "67ade53ddd32195868f422585f72698ef5d15094"
+  doi: "10.1038/s41591-023-02504-3"   # PLIP (Huang et al., Nature Medicine 2023)
+  license: "MIT (PLIP, Huang et al.; from the project setup.py)"
+  gated: false
+  inference_amp: fp32
+  notes: >-
+    PLIP (Huang et al., Nature Medicine 2023) -- a CLIP ViT-B/32 fine-tuned on OpenPath
+    (~208K pathology image-text pairs from medical Twitter). transformers
+    CLIPModel(vinid/plip).get_image_features -> 512-d projected image embedding, returned
+    RAW (not L2-normalised), the standard PLIP downstream patch feature. OpenAI-CLIP norm @
+    224 px from preprocessor_config.json. MIT (declared in the project setup.py; no LICENSE
+    file / HF YAML license -- confirm if relying on it). Ungated.
+
+# --- SEAL (MahmoodLab) - spatial-transcriptomics LoRA fine-tunes of a frozen backbone -----
+# Backbone-parameterised (`source` = the SEAL backbone key); the LoRA delta is merged onto the
+# frozen base. Needs the [seal] extra + the backbone's own package + both gates. seal_embedder.py.
+seal_conch:
+  family: seal
+  source: "conch"          # SEAL backbone key; checkpoint seal_conch_vision.pth in MahmoodLab/SEAL
+  recommended_mpp: 0.5   # CONCH convention (unsourced); SEAL keeps the base's scale
+  embedding_dim: 512       # CONCH base dim, unchanged by the LoRA
+  input_size: 224
+  pooling: pooled          # SEAL's img_model returns the pooled feature directly
+  mean: [0.48145466, 0.4578275, 0.40821073]   # OpenAI-CLIP norm (CONCH base), from SEAL's transform
+  std: [0.26862954, 0.26130258, 0.27577711]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/MahmoodLab/SEAL"
+  weights_revision: "c20762e7a04551e21e62c083a9c443bdbc48cb89"
+  weights_sha256: "0f7c1386ff79062ccf6ceadaffbbca27f2f239eb738876e8adefe2991f0f968e"   # seal_conch_vision.pth
+  doi: "10.48550/arXiv.2602.14177"
+  license: "CC-BY-NC-ND-4.0 (SEAL, Mahmood Lab; non-commercial)"
+  gated: true
+  inference_amp: fp32
+  notes: >-
+    SEAL-CONCH (MahmoodLab) -- CONCH ViT-B/16 + a spatial-transcriptomics LoRA, 512-d. The HF
+    checkpoint is a LoRA delta: we build the frozen CONCH base + merge it via SEAL's own
+    get_img_model (image path only; no gene model). Needs the [seal] extra (the seal package
+    pinned to the cjmielke fork / PR #1, which resolves config from the install dir) + the
+    CONCH git package + HF_TOKEN with accepted MahmoodLab/SEAL and MahmoodLab/conch gates.
+    v0.0.1 (Feb 2026).
+
+seal_univ2:
+  family: seal
+  source: "univ2"          # checkpoint seal_univ2_vision.pth
+  recommended_mpp: 0.5   # UNI2-h convention (unsourced)
+  embedding_dim: 1536      # UNI2-h base dim
+  input_size: 224
+  pooling: pooled
+  mean: [0.485, 0.456, 0.406]   # ImageNet norm (UNI2-h base)
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/MahmoodLab/SEAL"
+  weights_revision: "c20762e7a04551e21e62c083a9c443bdbc48cb89"
+  weights_sha256: "e7ae736968c355ae02e565ee828f1ed6bd9ffe01b7dbc5a9166b3a55d746bd49"   # seal_univ2_vision.pth
+  doi: "10.48550/arXiv.2602.14177"
+  license: "CC-BY-NC-ND-4.0 (SEAL, Mahmood Lab; non-commercial)"
+  gated: true
+  inference_amp: fp32
+  notes: >-
+    SEAL-UNIv2 (MahmoodLab) -- UNI2-h ViT-H/14 + a spatial-transcriptomics LoRA, 1536-d. Same
+    load path as seal_conch (frozen UNI2-h base + LoRA merge); needs the [seal] extra + accepted
+    MahmoodLab/SEAL + MahmoodLab/UNI2-h gates. v0.0.1.
+
+# KEEP (Astaxanthin/KEEP) is not currently supported: its trust_remote_code modeling_keep.py
+# subclasses timm's LayerScale as `RenameLayerScale` with a fixed __init__ signature, but current
+# timm passes device/dtype kwargs to it -> `TypeError: ... unexpected keyword argument 'device'`.
+# It was written against an older timm, and pinning timm older would break uni2_h/virchow2. It can
+# be enabled once KEEP's remote code is updated (the `clip_hf` family already supports its
+# encode_image path).
+
+# ---------------------------------------------------------------------------
+# Slide-level encoders
+#
+# These take (N, patch_dim) patch feature matrices as input and return a
+# single (embedding_dim,) slide vector. They are invoked by
+# `raw2features slide-embed` and the `-s` flag on `raw2features embed`.
+#
+# Fields:
+#   patch_encoder  - name of the patch model whose features are expected
+#   patch_dim      - expected dimension of each patch vector
+#
+# All other provenance fields follow the same policy as patch encoders:
+# preprocessing and load contracts must be sourced from the model card.
+# ---------------------------------------------------------------------------
+
+slide_encoders:
+
+  # Pooling baselines (no weights, MIT, always available).
+  mean:
+    family: pool
+    source: builtin
+    embedding_dim: -1        # matches patch_dim at runtime
+    patch_encoder: any
+    patch_dim: -1            # any patch model
+    gated: false
+    license: MIT
+    transform_source_url: "https://github.com/CraigMyles/raw2features"
+    notes: "Global mean pool across patches. No weights."
+
+  max:
+    family: pool
+    source: builtin
+    embedding_dim: -1
+    patch_encoder: any
+    patch_dim: -1
+    gated: false
+    license: MIT
+    transform_source_url: "https://github.com/CraigMyles/raw2features"
+    notes: "Global max pool across patches. No weights."
+
+  meanmax:
+    family: pool
+    source: builtin
+    embedding_dim: -1        # 2 x patch_dim at runtime
+    patch_encoder: any
+    patch_dim: -1
+    gated: false
+    license: MIT
+    transform_source_url: "https://github.com/CraigMyles/raw2features"
+    notes: "Concat of mean and max. embedding_dim = 2 x patch_dim."
+
+  # TITAN multimodal slide encoder - builds a feature grid from CONCH v1.5 patch
+  # features + level-0 coords (patch_size_lv0). See slide_embedders/titan.py.
+  titan:
+    family: titan
+    source: "hf-hub:MahmoodLab/TITAN"
+    embedding_dim: 768
+    patch_encoder: conch_v1_5    # TITAN consumes CONCH v1.5 (768-d) features, not UNI
+    patch_dim: 768
+    gated: true
+    license: "CC-BY-NC-ND-4.0 (non-commercial)"
+    transform_source_url: "https://huggingface.co/MahmoodLab/TITAN"
+    weights_sha256: "4e92128317dca5c9e47d8173467105c21e4095f88d3bde9077e7f1e784b195fe"
+    weights_revision: "dac6773d9961cfc75503440676ff157a2c6e8d2e"
+    doi: "10.1038/s41591-025-03982-3"
+    notes: >-
+      Slide encoder over CONCH v1.5 patch features. Load via AutoModel(TITAN,
+      trust_remote_code).encode_slide_from_patch_features(features, coords,
+      patch_size_lv0); needs the [models] extra + accepted TITAN gate. Run with
+      `-f conch_v1_5 --patch-size 512 -s titan`. Validated full-slide on real cervical WSIs.
+
+  # PRISM (Paige) - Perceiver aggregator over Virchow v1 patch features. No coords needed
+  # (unlike TITAN). See slide_embedders/prism.py.
+  prism:
+    family: prism
+    source: "hf-hub:paige-ai/Prism"
+    embedding_dim: 1280
+    patch_encoder: virchow          # Virchow v1 (2560-d cls_concat_meanpatch); NOT virchow2
+    patch_dim: 2560
+    gated: true
+    license: "CC-BY-NC-ND-4.0 (PRISM, Paige + Microsoft Research; non-commercial)"
+    transform_source_url: "https://huggingface.co/paige-ai/Prism"
+    weights_revision: "b5ef311e78a0811c71ecf618f6f7140e9ebb5fc6"
+    weights_sha256: "01a0f7bcfd1559de31794e08a99e9fe4f9bd758c3b9f1482fe9cb3f5e1e7c5e1"   # model.safetensors
+    doi: "10.48550/arXiv.2405.10254"
+    notes: >-
+      Slide encoder over Virchow v1 (2560-d) patch features. Load via
+      AutoModel("paige-ai/Prism", trust_remote_code).slide_representations(feats)
+      ["image_embedding"] -> 1280-d; needs no coords/patch_size_lv0 (unlike TITAN). Needs the
+      [prism] extra (environs, sacremoses, imported by its remote code) + accepted
+      paige-ai/Prism gate. Run with `-f virchow -s prism`.
+
+  # FEATHER (Mahmood Lab MIL-Lab, ICML 2025) - supervised ABMIL slide aggregators, one
+  # per patch encoder. Pure-HF load; slide vector = forward_features pre-head pooling
+  # (512-d). See slide_embedders/feather.py.
+  feather_conch_v15:
+    family: feather
+    source: "hf-hub:MahmoodLab/abmil.base.conch_v15.pc108-24k"
+    embedding_dim: 512
+    patch_encoder: conch_v1_5       # 768-d - already in registry
+    patch_dim: 768
+    gated: true
+    license: "CC-BY-NC-ND-4.0 (FEATHER, Mahmood Lab; non-commercial)"
+    transform_source_url: "https://huggingface.co/MahmoodLab/abmil.base.conch_v15.pc108-24k"
+    weights_revision: "423c894c738294e8b0ac38938108180a2c21dd43"
+    weights_sha256: "08a40daa9e00cca62c65d26f00f7765f5c1b2fe58532806aeda521cb1bc8a708"   # model.safetensors
+    doi: "10.48550/arXiv.2506.09022"
+    notes: >-
+      FEATHER ABMIL slide encoder over CONCH v1.5 (768-d) patch features -> 512-d slide
+      vector. AutoModel(trust_remote_code).forward_features(feats[1,N,768])[0] -> [1,512]
+      (no classifier head). Gated - accepted MahmoodLab/abmil.* gate. `-f conch_v1_5 -s
+      feather_conch_v15`. The released stand-in for the unreleased THREADS.
+
+  feather_uni_v2:
+    family: feather
+    source: "hf-hub:MahmoodLab/abmil.base.uni_v2.pc108-24k"
+    embedding_dim: 512
+    patch_encoder: uni2_h           # 1536-d - already in registry
+    patch_dim: 1536
+    gated: true
+    license: "CC-BY-NC-ND-4.0 (FEATHER, Mahmood Lab; non-commercial)"
+    transform_source_url: "https://huggingface.co/MahmoodLab/abmil.base.uni_v2.pc108-24k"
+    weights_revision: "7c0a057001e369ff6b55833188775bdb21f9b8c8"
+    weights_sha256: "d9c2612d55615999043539f6abc4fe44902ed1680fdbfb3bc81f6b2915ba451d"   # model.safetensors
+    doi: "10.48550/arXiv.2506.09022"
+    notes: >-
+      FEATHER ABMIL slide encoder over UNI2-h (1536-d) patch features -> 512-d slide vector.
+      Same load as feather_conch_v15. `-f uni2_h -s feather_uni_v2`.
+
+  feather_uni:
+    family: feather
+    source: "hf-hub:MahmoodLab/abmil.base.uni.pc108-24k"
+    embedding_dim: 512
+    patch_encoder: uni              # 1024-d - already in registry
+    patch_dim: 1024
+    gated: true
+    license: "CC-BY-NC-ND-4.0 (FEATHER, Mahmood Lab; non-commercial)"
+    transform_source_url: "https://huggingface.co/MahmoodLab/abmil.base.uni.pc108-24k"
+    weights_revision: "9290d7720a2260501cf9cbbbc1f6b7134b251637"
+    weights_sha256: "19b7edb4582ea534f63c74b8b83735c0529388d1b8f26945786cce9d0b4aea19"   # model.safetensors
+    doi: "10.48550/arXiv.2506.09022"
+    notes: >-
+      FEATHER ABMIL slide encoder over UNI (1024-d) patch features -> 512-d slide vector.
+      Same load as feather_conch_v15. `-f uni -s feather_uni`.
+
+  # MADELEINE (Mahmood Lab, ECCV 2024) - multi-stain ABMIL over CONCH v1 features.
+  # Loads via the madeleine git package. See slide_embedders/madeleine.py.
+  madeleine:
+    family: madeleine
+    source: "hf-hub:MahmoodLab/madeleine"
+    embedding_dim: 512
+    patch_encoder: conch            # CONCH v1 (512-d) - already in registry
+    patch_dim: 512
+    gated: true
+    license: "MIT (HF card) / CC-BY-NC-ND-4.0 (GitHub LICENSE) - CONFLICT, verify"
+    transform_source_url: "https://huggingface.co/MahmoodLab/madeleine"
+    weights_revision: "a5eca29194526644eaa725cbad62c0b5023007db"
+    weights_sha256: "34437fe7cf6e1d9b6fb41ef592416ef890dc07c599ca1cc8d1ff00c40ce23496"   # model.pt
+    doi: "10.48550/arXiv.2408.02859"
+    notes: >-
+      Multi-stain ABMIL slide encoder over CONCH v1 (512-d) patch features -> 512-d slide
+      vector. Loads via the madeleine package's create_model_from_pretrained(local_dir) ->
+      (model, dtype); model.encode_he(feats[1,N,512], device) -> [1,512]. No coords. Needs
+      the [madeleine] extra + git package + accepted MahmoodLab/madeleine gate. Licence is
+      contested (HF tag mit vs GitHub CC-BY-NC-ND) - recorded, not resolved. `-f conch -s
+      madeleine`.
+
+  # Prov-GigaPath slide encoder - 12-layer LongNet over gigapath (1536-d) tile features +
+  # level-0 coords (position-aware, like TITAN). Needs flash-attn (no SDPA fallback); the
+  # slow test skips cleanly where it's unavailable. Tested end-to-end on a Blackwell GPU.
+  # See slide_embedders/gigapath_slide.py.
+  gigapath_slide:
+    family: gigapath_slide
+    source: "hf-hub:prov-gigapath/prov-gigapath"
+    embedding_dim: 768
+    patch_encoder: gigapath          # GigaPath tile encoder (1536-d) - already in registry
+    patch_dim: 1536
+    gated: true
+    license: "Apache-2.0 (HF card; research-only caveat in prose)"
+    transform_source_url: "https://huggingface.co/prov-gigapath/prov-gigapath"
+    weights_revision: "eba85dd46097c3eedfcc2a3a9a930baecb6bcc19"
+    weights_sha256: "04194a4c393e6a713b144356791c0d2e27ca769ee50c6e111fd6abc1f17ed551"  # slide_encoder.pth
+    doi: "10.1038/s41586-024-07441-w"
+    notes: >-
+      LongNet slide encoder over GigaPath (1536-d) patch features + level-0 coords. Load via
+      gigapath.slide_encoder.create_model(ckpt, "gigapath_slide_enc12l768d", 1536,
+      global_pool=True); model.tile_size = patch_size_lv0; model(feats[1,N,1536],
+      coords[1,N,2], all_layer_embed=True)[-1] -> 768-d. Needs the [gigapath_slide] extra +
+      the gigapath git package (vendors torchscale; aliased) + fairscale + a flash-attn wheel
+      matching your torch/ABI (no SDPA fallback) + accepted prov-gigapath/prov-gigapath gate.
+      Tested end-to-end on a Blackwell GPU. `-f gigapath
+      -s gigapath_slide`.
+
+  # CHIEF (Wang et al., Nature 2024) - gated-attention MIL over CTransPath. Weights are
+  # Drive-hosted (no HF mirror); fetched by their public Drive file id + verified SHA.
+  # See slide_embedders/chief.py.
+  chief:
+    family: chief
+    source: "gdrive:10bJq_ayX97_1w95omN8_mESrYAGIBAPb"
+    embedding_dim: 768
+    patch_encoder: ctranspath        # CTransPath (768-d) - already in registry
+    patch_dim: 768
+    gated: false                     # no HF gate; weights are GPL-3.0 (license-restricted)
+    license: "GPL-3.0 (weights; non-commercial academic)"
+    transform_source_url: "https://github.com/hms-dbmi/CHIEF"
+    weights_revision: null           # Drive has no immutable revision; the SHA is the pin
+    weights_sha256: "6a46d200b32a65e5ce4774611b889b5f1bbf7a39f9111321a2a1b5dbdb9996b8"
+    doi: "10.1038/s41586-024-07894-z"
+    notes: >-
+      Gated-attention MIL slide encoder over CTransPath (768-d) patch features -> 768-d
+      slide vector (the site-agnostic WSI_feature = softmax(attention).T @ features; no
+      coords, no site input). Our own minimal re-implementation; weights fetched via gdown
+      by their public Drive file id + verified SHA-256, and cached. Needs the [chief] extra
+      (gdown). Model code MIT (ours); weights GPL-3.0. `-f ctranspath -s chief`.
+
+  # TANGLE v2 pan-cancer (Jaume et al., CVPR 2024) - multi-head ABMIL over UNI features.
+  # Drive-hosted (no HF mirror); fetched by its public Drive file id + verified SHA. See
+  # slide_embedders/tangle.py.
+  tangle:
+    family: tangle
+    source: "gdrive:1f0fNPr5vU6F9Qy0OM3g1TxliBZcVfjmX"
+    embedding_dim: 512
+    patch_encoder: uni               # UNI (1024-d) - already in registry
+    patch_dim: 1024
+    gated: false                     # no HF gate; weights are CC-BY-NC-ND-4.0
+    license: "CC-BY-NC-ND-4.0 (non-commercial)"
+    transform_source_url: "https://github.com/mahmoodlab/TANGLE"
+    weights_revision: null           # Drive has no immutable revision; the SHA is the pin
+    weights_sha256: "786d43c9ce0bd257f954faa0e484e543402eea1e0d014ab71398c3c872b17d55"
+    doi: "10.48550/arXiv.2405.11618"
+    notes: >-
+      Multi-head ABMIL slide encoder over UNI (1024-d) patch features -> 512-d slide
+      vector (4 heads, hidden 512, softmax pooling, proj back to 512; get_features path,
+      no coords). Pan-cancer (27 TCGA cohorts) TANGLE v2 checkpoint. Our own minimal
+      re-implementation; weights fetched via gdown by their public Drive file id +
+      verified SHA-256, and cached. Needs the [tangle] extra (gdown). `-f uni -s tangle`.

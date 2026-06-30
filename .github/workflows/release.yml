@@ -1,0 +1,34 @@
+# Build and publish raw2features to PyPI when a GitHub Release is published, using PyPI
+# Trusted Publishing (OIDC) -- no API token is stored anywhere.
+#
+# ONE-TIME setup before the first release:
+#   1. On PyPI (https://pypi.org/manage/account/publishing/) add a "pending" trusted
+#      publisher for the project name `raw2features`:
+#        Owner: CraigMyles   Repository: raw2features
+#        Workflow: release.yml   Environment: pypi
+#      (A *pending* publisher lets the very first release create the project on PyPI.)
+#   2. Cut a release whose tag matches the version in pyproject.toml, e.g.:
+#        gh release create v0.1.0 --generate-notes
+#      This workflow then builds the sdist + wheel and uploads them automatically.
+name: Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  pypi-publish:
+    name: Build + publish to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/raw2features
+    permissions:
+      id-token: write # OIDC token for Trusted Publishing (the only credential needed)
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v7
+      - name: Build sdist + wheel
+        run: uv build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1

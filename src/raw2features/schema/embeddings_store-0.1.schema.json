@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/CraigMyles/raw2features/blob/main/src/raw2features/schema/embeddings_store-0.1.schema.json",
+  "title": "raw2features embeddings-store grid header (format 0.1, draft)",
+  "description": "Normative schema for the JSON header on each grid group - <slide>.embeddings.zarr/grids/<key>'s attr ['raw2features']. Patch sets nest uniformly under grids/<key>/ (one per geometry); `validate-store` applies this schema to EVERY grid header. The `required` set is the stable read contract; `additionalProperties: true` keeps it forward-compatible (a store written by a newer version still validates). Array-level invariants the JSON layer cannot express - array shapes/dtypes, the `role`/`units` attrs, and the 1:1 coords<->features correspondence within a grid - are out of scope here and checked by `raw2features validate-store`. The store root carries a lightweight `grids` discovery index, not validated by this schema.",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "source", "patching", "models", "grid_hash", "provenance"],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "grid_hash": { "type": "string" },
+    "source": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["uri", "slide_id", "mpp_level0", "ngff_version", "reader", "level_dimensions", "level_downsamples"],
+      "properties": {
+        "uri": { "type": "string" },
+        "slide_id": { "type": "string" },
+        "mpp_level0": { "type": ["number", "null"], "description": "µm/level-0-px; null when the source declares no physical axis unit (uncalibrated)." },
+        "ngff_version": { "type": ["string", "null"] },
+        "reader": { "type": "string" },
+        "level_dimensions": {
+          "type": "array",
+          "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }
+        },
+        "level_downsamples": { "type": "array", "items": { "type": "number" } },
+        "axes": { "type": "array", "items": { "type": "string" }, "description": "Optional: source NGFF axis order." },
+        "axis_units": { "type": "object", "description": "Optional: per-axis unit string." },
+        "scale_um": { "type": "object", "description": "Optional: per-axis level-0 µm/px." },
+        "level0_translation_um": { "type": ["object", "null"], "description": "Optional: source level-0 origin/translation in µm, or null." }
+      }
+    },
+    "patching": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["target_mpp", "achieved_mpp", "patch_px", "level0_patch", "level0_step", "read_level", "step_out_px", "n_patches", "grid_shape", "coords_convention"],
+      "properties": {
+        "target_mpp": { "type": "number" },
+        "achieved_mpp": { "type": "number" },
+        "patch_px": { "type": "integer" },
+        "level0_patch": { "type": "integer" },
+        "level0_step": { "type": "integer" },
+        "read_level": { "type": "integer" },
+        "step_out_px": { "type": "integer" },
+        "n_patches": { "type": "integer" },
+        "grid_shape": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+        "coords_convention": { "const": "level0_xy" }
+      }
+    },
+    "models": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["source", "embedding_dim", "input_size", "pooling", "mean", "std", "interpolation", "transform_source_url", "license", "gated", "weights_sha256", "weights_revision", "doi"],
+        "properties": {
+          "source": { "type": "string" },
+          "embedding_dim": { "type": "integer" },
+          "input_size": { "type": "integer" },
+          "pooling": { "type": "string" },
+          "mean": { "type": "array", "items": { "type": "number" } },
+          "std": { "type": "array", "items": { "type": "number" } },
+          "interpolation": { "type": "string" },
+          "transform_source_url": { "type": "string" },
+          "license": { "type": "string" },
+          "gated": { "type": "boolean" },
+          "weights_sha256": { "type": ["string", "null"] },
+          "weights_revision": { "type": ["string", "null"] },
+          "doi": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["raw2features_version", "created_utc", "cli", "git_sha", "host", "arch", "platform", "python"],
+      "properties": {
+        "raw2features_version": { "type": "string" },
+        "created_utc": { "type": ["string", "null"] },
+        "cli": { "type": ["string", "null"] },
+        "git_sha": { "type": ["string", "null"] },
+        "host": { "type": ["string", "null"] },
+        "arch": { "type": ["string", "null"] },
+        "platform": { "type": ["string", "null"] },
+        "python": { "type": ["string", "null"] }
+      }
+    },
+    "segmentation": { "type": ["object", "null"] },
+    "thumbnail": { "type": ["object", "null"] },
+    "panel": { "type": "object", "description": "Optional: per-model multiplex marker-panel resolution (kept/dropped markers)." },
+    "qc": { "type": "object", "description": "Optional: per-tool QC provenance for this grid's qc/<tool>/ arrays (tool, version, mpp, class legend, threshold). The arrays are checked by validate-store, not this schema." }
+  }
+}

@@ -1,0 +1,341 @@
+"""Additive, per-model patch embedding.
+
+Re-running ``embed`` with a new model adds ``features/<model>`` to an existing
+store in place, skips models already present and valid, and never clobbers the
+existing arrays or coords. ``force`` rebuilds from scratch. Resume is therefore
+per-(slide x model), not whole-slide.
+
+The resume/inspection logic is exercised without torch (stores are built directly
+with zarr); the end-to-end embed paths are gated on torch like the other runner
+tests.
+"""
+
+from __future__ import annotations
+
+import os
+
+import numpy as np
+import pytest
+import zarr
+
+from conftest import MockEmbedder
+from raw2features.core.store import GRIDS, open_grid
+from raw2features.pipeline.receipt import validate_model
+from raw2features.pipeline.runner import (
+    RunConfig,
+    _inspect_store,
+    embed_slide,
+    run_slide,
+)
+from raw2features.sinks.zarr_sink import ZarrSink
+
+try:
+    import torch as _torch_mod  # noqa: F401
+
+    _TORCH = True
+except ImportError:
+    _TORCH = False
+
+
+def _make_store(
+    out_dir, slide_id="s", *, n=12, models=(("a", 4),), grid_hash="GH", fill=1.0
+):
+    """Build a minimal *.embeddings.zarr by hand (no embedding needed)."""
+    os.makedirs(out_dir, exist_ok=True)
+    path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
+    key = "mpp1_px64"
+    root = zarr.open_group(path, mode="w", zarr_format=2)
+    g = root.require_group(GRIDS).require_group(key)  # uniform grid nesting
+    c = g.create_array("coords", shape=(n, 2), chunks=(n, 2), dtype="int32")
+    c[:] = (np.arange(n * 2, dtype="int32") % 7).reshape(n, 2)
+    feats = g.create_group("features")
+    for name, dim in models:
+        arr = feats.create_array(name, shape=(n, dim), chunks=(n, dim), dtype="float16")
+        arr[:] = np.full((n, dim), fill, dtype="float16")
+    header = {"patching": {"read_level": 0, "read_px": 64, "patch_px": 64}}
+    if grid_hash is not None:
+        header["grid_hash"] = grid_hash
+    g.attrs["raw2features"] = header
+    root.attrs["raw2features"] = {
+        "grids": {key: {"models": [m for m, _ in models], "grid_hash": grid_hash}}
+    }
+    return path
+
+
+# -- torch-free: per-model validation ------------------------------------------
+
+
+def test_validate_model_accepts_finite_nonzero(tmp_path):
+    p = _make_store(str(tmp_path / "o"), fill=1.0)
+    assert validate_model(open_grid(p), "a", 12) is True
+
+
+def test_validate_model_rejects_all_zero_rows(tmp_path):
+    p = _make_store(str(tmp_path / "o"), fill=0.0)
+    assert validate_model(open_grid(p), "a", 12) is False
+
+
+def test_validate_model_allows_legit_mid_zero_row(tmp_path):
+    # A model may legitimately emit an all-zero feature row; only a truncated (all-zero
+    # last) tail is incomplete, so a zero row mid-array must not fail resume.
+    p = _make_store(str(tmp_path / "o"), fill=1.0)
+    zarr.open_group(p, mode="r+")[GRIDS]["mpp1_px64"]["features"]["a"][5] = 0.0
+    assert validate_model(open_grid(p), "a", 12) is True
+
+
+def test_validate_model_rejects_missing(tmp_path):
+    p = _make_store(str(tmp_path / "o"))
+    assert validate_model(open_grid(p), "nope", 12) is False
+
+
+def test_validate_model_rejects_wrong_length(tmp_path):
+    p = _make_store(str(tmp_path / "o"), n=12)
+    assert validate_model(open_grid(p), "a", 99) is False
+
+
+# -- torch-free: store inspection / append decision ----------------------------
+
+
+def test_inspect_store_reports_present_models(tmp_path):
+    p = _make_store(str(tmp_path / "o"), models=(("a", 4), ("b", 8)), grid_hash="GH")
+    key, n, valid = _inspect_store(p, "GH", ["a", "b", "c"])
+    assert key is not None  # a grid of this geometry exists -> append to it
+    assert n == 12
+    assert set(valid) == {"a", "b"}  # c is absent -> would be embedded
+
+
+def test_inspect_store_geometry_mismatch_adds_new_grid(tmp_path):
+    p = _make_store(str(tmp_path / "o"), grid_hash="GH1")
+    key, _, _ = _inspect_store(p, "GH2", ["a"])
+    assert key is None  # no grid of this geometry -> caller adds a new grid
+
+
+def test_inspect_store_legacy_without_grid_hash_is_compatible(tmp_path):
+    p = _make_store(str(tmp_path / "o"), grid_hash=None)
+    key, n, valid = _inspect_store(p, "anything", ["a"])
+    assert key is not None  # legacy store: coords are authoritative
+    assert valid == ["a"]
+
+
+def test_inspect_store_absent_is_not_appendable(tmp_path):
+    key, n, valid = _inspect_store(str(tmp_path / "missing.zarr"), "GH", ["a"])
+    assert key is None and n == 0 and valid == []
+
+
+# -- torch-free: sink open_append is additive ----------------------------------
+
+
+def test_open_append_adds_array_without_touching_existing(tmp_path):
+    out = str(tmp_path / "out")
+    path = _make_store(out, "s", n=10, models=(("a", 4),), fill=2.0)
+    a_before = np.asarray(open_grid(path)["features"]["a"][:])
+
+    sink = ZarrSink()
+    n = sink.open_append(
+        out, "s", new_model_dims={"b": 6}, new_model_meta={"b": {"x": 1}}
+    )
+    assert n == 10
+    sink.write_block("b", 0, np.full((10, 6), 3.0, dtype="float32"))
+    assert sink.feature_dims() == {"a": 4, "b": 6}
+    sink.close()
+
+    g = open_grid(path)
+    assert set(g["features"].keys()) == {"a", "b"}
+    assert np.array_equal(np.asarray(g["features"]["a"][:]), a_before)  # untouched
+    assert (np.asarray(g["features"]["b"][:]) == 3.0).all()
+
+
+def test_open_append_never_clobbers_present_model(tmp_path):
+    out = str(tmp_path / "out")
+    path = _make_store(out, "s", n=8, models=(("a", 4),), fill=5.0)
+    sink = ZarrSink()
+    # asking to "add" a model that already exists must not recreate/zero it
+    sink.open_append(out, "s", new_model_dims={"a": 4}, new_model_meta={})
+    sink.close()
+    g = open_grid(path)
+    assert (np.asarray(g["features"]["a"][:]) == 5.0).all()
+
+
+# -- end-to-end (needs torch) --------------------------------------------------
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_then_add_model_is_additive(synthetic_ngff, tmp_path):
+    out = str(tmp_path / "out")
+    common = dict(no_seg=True, target_mpp=0.5, patch_px=64, device="cpu", amp="fp32")
+
+    sa = run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockA"], **common),
+        embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
+    )
+    assert sa["status"] == "complete"
+    path = sa["output_uri"].removeprefix("file://")
+    g = open_grid(path)
+    a_before = np.asarray(g["features"]["mockA"][:])
+    coords_before = np.asarray(g["coords"][:])
+    assert a_before.shape[1] == 8
+
+    sb = run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockB"], **common),
+        embedders=[MockEmbedder(dim=5, name="mockB", bias=2.0)],
+    )
+    assert sb["status"] == "complete"
+    assert sb["models_added"] == ["mockB"]
+
+    g2 = open_grid(path)
+    assert set(g2["features"].keys()) == {"mockA", "mockB"}
+    assert np.array_equal(np.asarray(g2["features"]["mockA"][:]), a_before)  # untouched
+    assert np.array_equal(np.asarray(g2["coords"][:]), coords_before)
+    b = np.asarray(g2["features"]["mockB"][:])
+    assert b.shape == (a_before.shape[0], 5)
+    assert np.isfinite(b).all()
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_rerun_same_model_skips(synthetic_ngff, tmp_path):
+    out = str(tmp_path / "out")
+    common = dict(no_seg=True, target_mpp=0.5, patch_px=64, device="cpu", amp="fp32")
+    run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockA"], **common),
+        embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
+    )
+    s2 = run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockA"], **common),
+        embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
+    )
+    assert s2["status"] == "skipped"
+    assert "mockA" in s2.get("models_present", [])
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_partial_overlap_only_adds_missing(synthetic_ngff, tmp_path):
+    out = str(tmp_path / "out")
+    common = dict(no_seg=True, target_mpp=0.5, patch_px=64, device="cpu", amp="fp32")
+    run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockA"], **common),
+        embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
+    )
+    s = run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockA", "mockB"], **common),
+        embedders=[
+            MockEmbedder(dim=8, name="mockA", bias=1.0),
+            MockEmbedder(dim=5, name="mockB", bias=2.0),
+        ],
+    )
+    assert s["status"] == "complete"
+    assert s["models_added"] == ["mockB"]
+    assert set(s["models_skipped"]) == {"mockA"}
+    assert set(s["models"]) == {"mockA", "mockB"}
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_force_overwrites(synthetic_ngff, tmp_path):
+    out = str(tmp_path / "out")
+    common = dict(no_seg=True, target_mpp=0.5, patch_px=64, device="cpu", amp="fp32")
+    run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockA"], **common),
+        embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
+    )
+    s = run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockB"], **common),
+        embedders=[MockEmbedder(dim=5, name="mockB", bias=2.0)],
+        force=True,
+    )
+    assert s["status"] == "complete"
+    g = open_grid(s["output_uri"])
+    assert set(g["features"].keys()) == {"mockB"}  # mockA overwritten away
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_different_geometry_adds_a_second_grid(synthetic_ngff, tmp_path):
+    """A later embedder at a DIFFERENT geometry adds a NEW grid alongside the first --
+    never wiping or erroring (the 'add an embedder a day later' workflow)."""
+    out = str(tmp_path / "out")
+    common = dict(no_seg=True, patch_px=64, device="cpu", amp="fp32")
+    run_slide(
+        synthetic_ngff, out,
+        RunConfig(models=["mockA"], target_mpp=0.5, **common),
+        embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
+    )
+    sb = run_slide(
+        synthetic_ngff, out,
+        RunConfig(models=["mockB"], target_mpp=1.0, **common),  # different MPP
+        embedders=[MockEmbedder(dim=5, name="mockB", bias=2.0)],
+    )
+    assert sb["status"] == "complete"
+    root = zarr.open_group(sb["output_uri"].removeprefix("file://"), mode="r")
+    assert set(root[GRIDS].keys()) == {"mpp0.5_px64", "mpp1_px64"}  # two grids
+    # each grid holds only its own model -- the first grid is untouched
+    assert "mockA" in open_grid(root, "mpp0.5_px64")["features"]
+    assert "mockB" in open_grid(root, "mpp1_px64")["features"]
+    assert "mockB" not in open_grid(root, "mpp0.5_px64")["features"]
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_slide_writes_multiple_grids_in_one_run(synthetic_ngff, tmp_path):
+    """embed_slide resolves per-model geometry and writes one grid per group in a single
+    invocation. A geometry config drives two grids from the two mock models."""
+    out = str(tmp_path / "out")
+    rec = str(tmp_path / "rec")
+    cfg = RunConfig(models=["mockA", "mockB"], no_seg=True, device="cpu", amp="fp32")
+    geom = [
+        {"model": "mockA", "mpp": 0.5, "patch_px": 64},
+        {"model": "mockB", "mpp": 1.0, "patch_px": 64},
+    ]
+    embedders = [MockEmbedder(dim=8, name="mockA"), MockEmbedder(dim=5, name="mockB")]
+    summary = embed_slide(
+        synthetic_ngff, out, cfg, geometry_config=geom,
+        embedders=embedders, receipts_dir=rec,
+    )
+    assert summary["status"] == "complete"
+    assert set(summary["grids"]) == {"mpp0.5_px64", "mpp1_px64"}
+    root = zarr.open_group(summary["output_uri"].removeprefix("file://"), mode="r")
+    assert set(root[GRIDS].keys()) == {"mpp0.5_px64", "mpp1_px64"}
+    assert "mockA" in open_grid(root, "mpp0.5_px64")["features"]
+    assert "mockB" in open_grid(root, "mpp1_px64")["features"]
+
+    # whole-request receipt -> an identical re-run skips both grids
+    again = embed_slide(
+        synthetic_ngff, out, cfg, geometry_config=geom,
+        embedders=embedders, receipts_dir=rec,
+    )
+    assert again["status"] == "skipped"
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_slide_runs_pooling_encoder_on_each_grid(synthetic_ngff, tmp_path):
+    """In a multi-grid run a model-agnostic pooling encoder runs on EACH grid (its patch
+    encoder is whatever that grid holds) -> slide/mean under both grids."""
+    out = str(tmp_path / "out")
+    cfg = RunConfig(
+        models=["mockA", "mockB"], no_seg=True, device="cpu", amp="fp32",
+        slide_encoders=["mean"],
+    )
+    geom = [
+        {"model": "mockA", "mpp": 0.5, "patch_px": 64},
+        {"model": "mockB", "mpp": 1.0, "patch_px": 64},
+    ]
+    embs = [MockEmbedder(dim=8, name="mockA"), MockEmbedder(dim=5, name="mockB")]
+    summary = embed_slide(
+        synthetic_ngff, out, cfg, geometry_config=geom, embedders=embs,
+    )
+    assert summary["status"] == "complete"
+    root = zarr.open_group(summary["output_uri"].removeprefix("file://"), mode="r")
+    assert "mean" in open_grid(root, "mpp0.5_px64")["slide"]  # pooled mockA
+    assert "mean" in open_grid(root, "mpp1_px64")["slide"]  # pooled mockB

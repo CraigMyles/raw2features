@@ -1,0 +1,23 @@
+cff-version: 1.2.0
+message: "If you use raw2features, please cite it."
+title: "raw2features: OME-Zarr whole-slide images to foundation-model embeddings"
+type: software
+authors:
+  - family-names: Myles
+    given-names: Craig
+repository-code: "https://github.com/CraigMyles/raw2features"
+url: "https://github.com/CraigMyles/raw2features"
+abstract: >-
+  A standalone, FAIR, community-extensible tool that reads whole-slide images in
+  OME-Zarr / OME-NGFF and emits patch- and slide-level foundation-model embeddings, with
+  the storage backend and the model independently swappable.
+keywords:
+  - digital pathology
+  - computational pathology
+  - whole-slide image
+  - OME-Zarr
+  - OME-NGFF
+  - foundation models
+  - feature extraction
+license: MIT
+version: "0.1.0"

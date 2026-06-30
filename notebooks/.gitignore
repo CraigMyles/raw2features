@@ -1,0 +1,5 @@
+# Artifacts produced by running the notebooks locally - not part of the repo.
+.ipynb_checkpoints/
+out/
+sample.ome.zarr/
+*.embeddings.zarr/

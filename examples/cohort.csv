@@ -1,0 +1,9 @@
+# Curated slide manifest.
+#   raw2features embed-many <slide_dir> out/ --manifest examples/cohort.csv
+#
+# `path` is relative to <slide_dir> (or absolute, or a remote URL). `source_mpp` is
+# optional -- only needed when a slide's OME-Zarr omits its pixel size at level 0.
+path,source_mpp
+slideA.ome.zarr,0.25
+slideB.ome.zarr,
+subdir/slideC.ome.zarr,0.5

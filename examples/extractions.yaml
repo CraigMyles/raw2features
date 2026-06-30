@@ -1,0 +1,10 @@
+# Example extraction plan.
+#   raw2features embed slide.ome.zarr out/ --config examples/extractions.yaml
+#
+# Each entry becomes one grid (grids/<key>/). The same model may repeat at different MPPs
+# (an MPP ablation). Omit mpp / patch_px to use the model's registry default geometry.
+extractions:
+  - {model: uni, mpp: 0.5, patch_px: 224}   # UNI at its recommended 20x
+  - {model: uni, mpp: 1.0, patch_px: 224}   # UNI again at 10x -> a second grid (ablation)
+  - {model: resnet50}                        # registry default geometry (1.0 / 224)
+  - {model: conch_v1_5}                       # its own geometry (0.5 / 512)

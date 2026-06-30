@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
+# uv / venv
+.venv/
+
+# Personal local notes / scratch (never committed)
+*.local.md
+
+# Local dev data + model weights (never commit large binaries)
+dev-data/
+models/**/*.bin
+models/**/*.safetensors
+models/**/*.pth
+models/**/*.pt
+
+# Outputs
+*.embeddings.zarr/
+*.spatialdata.zarr/
+sample.ome.zarr/
+out/
+out*/
+runs/
+logs/
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

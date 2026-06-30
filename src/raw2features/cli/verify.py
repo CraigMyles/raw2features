@@ -1,0 +1,78 @@
+"""``raw2features verify`` - exit 0 iff a slide's output is complete & valid.
+
+Used by the SLURM array for skip-if-complete. The content-affecting flags must
+match the ``embed`` invocation so the config hash lines up.
+"""
+
+from __future__ import annotations
+
+import typer
+
+from raw2features.pipeline.receipt import is_complete
+from raw2features.pipeline.runner import RunConfig, slide_id_from_path
+
+
+def verify(
+    slide: str = typer.Argument(...),
+    receipts_dir: str = typer.Option(..., "--receipts-dir"),
+    feature_extractor: list[str] = typer.Option(
+        ["resnet50"], "--model", "-m", "--feature-extractor", "-f"
+    ),
+    mpp: float | None = typer.Option(
+        None, "--mpp", help="Target µm/px (default: model recommended; matches embed)."
+    ),
+    patch_size: int | None = typer.Option(
+        None, "--patch-size", help="Patch size in px (default: model recommended)."
+    ),
+    step: int | None = typer.Option(None, "--step"),
+    reader: str = typer.Option("omezarr", "--reader"),
+    segmenter: str = typer.Option("otsu", "--segmenter"),
+    no_seg: bool = typer.Option(False, "--no-seg"),
+    tissue_threshold: float = typer.Option(0.1, "--tissue-threshold"),
+    features_dtype: str = typer.Option("float16", "--features-dtype"),
+    stain_norm: str | None = typer.Option(
+        None, "--stain-norm", help="Must match the embed run (content-hash field)."
+    ),
+    amp: str = typer.Option("auto", "--amp"),
+    snap_to_level: bool = typer.Option(False, "--snap-to-level"),
+    mpp_tolerance: float = typer.Option(0.001, "--mpp-tolerance"),
+    allow_upsample: bool = typer.Option(False, "--allow-upsample"),
+    config: str | None = typer.Option(
+        None, "--config", help="YAML extraction plan (must match the embed run)."
+    ),
+    quiet: bool = typer.Option(False, "--quiet"),
+) -> None:
+    """Exit 0 if the slide is already complete & output-validated, else exit 1."""
+    from raw2features.pipeline.runner import resolve_run
+
+    geometry_config = None
+    if config:
+        from raw2features.core.config import load_extractions
+
+        geometry_config = load_extractions(config)
+        models = list(dict.fromkeys(e["model"] for e in geometry_config))
+    else:
+        models = list(feature_extractor)
+    cfg = RunConfig(
+        models=models,
+        reader=reader,
+        segmenter=segmenter,
+        no_seg=no_seg,
+        target_mpp=mpp if mpp is not None else 1.0,  # per-group geometry overrides this
+        patch_px=patch_size if patch_size is not None else 224,
+        step_px=step,
+        tissue_threshold=tissue_threshold,
+        features_dtype=features_dtype,
+        stain_norm=stain_norm,
+        snap_to_level=snap_to_level,
+        mpp_tolerance=mpp_tolerance,
+        allow_upsample=allow_upsample,
+        amp=amp,
+    )
+    # Hash exactly as embed_slide does, so verify matches the embed that wrote it.
+    _, _, run_hash = resolve_run(cfg, mpp, patch_size, geometry_config)
+    slide_id = slide_id_from_path(slide)
+    complete = is_complete(receipts_dir, slide_id, run_hash)
+    if not quiet:
+        typer.echo(f"{slide_id}: {'complete' if complete else 'incomplete'}")
+    raise typer.Exit(code=0 if complete else 1)

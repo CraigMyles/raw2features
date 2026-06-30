@@ -1,0 +1,230 @@
+[project]
+name = "raw2features"
+version = "0.1.0"
+description = "Read OME-Zarr whole-slide images and emit patch- and slide-level foundation-model embeddings - storage backend and model independently swappable."
+readme = "README.md"
+authors = [{ name = "Craig Myles", email = "me@craig.im" }]
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICEN[CS]E*"]
+keywords = [
+    "digital-pathology",
+    "whole-slide-image",
+    "ome-zarr",
+    "ome-ngff",
+    "foundation-models",
+    "embeddings",
+    "feature-extraction",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    # License is declared via the SPDX `license`/`license-files` fields above; a
+    # `License ::` classifier here is deprecated under PEP 639 and would warn.
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Topic :: Scientific/Engineering :: Image Processing",
+    "Topic :: Scientific/Engineering :: Medical Science Apps.",
+]
+# Core deps are intentionally light. Heavier I/O (zarr/ngff) and model (torch)
+# stacks live in optional groups , so the core install stays small.
+dependencies = [
+    "numpy>=2.0",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "tqdm>=4.66",
+    # The embeddings-store header is defined by a packaged JSON Schema; `validate-store`
+    # (a core command) applies it, so the validator ships in core.
+    "jsonschema>=4.18",
+]
+
+[project.urls]
+Homepage = "https://github.com/CraigMyles/raw2features"
+Repository = "https://github.com/CraigMyles/raw2features"
+Issues = "https://github.com/CraigMyles/raw2features/issues"
+
+[project.scripts]
+raw2features = "raw2features.cli.main:main"
+
+# Plugin seams - third parties add backends/models by shipping their own
+# entry-points in these groups; no fork required. Built-ins are listed here.
+[project.entry-points."raw2features.readers"]
+omezarr = "raw2features.readers.omezarr:OmeZarrReader"
+
+[project.entry-points."raw2features.segmenters"]
+otsu = "raw2features.segmenters.otsu:OtsuSegmenter"
+canny = "raw2features.segmenters.canny:CannySegmenter"
+combined = "raw2features.segmenters.combined:CombinedSegmenter"
+nuclear = "raw2features.segmenters.nuclear:NuclearSegmenter"
+grandqc = "raw2features.segmenters.grandqc:GrandQCSegmenter"
+
+[project.entry-points."raw2features.patchers"]
+grid = "raw2features.patcher.grid:GridPatcher"
+
+[project.entry-points."raw2features.embedders"]
+timm = "raw2features.embedders.timm_embedder:TimmEmbedder"
+torchvision = "raw2features.embedders.torchvision_embedder:TorchvisionEmbedder"
+conch = "raw2features.embedders.conch_embedder:ConchEmbedder"
+conch_v1_5 = "raw2features.embedders.conch_v1_5_embedder:ConchV1_5Embedder"
+transformers = "raw2features.embedders.transformers_embedder:TransformersEmbedder"
+kronos = "raw2features.embedders.kronos_embedder:KronosEmbedder"
+musk = "raw2features.embedders.musk_embedder:MuskEmbedder"
+open_clip = "raw2features.embedders.open_clip_embedder:OpenClipEmbedder"
+clip_hf = "raw2features.embedders.clip_hf_embedder:ClipHFEmbedder"
+seal = "raw2features.embedders.seal_embedder:SealEmbedder"
+
+[project.entry-points."raw2features.sinks"]
+zarr = "raw2features.sinks.zarr_sink:ZarrSink"
+
+[project.entry-points."raw2features.slide_embedders"]
+mean    = "raw2features.slide_embedders.pool:MeanPoolSlideEmbedder"
+max     = "raw2features.slide_embedders.pool:MaxPoolSlideEmbedder"
+meanmax = "raw2features.slide_embedders.pool:MeanMaxPoolSlideEmbedder"
+titan   = "raw2features.slide_embedders.titan:TITANSlideEmbedder"
+prism   = "raw2features.slide_embedders.prism:PrismSlideEmbedder"
+madeleine = "raw2features.slide_embedders.madeleine:MadeleineSlideEmbedder"
+feather_conch_v15 = "raw2features.slide_embedders.feather:FeatherSlideEmbedder"
+feather_uni_v2 = "raw2features.slide_embedders.feather:FeatherSlideEmbedder"
+feather_uni = "raw2features.slide_embedders.feather:FeatherSlideEmbedder"
+gigapath_slide = "raw2features.slide_embedders.gigapath_slide:GigapathSlideEmbedder"
+chief = "raw2features.slide_embedders.chief:CHIEFSlideEmbedder"
+tangle = "raw2features.slide_embedders.tangle:TangleSlideEmbedder"
+
+[project.optional-dependencies]
+# Convenience bundle: the full stack (OME-Zarr reads + segmentation + torch +
+# models) in one install - `pip install "raw2features[all]"`. Excludes the git-package
+# encoders (conch/kronos) and the export-only extras (spatialdata/h5), which stay opt-in.
+all = ["raw2features[zarr,image,torch,models,stain]"]
+# OME-Zarr reading: ngff-zarr/ome-zarr for metadata, zarr-python 3 for hot reads.
+zarr = ["zarr>=3.1", "numcodecs>=0.15", "ngff-zarr>=0.13", "ome-zarr>=0.10", "fsspec>=2024.0"]
+# Tissue segmentation + geometry (permissive, classical).
+image = ["opencv-python-headless>=4.9", "shapely>=2.0", "pillow>=11.0"]
+# Vahadane stain normalization (NMF) needs scikit-learn; macenko/reinhard are numpy-only.
+stain = ["scikit-learn>=1.3"]
+# Foundation-model inference.
+torch = ["torch>=2.2", "torchvision>=0.17"]
+models = ["timm>=1.0", "huggingface-hub>=0.24", "einops>=0.7", "transformers>=4.40",
+    # einops-exts: required by the gated TITAN repo's trust_remote_code modeling, which
+    # backs conch_v1_5 (return_conch) and the titan slide encoder - without it they raise
+    # ImportError at load. Tiny + pure-python; verified needed by the real-weights forward.
+    "einops-exts>=0.0.4"]
+# Gated git-package encoders (CONCH / KRONOS / MUSK). PyPI cannot resolve a
+# `package @ git+https://…` direct reference inside requires_dist - Warehouse rejects it
+# on upload - so these extras carry only their PyPI-resolvable dependencies. The encoder's
+# own (non-PyPI, gated) git package is a one-line post-install step, documented in the
+# README ("Gated git-package encoders") and each model's docs/MODELS.md row:
+#   CONCH:  pip install "git+https://github.com/Mahmoodlab/CONCH.git"
+#   KRONOS: pip install "git+https://github.com/mahmoodlab/KRONOS.git"
+#   MUSK:   pip install "git+https://github.com/lilab-stanford/MUSK"
+# Each extra pulls the torch+models stack the encoder needs so the post-install git
+# package finds its build/runtime deps already present.
+conch = ["raw2features[torch,models]"]
+# Hibou (HistAI): its trust_remote_code modeling imports the removed transformers.onnx,
+# so it needs transformers<5. Opt-in so it never constrains the default install.
+hibou = ["transformers<5"]
+# KRONOS multiplex (spatial proteomics): CODEX TIFF-conversion deps (the v1 git package
+# is installed separately - see above).
+kronos = ["raw2features[torch,models]", "tifffile>=2024", "imagecodecs"]
+# MUSK vision-language (BEiT3) image tower: its runtime imports (the git package itself
+# declares no deps, so it can't downgrade torch/timm; install it separately - see above).
+musk = ["raw2features[torch,models]", "fairscale", "open_clip_torch"]
+# open_clip image towers (QuiltNet, BiomedCLIP): CLIP-style vision-language pathology
+# models; we use only the image tower's encode_image. open_clip resolves the weights
+# from the `hf-hub:` source, so no separate git package is needed.
+open_clip = ["raw2features[torch,models]", "open_clip_torch>=2.20"]
+# GrandQC tissue + artifact QC (UNet++/EfficientNet-B0 via segmentation-models-pytorch),
+# for `--segmenter grandqc` + `--qc grandqc`. Opt-in: GrandQC weights are CC-BY-NC-SA
+# (non-commercial), fetched on first use and NEVER bundled - see docs/SEGMENTATION.md /
+# docs/MODEL_LICENSES.md. raw2features re-implements the inference (a generic UNet++), so only
+# the optional deps + the pinned weights are external.
+grandqc = ["raw2features[torch]", "segmentation-models-pytorch>=0.3", "timm>=1.0"]
+# PRISM slide encoder (Paige): its trust_remote_code modeling imports environs +
+# sacremoses at module load (the BioGPT decoder path, unused for slide embeddings). Gated.
+prism = ["raw2features[torch,models]", "environs", "sacremoses"]
+# MADELEINE slide encoder (Mahmood Lab): loads via the authors' non-PyPI `madeleine` git
+# package (post-install, like conch) - pip install git+https://github.com/mahmoodlab/MADELEINE.git
+madeleine = ["raw2features[torch,models]"]
+# Prov-GigaPath slide encoder (LongNet over gigapath 1536-d tile features). Two post-install
+# steps (all --no-deps so they can't repin torch): the gigapath git package provides
+# slide_encoder.create_model and vendors torchscale (the embedder aliases it as top-level
+# `torchscale`, so no separate PyPI torchscale); and flash-attn is a HARD dep with no SDPA
+# fallback, so install a wheel matching your torch/ABI - or source-build it (needs nvcc; ~15-20 min). Prebuilt wheels: x86 + torch 2.7-2.9; for torch 2.6
+# or aarch64 torch >=2.10, build from source. Needs an Ampere+/Blackwell GPU + accepted
+# prov-gigapath/prov-gigapath gate (HF_TOKEN):
+#   pip install --no-deps fairscale "git+https://github.com/prov-gigapath/prov-gigapath.git"
+#   pip install flash-attn  (prebuilt wheel matching torch/ABI, or --no-build-isolation source build)
+gigapath_slide = ["raw2features[torch,models]"]
+# CHIEF slide encoder (Wang et al., Nature 2024): gated-attention MIL over CTransPath. Its
+# weights are Google-Drive-hosted (no HF mirror), so `gdown` fetches them by their public
+# Drive file id, verified against the pinned SHA-256. Pure-torch aggregator (our own
+# re-implementation) - no flash-attn / git package. Weights are GPL-3.0 (non-commercial).
+chief = ["raw2features[torch,models]", "gdown>=5.2"]
+# TANGLE v2 pan-cancer slide encoder (Jaume et al., CVPR 2024): multi-head ABMIL over UNI.
+# Drive-hosted weights (no HF mirror), fetched by their public Drive file id via `gdown` and
+# verified against the pinned SHA-256. Pure-torch aggregator (our own re-implementation) - no
+# flash-attn / git package. Weights are CC-BY-NC-ND-4.0 (non-commercial).
+tangle = ["raw2features[torch,models]", "gdown>=5.2"]
+# SEAL spatial-transcriptomics LoRA fine-tunes: the `seal` git package (post-install,
+# --no-deps so it doesn't pin an old torch) imports scanpy at module load; peft applies the
+# LoRA. Pin the cjmielke fork commit (open PR #1 to mahmoodlab/SEAL) - it resolves seal's
+# config/cache files from the install dir; upstream main reads them CWD-relative and only
+# runs from a repo checkout. Swap to mahmoodlab/SEAL when the PR merges. The backbone's own
+# package is also needed (e.g. CONCH). Set HF_TOKEN for the gates.
+#   pip install --no-deps "git+https://github.com/cjmielke/SEAL.git@5334490645e8410e7d8ef6978cebc4fd98f9cf9a"
+#   pip install git+https://github.com/Mahmoodlab/CONCH.git   # for seal_conch
+seal = ["raw2features[torch,models]", "peft", "scanpy"]
+# scverse SpatialData export (post-hoc converter: embeddings.zarr -> SpatialData .zarr).
+# spatialdata pulls anndata + ome-zarr/zarr itself and pins anndata to exclude the
+# broken 1.17.0, so we only add the top-level package + geopandas (for square tiles).
+# shapely already comes via [image]; default Zarr-v2 output for interop.
+spatialdata = ["spatialdata>=0.2", "geopandas>=0.14"]
+# Pathology-MIL HDF5 export (TRIDENT/CLAM/TITAN + STAMP layouts). Egress convenience
+# only - the native .embeddings.zarr stays the FAIR primary output.
+h5 = ["h5py>=3.0"]
+# Output interop / tables.
+tables = ["pandas>=2.2", "pyarrow>=17.0"]
+# Benchmark-only.
+s3 = ["s3fs>=2024.0"]
+benchmark = ["psutil>=5.9", "pynvml>=11.5"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    # Test suite needs zarr, image deps, and pillow (no torch - mocks cover GPU).
+    "zarr>=3.1",
+    "numcodecs>=0.15",
+    "ngff-zarr>=0.13",
+    "opencv-python-headless>=4.9",
+    "pillow>=11.0",
+    # h5py is light, so the .h5 exporter tests run unguarded - keep it in the test env.
+    "h5py>=3.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 88
+src = ["src", "tests"]
+# Tutorial notebooks use the install-then-import bootstrap pattern (imports after a
+# conditional pip install), which legitimately trips E402/F401 - don't lint them.
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+# Typer's API requires Option()/Argument() calls as parameter defaults (B008).
+"src/raw2features/cli/*.py" = ["B008"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: downloads real model weights + runs a forward (deselect with -m 'not slow')",
+]

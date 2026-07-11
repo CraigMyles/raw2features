@@ -33,6 +33,36 @@ def test_shard_partitions_disjoint_and_complete():
     assert shards[0] == items[0::4]  # strided
 
 
+def test_embed_many_validates_slide_encoders_before_discovery_or_model_load(
+    tmp_path, monkeypatch
+):
+    import raw2features.cli.embed_many as em
+
+    monkeypatch.setattr(
+        em,
+        "load_embedders",
+        lambda *args, **kwargs: pytest.fail("models must not be loaded"),
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(tmp_path / "missing-slides"),
+            str(tmp_path / "out"),
+            "-s",
+            "mean",
+            "-s",
+            "does_not_exist",
+            "-s",
+            "max",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Unknown slide encoder" in result.output
+    assert "no slides found" not in result.output
+
+
 # -- end-to-end (needs torch; mocks injected so no weight download) ------------
 
 

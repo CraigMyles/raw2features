@@ -74,7 +74,16 @@ def slide_embed(
         slide_embedding_is_complete,
         write_slide_embedding,
     )
-    from raw2features.slide_embedders.model_registry import get_slide_spec
+    from raw2features.slide_embedders.model_registry import (
+        get_slide_spec,
+        validate_slide_encoder_names,
+    )
+
+    try:
+        validate_slide_encoder_names(slide_encoder)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
     try:
         device = resolve_device(device)  # "auto" -> cuda/mps/cpu; clear error otherwise

@@ -262,6 +262,12 @@ def run_slide(
     when more than one device is requested; the single-device path uses ``embedders``
     exactly as before.
     """
+    from raw2features.slide_embedders.model_registry import (
+        validate_slide_encoder_names,
+    )
+
+    validate_slide_encoder_names(cfg.slide_encoders)
+
     import torch  # noqa: F401 - imported so a torch-less env fails clearly, here
 
     from raw2features.core.device import resolve_device
@@ -664,6 +670,12 @@ def embed_slide(
     ``embedders`` (a warm worker's pre-built set for all of ``cfg.models``) is passed
     through to every group; ``run_slide`` selects each group's subset.
     """
+    from raw2features.slide_embedders.model_registry import (
+        validate_slide_encoder_names,
+    )
+
+    validate_slide_encoder_names(cfg.slide_encoders)
+
     slide_id = slide_id_from_path(slide_path)
     groups, group_cfgs, run_hash = resolve_run(
         cfg, requested_mpp, requested_patch_px, geometry_config

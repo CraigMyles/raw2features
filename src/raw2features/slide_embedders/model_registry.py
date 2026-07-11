@@ -41,6 +41,17 @@ def get_slide_spec(name: str) -> SlideModelSpec:
     return reg[name]
 
 
+def validate_slide_encoder_names(names: list[str]) -> None:
+    """Fail before any slide work when one or more requested names are unknown."""
+    registry = load_slide_registry()
+    unknown = [name for name in dict.fromkeys(names) if name not in registry]
+    if unknown:
+        raise ValueError(
+            f"Unknown slide encoder(s) {unknown}. Available: {sorted(registry)}. "
+            "Check 'raw2features list slide_embedders'."
+        )
+
+
 def build_slide_embedder(name: str) -> SlideEmbedder:
     from raw2features.core.plugins import get
 

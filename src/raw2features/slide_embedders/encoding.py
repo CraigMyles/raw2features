@@ -198,13 +198,3 @@ def write_slide_embedding(
     slide_metadata[slide_model] = dict(provenance)
     header["slide_embeddings"] = slide_metadata
     group.attrs["raw2features"] = header
-
-    # Slide encoding can run several requested models in sequence. Consolidate
-    # after each successful mutation so a later model failure cannot leave this
-    # completed result invisible to readers that use consolidated metadata.
-    try:
-        import zarr
-
-        zarr.consolidate_metadata(group.store)
-    except Exception:  # noqa: BLE001 - consolidation is best-effort
-        pass

@@ -586,7 +586,7 @@ def test_cli_slide_embed_repairs_malformed_existing_output(
     assert repaired.attrs["role"] == "slide_embedding"
 
 
-def test_cli_slide_embed_consolidates_before_a_later_encoder_failure(
+def test_cli_slide_embed_validates_all_encoder_names_before_work(
     tmp_path, recording_slide_embedder
 ):
     path = _write_slide_store(
@@ -612,8 +612,60 @@ def test_cli_slide_embed_consolidates_before_a_later_encoder_failure(
 
     assert result.exit_code == 1
     assert "Unknown slide encoder" in result.output
-    # open_grid(path) uses the normal reader path rather than forcing live metadata.
-    assert "mean" in open_grid(path)["slide"]
+    assert recording_slide_embedder["loads"] == 0
+    assert "slide" not in open_grid(path, mode="r+")
+
+
+def test_cli_slide_embed_consolidates_once_after_all_writes(
+    tmp_path, recording_slide_embedder, monkeypatch
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (128, {"mock": np.ones((2, 3), np.float32)})},
+    )
+    consolidate = zarr.consolidate_metadata
+    calls = []
+
+    def _record_consolidation(store):
+        calls.append(store)
+        return consolidate(store)
+
+    monkeypatch.setattr(zarr, "consolidate_metadata", _record_consolidation)
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "-s",
+            "max",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert recording_slide_embedder["loads"] == 2
+    assert len(calls) == 1
+
+
+def test_embed_slide_validates_all_encoder_names_before_work(tmp_path, monkeypatch):
+    from raw2features.pipeline.runner import embed_slide
+
+    cfg = RunConfig(
+        models=["resnet50"],
+        slide_encoders=["mean", "does_not_exist", "max"],
+    )
+    monkeypatch.setattr(
+        "raw2features.pipeline.runner.run_slide",
+        lambda *args, **kwargs: pytest.fail("run_slide must not be called"),
+    )
+
+    with pytest.raises(ValueError, match="does_not_exist"):
+        embed_slide("unused.zarr", str(tmp_path), cfg)
 
 
 def test_inline_slide_encoder_rerun_is_idempotent(

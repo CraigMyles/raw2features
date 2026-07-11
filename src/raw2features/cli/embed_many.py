@@ -151,6 +151,16 @@ def embed_many(
     hf_token: str | None = typer.Option(None, "--hf-token", envvar="HF_TOKEN"),
 ) -> None:
     """Warm worker: build the models once and embed this shard's slides."""
+    from raw2features.slide_embedders.model_registry import (
+        validate_slide_encoder_names,
+    )
+
+    try:
+        validate_slide_encoder_names(slide_encoder)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token

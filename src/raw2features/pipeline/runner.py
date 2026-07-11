@@ -1470,63 +1470,43 @@ def _run_slide_encoders(
     no WSI access, no re-embedding. Returns a mapping of slide model name
     to the slide embedding array path (``slide/<model>``).
     """
-    import warnings
-
-    import numpy as np
-
-    from raw2features.core.provenance import now_utc_iso
-    from raw2features.slide_embedders.model_registry import (
-        build_slide_embedder,
-        resolve_patch_encoder,
+    from raw2features.slide_embedders.encoding import (
+        encode_slide_embedding,
+        resolve_slide_patch_model,
+        slide_embedding_is_complete,
     )
-
-    from .. import __version__
 
     results: dict[str, str] = {}
 
     for slide_model_name in slide_encoder_names:
-        patch_model = resolve_patch_encoder(slide_model_name, available_patch_models)
-        # An empty-tissue slide (0 kept patches) has nothing to pool/encode: mean
-        # would be NaN and max/meanmax would raise on a zero-size reduction. Skip
-        # cleanly (and don't pay to load the model) rather than emit a bogus vector.
-        if int(sink._group["features"][patch_model].shape[0]) == 0:
-            warnings.warn(
-                f"slide encoder {slide_model_name!r}: 0 patch features (no tissue "
-                "kept) - skipping slide-level encoding for this slide.",
-                stacklevel=2,
-            )
-            continue
-        slide_emb = build_slide_embedder(slide_model_name).load(device=device)
-        try:
-            patch_features = np.asarray(sink._group["features"][patch_model][:]).astype(
-                np.float32
-            )
-            coords = (
-                np.asarray(sink._group["coords"][:])
-                if "coords" in sink._group
-                else None
-            )
-            # Level-0 patch spacing (TITAN's patch_size_lv0); position-aware encoders
-            # need it to build their spatial grid, pooling encoders ignore it.
-            hdr = dict(sink._group.attrs.get("raw2features", {}))
-            patch_size_lv0 = hdr.get("patching", {}).get("level0_patch")
-            vector = slide_emb.encode(patch_features, coords, patch_size_lv0)
-            prov = {
-                "patch_encoder": patch_model,
-                "source": slide_emb.spec.source,
-                "embedding_dim": int(slide_emb.spec.embedding_dim),
-                "license": slide_emb.spec.license,
-                "transform_source_url": slide_emb.spec.transform_source_url,
-                "doi": slide_emb.spec.doi,
-                "weights_sha256": slide_emb.spec.weights_sha256,
-                "weights_revision": slide_emb.spec.weights_revision,
-                "computed_utc": now_utc_iso(),
-                "raw2features_version": __version__,
-            }
-            sink.write_slide_embedding(slide_model_name, vector, prov)
+        patch_model = resolve_slide_patch_model(
+            sink._group,
+            slide_model_name,
+            available_patch_models=available_patch_models,
+        )
+        if slide_embedding_is_complete(
+            sink._group,
+            slide_model_name,
+            patch_model=patch_model,
+        ):
             results[slide_model_name] = f"slide/{slide_model_name}"
-        finally:
-            slide_emb.unload()
+            continue
+
+        encoding = encode_slide_embedding(
+            sink._group,
+            slide_model_name,
+            device,
+            patch_model=patch_model,
+            available_patch_models=available_patch_models,
+        )
+        if encoding is None:
+            continue
+        sink.write_slide_embedding(
+            slide_model_name,
+            encoding.vector,
+            encoding.provenance,
+        )
+        results[slide_model_name] = f"slide/{slide_model_name}"
 
     return results
 

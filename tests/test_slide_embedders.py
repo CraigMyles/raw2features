@@ -31,6 +31,77 @@ except ImportError:
     _TORCH = False
 
 
+def _write_slide_store(tmp_path, grids):
+    """Create a minimal multi-grid v0.1 store for standalone CLI tests."""
+    path = str(tmp_path / "slide.embeddings.zarr")
+    root = zarr.open_group(path, mode="w", zarr_format=2)
+    grid_group = root.create_group("grids")
+    root.attrs["raw2features"] = {
+        "schema_version": "0.1",
+        "grids": {key: {} for key in grids},
+    }
+    for key, (level0_patch, models) in grids.items():
+        group = grid_group.create_group(key)
+        group.attrs["raw2features"] = {
+            "schema_version": "0.1",
+            "patching": {"level0_patch": level0_patch},
+        }
+        n = next(iter(models.values())).shape[0]
+        coords = np.column_stack(
+            [np.arange(n, dtype=np.int32) * level0_patch, np.zeros(n, np.int32)]
+        )
+        coords_array = group.create_array(
+            "coords", shape=coords.shape, chunks=coords.shape, dtype="int32"
+        )
+        coords_array[:] = coords
+        feature_group = group.create_group("features")
+        for model, values in models.items():
+            values = np.asarray(values, dtype=np.float32)
+            array = feature_group.create_array(
+                model,
+                shape=values.shape,
+                chunks=values.shape,
+                dtype="float32",
+            )
+            array[:] = values
+    return path
+
+
+@pytest.fixture
+def recording_slide_embedder(monkeypatch):
+    """Replace weighted/pooling encoders with a deterministic call recorder."""
+    state = {"loads": 0, "encodes": []}
+
+    class _Recorder:
+        def __init__(self, name):
+            self.spec = get_slide_spec(name)
+            self.ordinal = 0
+
+        def load(self, device="cpu", dtype=None):
+            state["loads"] += 1
+            self.ordinal = state["loads"]
+            return self
+
+        def encode(self, features, coords=None, patch_size_lv0=None):
+            state["encodes"].append(
+                {
+                    "features": np.asarray(features).copy(),
+                    "coords": None if coords is None else np.asarray(coords).copy(),
+                    "patch_size_lv0": patch_size_lv0,
+                }
+            )
+            return np.asarray(features, dtype=np.float32).mean(axis=0) + self.ordinal
+
+        def unload(self):
+            return None
+
+    monkeypatch.setattr(
+        "raw2features.slide_embedders.model_registry.build_slide_embedder",
+        lambda name: _Recorder(name),
+    )
+    return state
+
+
 # -- registry ------------------------------------------------------------------
 
 
@@ -209,6 +280,17 @@ def test_embed_with_inline_slide_encoder(synthetic_ngff, tmp_path):
     assert "slide_embeddings" in hdr
     assert hdr["slide_embeddings"]["mean"]["patch_encoder"] == "mock"
 
+    # A no-receipt rerun follows the public append path. The existing slide vector
+    # must count as complete instead of reaching create_array() and failing.
+    rerun = run_slide(
+        synthetic_ngff,
+        str(tmp_path / "out"),
+        cfg,
+        embedders=[MockEmbedder(dim=8, bias=1.0)],
+    )
+    assert rerun["status"] == "complete"
+    assert rerun["slide_embeddings"] == {"mean": "slide/mean"}
+
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")
 def test_runner_threads_patch_size_lv0(synthetic_ngff, tmp_path, monkeypatch):
@@ -249,6 +331,309 @@ def test_runner_threads_patch_size_lv0(synthetic_ngff, tmp_path, monkeypatch):
 
 
 # -- standalone slide-embed CLI ------------------------------------------------
+
+
+def test_cli_slide_embed_threads_patch_size_lv0(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (137, {"mock": np.ones((3, 4), dtype=np.float32)})},
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    call = recording_slide_embedder["encodes"][0]
+    assert call["patch_size_lv0"] == 137
+    assert call["coords"] is not None
+    np.testing.assert_array_equal(call["coords"][:, 0], [0, 137, 274])
+
+
+def test_cli_slide_embed_selects_explicit_grid(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {
+            "mpp0.5_px64": (128, {"mock_a": np.ones((2, 3), np.float32)}),
+            "mpp1_px64": (64, {"mock_b": np.full((2, 3), 2, np.float32)}),
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "--grid",
+            "mpp1_px64",
+            "--patch-model",
+            "mock_b",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    root = zarr.open_group(path, mode="r", use_consolidated=False)
+    assert "slide" not in open_grid(root, "mpp0.5_px64")
+    assert "mean" in open_grid(root, "mpp1_px64")["slide"]
+    assert "mpp1_px64" in result.output
+    assert recording_slide_embedder["encodes"][0]["patch_size_lv0"] == 64
+
+
+def test_cli_slide_embed_infers_grid_for_required_model(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {
+            "mpp0.5_px512": (
+                1024,
+                {"conch_v1_5": np.ones((2, 3), np.float32)},
+            ),
+            "mpp1_px224": (224, {"uni": np.full((2, 3), 2, np.float32)}),
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["slide-embed", path, "-s", "titan", "--device", "cpu"],
+    )
+
+    assert result.exit_code == 0, result.output
+    root = zarr.open_group(path, mode="r", use_consolidated=False)
+    assert "titan" in open_grid(root, "mpp0.5_px512")["slide"]
+    assert "slide" not in open_grid(root, "mpp1_px224")
+    call = recording_slide_embedder["encodes"][0]
+    assert call["patch_size_lv0"] == 1024
+    assert np.all(call["features"] == 1)
+
+
+def test_cli_slide_embed_requires_grid_for_ambiguous_pooling(tmp_path):
+    path = _write_slide_store(
+        tmp_path,
+        {
+            "mpp0.5_px64": (128, {"mock_a": np.ones((2, 3), np.float32)}),
+            "mpp1_px64": (64, {"mock_b": np.ones((2, 3), np.float32)}),
+        },
+    )
+
+    result = CliRunner().invoke(
+        app,
+        ["slide-embed", path, "-s", "mean", "--device", "cpu"],
+    )
+
+    assert result.exit_code == 1
+    assert "multiple grids" in result.output
+    assert "--grid" in result.output
+    assert "mpp0.5_px64" in result.output
+    assert "mpp1_px64" in result.output
+
+
+def test_cli_slide_embed_force_recomputes(tmp_path, recording_slide_embedder):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (128, {"mock": np.ones((2, 3), np.float32)})},
+    )
+    command = [
+        "slide-embed",
+        path,
+        "-s",
+        "mean",
+        "--patch-model",
+        "mock",
+        "--device",
+        "cpu",
+    ]
+
+    first = CliRunner().invoke(app, command)
+    assert first.exit_code == 0, first.output
+    first_vector = np.asarray(open_grid(path)["slide"]["mean"][:]).copy()
+
+    second = CliRunner().invoke(app, command)
+    assert second.exit_code == 0, second.output
+    assert "skipping" in second.output
+    assert recording_slide_embedder["loads"] == 1
+    np.testing.assert_array_equal(
+        np.asarray(open_grid(path)["slide"]["mean"][:]), first_vector
+    )
+
+    forced = CliRunner().invoke(app, [*command, "--force"])
+    assert forced.exit_code == 0, forced.output
+    assert recording_slide_embedder["loads"] == 2
+    assert not np.array_equal(
+        np.asarray(open_grid(path)["slide"]["mean"][:]), first_vector
+    )
+
+
+def test_cli_slide_embed_recomputes_when_patch_model_changes(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {
+            "mpp0.5_px64": (
+                128,
+                {
+                    "mock_a": np.ones((2, 3), np.float32),
+                    "mock_b": np.full((2, 3), 2, np.float32),
+                },
+            )
+        },
+    )
+    base = ["slide-embed", path, "-s", "mean", "--device", "cpu"]
+
+    first = CliRunner().invoke(app, [*base, "--patch-model", "mock_a"])
+    second = CliRunner().invoke(app, [*base, "--patch-model", "mock_b"])
+
+    assert first.exit_code == second.exit_code == 0
+    assert recording_slide_embedder["loads"] == 2
+    array = open_grid(path)["slide"]["mean"]
+    assert array.attrs["patch_encoder"] == "mock_b"
+    assert dict(open_grid(path).attrs)["raw2features"]["slide_embeddings"]["mean"][
+        "patch_encoder"
+    ] == "mock_b"
+
+
+def test_cli_slide_embed_rejects_incompatible_patch_model(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px224": (224, {"uni": np.ones((2, 3), np.float32)})},
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "titan",
+            "--patch-model",
+            "uni",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "requires patch model 'conch_v1_5'" in result.output
+    assert "incompatible" in result.output
+    assert recording_slide_embedder["loads"] == 0
+
+
+def test_cli_slide_embed_repairs_malformed_existing_output(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (128, {"mock": np.ones((2, 3), np.float32)})},
+    )
+    group = open_grid(path, mode="r+")
+    slide_group = group.create_group("slide")
+    malformed = slide_group.create_array(
+        "mean", shape=(2, 3), chunks=(2, 3), dtype="float32"
+    )
+    malformed[:] = 1
+    malformed.attrs.update(
+        {
+            "role": "slide_embedding",
+            "patch_encoder": "mock",
+            "embedding_dim": 3,
+        }
+    )
+    header = dict(group.attrs["raw2features"])
+    header["slide_embeddings"] = {
+        "mean": {"patch_encoder": "mock", "embedding_dim": 3}
+    }
+    group.attrs["raw2features"] = header
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert recording_slide_embedder["loads"] == 1
+    repaired = open_grid(path)["slide"]["mean"]
+    assert repaired.shape == (1, 3)
+    assert repaired.attrs["role"] == "slide_embedding"
+
+
+def test_cli_slide_embed_consolidates_before_a_later_encoder_failure(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (128, {"mock": np.ones((2, 3), np.float32)})},
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "-s",
+            "does_not_exist",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Unknown slide encoder" in result.output
+    # open_grid(path) uses the normal reader path rather than forcing live metadata.
+    assert "mean" in open_grid(path)["slide"]
+
+
+def test_inline_slide_encoder_rerun_is_idempotent(
+    tmp_path, recording_slide_embedder
+):
+    from raw2features.pipeline.runner import _run_slide_encoders
+    from raw2features.sinks.zarr_sink import ZarrSink
+
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (128, {"mock": np.ones((2, 3), np.float32)})},
+    )
+    sink = ZarrSink()
+    sink._group = open_grid(path, mode="r+")
+
+    first = _run_slide_encoders(sink, ["mean"], "cpu", ["mock"])
+    second = _run_slide_encoders(sink, ["mean"], "cpu", ["mock"])
+
+    assert first == second == {"mean": "slide/mean"}
+    assert recording_slide_embedder["loads"] == 1
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")

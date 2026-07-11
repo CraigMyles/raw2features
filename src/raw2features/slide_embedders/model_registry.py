@@ -62,8 +62,8 @@ def resolve_patch_encoder(
     value of ``"any"`` (the pooling baselines) means the encoder is
     model-agnostic: it accepts the single available patch model, or - if
     several are present - requires the caller to disambiguate with
-    ``--patch-model``. A specific value (e.g. ``"uni"`` for TITAN) must be
-    present in the embeddings zarr.
+    ``--patch-model``. A specific value (e.g. ``"conch_v1_5"`` for TITAN)
+    must be present in the embeddings zarr.
     """
     spec = get_slide_spec(slide_model)
     required = spec.patch_encoder

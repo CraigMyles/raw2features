@@ -26,7 +26,7 @@ class SlideModelSpec:
     """Provenance descriptor for one slide-level encoder.
 
     ``patch_encoder`` names the patch-level model whose features this
-    encoder was trained on (e.g. ``"uni"`` for TITAN). The pipeline
+    encoder was trained on (e.g. ``"conch_v1_5"`` for TITAN). The pipeline
     uses this to auto-select the right ``features/<patch_encoder>``
     array from the embeddings zarr.
     """

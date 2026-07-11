@@ -5,15 +5,14 @@ and writes a ``slide/<model>/`` array containing a single slide-level
 embedding vector. No WSI access is needed - the patch features are read
 directly from the zarr store.
 
-Skip-if-complete: if ``slide/<model>`` already exists in the zarr and its
-vector is finite, the slide is silently skipped. Delete the array (or the
-whole zarr) to force re-encoding.
+Skip-if-complete: if ``slide/<model>`` already contains a finite, non-zero
+vector, the slide is skipped. Pass ``--force`` to replace it.
 
 Two-stage example
 -----------------
 Stage 1 (already done, may be on a different machine / day)::
 
-    raw2features embed slide.zarr out/ -f uni
+    raw2features embed slide.zarr out/ -f conch_v1_5 --patch-size 512
 
 Stage 2 (reads from the zarr, no WSI)::
 
@@ -21,7 +20,7 @@ Stage 2 (reads from the zarr, no WSI)::
 
 Inline (single pass, both done together)::
 
-    raw2features embed slide.zarr out/ -f uni -s titan
+    raw2features embed slide.zarr out/ -f conch_v1_5 --patch-size 512 -s titan
 """
 
 from __future__ import annotations
@@ -39,13 +38,21 @@ def slide_embed(
     slide_encoder: list[str] = typer.Option(
         ..., "--slide-encoder", "-s", help="Slide encoder name(s); repeatable."
     ),
+    grid: str | None = typer.Option(
+        None,
+        "--grid",
+        help=(
+            "Grid key under grids/ (e.g. 'mpp0.5_px512'). Required when the "
+            "grid cannot be inferred unambiguously from the encoder or --patch-model."
+        ),
+    ),
     patch_model: str | None = typer.Option(
         None,
         "--patch-model",
         help=(
-            "Patch model whose features to use (e.g. 'uni'). "
-            "Auto-detected from the registry if the zarr contains only one "
-            "compatible patch model."
+            "Patch model whose features to use for a model-agnostic encoder "
+            "(e.g. 'uni' with 'mean'). Specific encoders require their registry "
+            "model; otherwise it is auto-detected."
         ),
     ),
     device: str = typer.Option(
@@ -57,15 +64,17 @@ def slide_embed(
     ),
 ) -> None:
     """Encode slide-level vectors from patch features in an embeddings zarr."""
-    import numpy as np
     import zarr
 
     from raw2features.core.device import resolve_device
-    from raw2features.core.provenance import now_utc_iso
-    from raw2features.slide_embedders.model_registry import (
-        build_slide_embedder,
-        resolve_patch_encoder,
+    from raw2features.core.store import grid_for_model, grid_keys, open_grid
+    from raw2features.slide_embedders.encoding import (
+        encode_slide_embedding,
+        resolve_slide_patch_model,
+        slide_embedding_is_complete,
+        write_slide_embedding,
     )
+    from raw2features.slide_embedders.model_registry import get_slide_spec
 
     try:
         device = resolve_device(device)  # "auto" -> cuda/mps/cpu; clear error otherwise
@@ -84,85 +93,96 @@ def slide_embed(
     # use_consolidated=False: the store was consolidated by `embed`, so its
     # consolidated metadata predates any slide/ group we add here. Reading the
     # live metadata avoids stale-key KeyErrors; we re-consolidate at the end.
-    from raw2features.core.store import open_grid
-
     root = zarr.open_group(path, mode="r+", use_consolidated=False)
-    g = open_grid(root)  # the sole grid (one geometry per store)
-    feat_group = g.get("features")
-    if feat_group is None:
+    keys = grid_keys(root)
+    if not keys:
         typer.echo(
-            "Error: zarr has no 'features' group - run 'raw2features embed' first.",
+            "Error: store has no grids/ group; expected a v0.1 embeddings store.",
             err=True,
         )
         raise typer.Exit(1)
 
-    available = sorted(feat_group.keys())
-    coords = np.asarray(g["coords"][:]) if "coords" in g else None
-
-    from raw2features import __version__
-
     for slide_model_name in slide_encoder:
-        # Skip-if-complete check.
-        if not force and "slide" in g and slide_model_name in g["slide"]:
-            arr = g["slide"][slide_model_name]
-            vec = np.asarray(arr[:]).astype(np.float32)
-            if np.isfinite(vec).all() and (vec != 0).any():
-                typer.echo(f"{slide_model_name}: already complete (skipping)")
-                continue
-
-        # Resolve which patch features to use.
-        if patch_model is not None:
-            pm = patch_model
-            if pm not in available:
-                typer.echo(
-                    f"Error: --patch-model {pm!r} not in zarr. Available: {available}",
-                    err=True,
-                )
-                raise typer.Exit(1)
-        else:
-            pm = resolve_patch_encoder(slide_model_name, available)
-
-        typer.echo(f"{slide_model_name}: encoding from '{pm}' patch features …")
-        patch_features = np.asarray(feat_group[pm][:]).astype(np.float32)
-
-        slide_emb = build_slide_embedder(slide_model_name).load(device=device)
         try:
-            vector = slide_emb.encode(patch_features, coords)
-        finally:
-            slide_emb.unload()
+            if grid is not None:
+                if grid not in keys:
+                    raise ValueError(
+                        f"Unknown grid {grid!r}. Available grid keys: {keys}"
+                    )
+                selected_grid = grid
+            elif len(keys) == 1:
+                selected_grid = keys[0]
+            elif patch_model is not None:
+                selected_grid = grid_for_model(root, patch_model)
+            else:
+                required = get_slide_spec(slide_model_name).patch_encoder
+                if required == "any":
+                    raise ValueError(
+                        f"Slide encoder {slide_model_name!r} is model-agnostic and "
+                        f"the store has multiple grids {keys}; pass --grid or "
+                        "--patch-model to choose one."
+                    )
+                selected_grid = grid_for_model(root, required)
+            group = open_grid(root, selected_grid)
+        except (KeyError, ValueError) as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
 
-        # Write to zarr (open r+ so we can add without clobbering patch data).
-        prov = {
-            "patch_encoder": pm,
-            "source": slide_emb.spec.source,
-            "embedding_dim": int(len(vector)),
-            "license": slide_emb.spec.license,
-            "transform_source_url": slide_emb.spec.transform_source_url,
-            "computed_utc": now_utc_iso(),
-            "raw2features_version": __version__,
-        }
-        slide_grp = g.require_group("slide")
-        if slide_model_name in slide_grp:
-            del slide_grp[slide_model_name]
-        vec2d = np.asarray(vector, dtype=np.float32).reshape(1, -1)
-        arr = slide_grp.create_array(
-            slide_model_name, shape=vec2d.shape, chunks=vec2d.shape, dtype="float32"
+        try:
+            selected_patch_model = resolve_slide_patch_model(
+                group,
+                slide_model_name,
+                patch_model=patch_model,
+            )
+        except (KeyError, ValueError) as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+
+        # Skip only an output produced from the requested patch model.
+        if not force and slide_embedding_is_complete(
+            group,
+            slide_model_name,
+            patch_model=selected_patch_model,
+        ):
+            typer.echo(
+                f"{slide_model_name} [{selected_grid}]: already complete (skipping)"
+            )
+            continue
+
+        typer.echo(
+            f"{slide_model_name} [{selected_grid}]: encoding from "
+            f"'{selected_patch_model}' patch features …"
         )
-        arr[:] = vec2d
-        arr.attrs["role"] = "slide_embedding"
-        for k, v in prov.items():
-            arr.attrs[k] = v
+        try:
+            encoding = encode_slide_embedding(
+                group,
+                slide_model_name,
+                device,
+                patch_model=selected_patch_model,
+            )
+        except (KeyError, ValueError) as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
+        if encoding is None:
+            typer.echo(
+                f"{slide_model_name} [{selected_grid}]: 0 patch features (skipping)"
+            )
+            continue
 
-        # Mirror into the grid header for quick inspection.
-        grid_meta = dict(g.attrs.get("raw2features", {}))
-        grid_meta.setdefault("slide_embeddings", {})[slide_model_name] = prov
-        g.attrs["raw2features"] = grid_meta
-
-        typer.echo(f"{slide_model_name}: done  shape={vec2d.shape}")
+        write_slide_embedding(
+            group,
+            slide_model_name,
+            encoding.vector,
+            encoding.provenance,
+        )
+        typer.echo(
+            f"{slide_model_name} [{selected_grid}]: done  "
+            f"shape={(1, encoding.vector.size)}"
+        )
 
     # Refresh consolidated metadata so the new slide/ arrays are visible to
     # readers that use it (and to a later `slide-embed` skip-check).
     try:
-        zarr.consolidate_metadata(g.store)
+        zarr.consolidate_metadata(root.store)
     except Exception:  # noqa: BLE001 - consolidation is best-effort
         pass

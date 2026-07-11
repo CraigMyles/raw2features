@@ -19,6 +19,7 @@ from raw2features.benchmark.profiler import null_profiler
 from raw2features.core import plugins, provenance
 from raw2features.core.geometry import Point, Region, Size
 from raw2features.core.store import grid_key
+from raw2features.core.uris import slide_id_from_source, source_uri
 from raw2features.embedders.model_registry import build_embedder, resolve_geometry
 from raw2features.patcher.grid import GridPatcher, resample_patch
 from raw2features.sinks.zarr_sink import ZarrSink, write_patches_geojson
@@ -213,11 +214,9 @@ class RunConfig:
 
 
 def slide_id_from_path(path: str) -> str:
-    base = os.path.basename(path.rstrip("/"))
-    for suffix in (".embeddings.zarr", ".ome.zarr", ".zarr"):
-        if base.endswith(suffix):
-            return base[: -len(suffix)]
-    return base
+    """Backward-compatible public wrapper around the shared source-ID helper."""
+
+    return slide_id_from_source(path)
 
 
 def _amp_dtype(amp: str):
@@ -544,7 +543,7 @@ def run_slide(
                 Receipt(
                     slide_id=slide_id,
                     status="complete",
-                    source_uri=f"file://{os.path.abspath(slide_path)}",
+                    source_uri=source_uri(slide_path),
                     output_uri=sink.uri,
                     reader=cfg.reader,
                     models=sorted(final_dims),
@@ -578,7 +577,7 @@ def run_slide(
                 Receipt(
                     slide_id=slide_id,
                     status="failed",
-                    source_uri=f"file://{os.path.abspath(slide_path)}",
+                    source_uri=source_uri(slide_path),
                     output_uri="",
                     reader=cfg.reader,
                     models=cfg.models,
@@ -749,7 +748,7 @@ def embed_slide(
             Receipt(
                 slide_id=slide_id,
                 status="complete",
-                source_uri=f"file://{os.path.abspath(slide_path)}",
+                source_uri=source_uri(slide_path),
                 output_uri=f"file://{os.path.abspath(out_path)}",
                 reader=cfg.reader,
                 models=all_models,
@@ -1557,7 +1556,7 @@ def _build_header(
         "provenance": prov,
         "thumbnail": thumbnail,
         "source": {
-            "uri": f"file://{os.path.abspath(reader.path)}",
+            "uri": source_uri(reader.path),
             "ngff_version": getattr(reader, "ngff_version", None),
             "reader": reader.name,
             "slide_id": slide_id,

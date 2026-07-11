@@ -203,8 +203,9 @@ scale) or given an explicit `--mpp`.
 
 ## Install notes for the special families
 
-- `conch` - needs the `conch` extra **plus** its non-PyPI git package:
-  `pip install "raw2features[conch]" && pip install git+https://github.com/Mahmoodlab/CONCH.git`.
+- `conch` - needs the `conch` extra **plus** its non-PyPI git package, pinned to the
+  audited revision:
+  `pip install "raw2features[conch]" && pip install git+https://github.com/Mahmoodlab/CONCH.git@141cc09c7d4ff33d8eda562bd75169b457f71a62`.
 - `conch_v1_5` / `titan` - the CONCH v1.5 tile encoder is loaded via the gated TITAN model
   (`return_conch`), so it needs the `[models]` extra and an accepted `MahmoodLab/TITAN`
   gate. Extract at `--patch-size 512`, then `-s titan` for slide embeddings.

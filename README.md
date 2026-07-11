@@ -68,9 +68,9 @@ non-PyPI git packages, so they install in two steps. The extra pulls the PyPI st
 then one command installs the package itself:
 
 ```bash
-pip install "raw2features[conch]"  && pip install git+https://github.com/Mahmoodlab/CONCH.git
-pip install "raw2features[kronos]" && pip install git+https://github.com/mahmoodlab/KRONOS.git
-pip install "raw2features[musk]"   && pip install git+https://github.com/lilab-stanford/MUSK
+pip install "raw2features[conch]"  && pip install git+https://github.com/Mahmoodlab/CONCH.git@141cc09c7d4ff33d8eda562bd75169b457f71a62
+pip install "raw2features[kronos]" && pip install git+https://github.com/mahmoodlab/KRONOS.git@48979362386c8440c934954be3d88ccfa74d6f36
+pip install "raw2features[musk]"   && pip install git+https://github.com/lilab-stanford/MUSK@714b666969c1911e5efe70d991140a21030f4ef3
 ```
 
 The same pattern covers the other gated encoders - mostly slide encoders (e.g. `madeleine`,

@@ -43,7 +43,8 @@ class MuskEmbedder(Embedder):
                 "MUSK needs the optional `musk` package. Install the stack, then the "
                 "(non-PyPI) package:\n"
                 '  pip install "raw2features[musk]"\n'
-                "  pip install git+https://github.com/lilab-stanford/MUSK"
+                "  pip install git+https://github.com/lilab-stanford/MUSK@"
+                "714b666969c1911e5efe70d991140a21030f4ef3"
             ) from exc
 
         model = timm.create_model("musk_large_patch16_384")

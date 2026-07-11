@@ -9,7 +9,7 @@ family cleanly when the package is absent.
 Install::
 
     pip install "raw2features[conch]"
-    # or: pip install git+https://github.com/Mahmoodlab/CONCH.git
+    # or: pip install git+https://github.com/Mahmoodlab/CONCH.git@141cc09c7d4ff33d8eda562bd75169b457f71a62
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 
 from raw2features.core.plugins import register
 
+from ._hub import download_pinned_hf_file, verify_sha256
 from .base import Embedder
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -50,10 +51,20 @@ class ConchEmbedder(Embedder):
                 "CONCH needs the optional `conch` package. Install the stack, then "
                 "the (non-PyPI, gated) package:\n"
                 '  pip install "raw2features[conch]"\n'
-                "  pip install git+https://github.com/Mahmoodlab/CONCH.git"
+                "  pip install git+https://github.com/Mahmoodlab/CONCH.git@"
+                "141cc09c7d4ff33d8eda562bd75169b457f71a62"
             ) from exc
 
-        model, preprocess = create_model_from_pretrained(_ARCH, self.spec.source)
+        # CONCH's factory has no revision parameter but accepts a local checkpoint.
+        # Resolve it ourselves at the registry commit instead of letting the factory
+        # download the mutable repository HEAD.
+        checkpoint = download_pinned_hf_file(
+            self.spec.source,
+            "pytorch_model.bin",
+            self.spec.weights_revision,
+        )
+        verify_sha256(checkpoint, self.spec.weights_sha256, what=self.spec.name)
+        model, preprocess = create_model_from_pretrained(_ARCH, checkpoint)
         model.eval().to(device)
         self._model = model
         self._device = device

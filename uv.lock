@@ -3431,7 +3431,7 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "ome-zarr", marker = "extra == 'zarr'", specifier = ">=0.10" },
     { name = "open-clip-torch", marker = "extra == 'musk'" },
-    { name = "open-clip-torch", marker = "extra == 'open-clip'", specifier = ">=2.20" },
+    { name = "open-clip-torch", marker = "extra == 'open-clip'", specifier = ">=3.0" },
     { name = "opencv-python-headless", marker = "extra == 'image'", specifier = ">=4.9" },
     { name = "pandas", marker = "extra == 'tables'", specifier = ">=2.2" },
     { name = "peft", marker = "extra == 'seal'" },

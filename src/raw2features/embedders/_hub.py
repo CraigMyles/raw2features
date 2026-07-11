@@ -16,6 +16,89 @@ than merely written into provenance:
 from __future__ import annotations
 
 import hashlib
+import os
+import re
+from pathlib import Path
+
+_UNSAFE_CACHE_COMPONENT = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def hf_repo_id(source: str) -> str:
+    """Return the repository id from a registry ``hf[-_]hub:`` source.
+
+    Loader families that cannot accept ``revision=`` directly first download a
+    pinned file or snapshot and then give the resulting local path to the upstream
+    factory.  Keeping the source parsing here makes that contract consistent.
+    """
+    for prefix in ("hf-hub:", "hf_hub:"):
+        if source.startswith(prefix):
+            repo_id = source.removeprefix(prefix)
+            if repo_id:
+                return repo_id
+    raise ValueError(f"expected an hf-hub: or hf_hub: source, got {source!r}")
+
+
+def pinned_model_cache_dir(source: str, revision: str | None) -> str:
+    """Return an app-owned cache directory unique to one HF model revision.
+
+    Some upstream factories only accept a local directory, rather than a Hugging
+    Face ``revision`` argument.  Keep their downloaded inputs outside HF's shared
+    snapshot cache so raw2features may safely adjust an upstream config without
+    mutating files that another application could be using.
+    """
+    if not revision:
+        raise ValueError(f"{source}: no weights_revision is recorded")
+    repo = _UNSAFE_CACHE_COMPONENT.sub("--", hf_repo_id(source)).strip(".-")
+    rev = _UNSAFE_CACHE_COMPONENT.sub("-", revision).strip(".-")
+    if not repo or not rev:  # pragma: no cover - guarded by registry validation
+        raise ValueError(f"cannot derive a safe cache path for {source}@{revision}")
+    root = Path(
+        os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache"))
+    ).expanduser()
+    return str((root / "raw2features" / "models" / repo / rev).resolve())
+
+
+def download_pinned_hf_file(
+    source: str,
+    filename: str,
+    revision: str | None,
+    *,
+    cache_dir: str | None = None,
+) -> str:
+    """Download one file from the exact registry revision."""
+    if not revision:
+        raise ValueError(f"{source}: no weights_revision is recorded")
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(
+        repo_id=hf_repo_id(source),
+        filename=filename,
+        revision=revision,
+        cache_dir=cache_dir,
+    )
+
+
+def download_pinned_hf_snapshot(
+    source: str,
+    revision: str | None,
+    *,
+    allow_patterns: tuple[str, ...] | None = None,
+    local_dir: str | None = None,
+) -> str:
+    """Download a repository snapshot at the exact registry revision."""
+    if not revision:
+        raise ValueError(f"{source}: no weights_revision is recorded")
+    from huggingface_hub import snapshot_download
+
+    kwargs = {}
+    if local_dir is not None:
+        kwargs["local_dir"] = local_dir
+    return snapshot_download(
+        repo_id=hf_repo_id(source),
+        revision=revision,
+        allow_patterns=allow_patterns,
+        **kwargs,
+    )
 
 
 def pin_source(source: str, revision: str | None) -> str:

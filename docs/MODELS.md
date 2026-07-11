@@ -79,6 +79,13 @@ Each needs the matching patch encoder run first (`-f <patch_encoder>`).
 TITAN runs on CONCH v1.5 patch features, **not** UNI:
 `raw2features embed slide.ome.zarr out -f conch_v1_5 --patch-size 512 -s titan`.
 
+For standalone encoding, `slide-embed` selects the sole grid automatically. In a
+multi-grid store it can infer the grid from a slide encoder's required patch model when
+that model occurs once. Use `--grid <key>` when a model appears in several grids, or for
+a model-agnostic pool such as `mean`; use `--patch-model` as well when that grid contains
+several patch models. An unchanged rerun is skipped, while `--force` replaces the existing
+`slide/<model>` vector.
+
 ‡ `madeleine`'s licence is contested - the HF card tags MIT but the GitHub repo's `LICENSE`
 is CC-BY-NC-ND-4.0; we record both and leave the determination to you.
 

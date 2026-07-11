@@ -114,7 +114,7 @@ def embed(
         help=(
             "Slide-level encoder(s); repeatable. Run after patch embedding using "
             "the patch features already written - no WSI re-read. "
-            "Example: -f uni -s titan"
+            "Example: -f conch_v1_5 --patch-size 512 -s titan"
         ),
     ),
     qc: list[str] = typer.Option(

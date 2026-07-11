@@ -249,23 +249,9 @@ class ZarrSink(Sink):
         """Write a single slide-level vector to the grid's ``slide/<model>/``."""
         if self._group is None:
             raise RuntimeError("sink not created; call create() first")
-        slide_group = self._group.require_group("slide")
-        vec = np.asarray(vector, dtype=np.float32).reshape(1, -1)
-        arr = slide_group.create_array(
-            slide_model,
-            shape=vec.shape,
-            chunks=vec.shape,
-            dtype="float32",
-        )
-        arr[:] = vec
-        arr.attrs["role"] = "slide_embedding"
-        for k, v in provenance.items():
-            arr.attrs[k] = v
-        # Mirror provenance into the grid header for convenience.
-        gh = dict(self._group.attrs.get("raw2features", {}))
-        slide_meta = gh.setdefault("slide_embeddings", {})
-        slide_meta[slide_model] = provenance
-        self._group.attrs["raw2features"] = gh
+        from raw2features.slide_embedders.encoding import write_slide_embedding
+
+        write_slide_embedding(self._group, slide_model, vector, provenance)
 
     def write_qc(
         self,

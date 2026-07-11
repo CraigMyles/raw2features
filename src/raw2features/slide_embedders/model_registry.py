@@ -41,6 +41,17 @@ def get_slide_spec(name: str) -> SlideModelSpec:
     return reg[name]
 
 
+def validate_slide_encoder_names(names: list[str]) -> None:
+    """Fail before any slide work when one or more requested names are unknown."""
+    registry = load_slide_registry()
+    unknown = [name for name in dict.fromkeys(names) if name not in registry]
+    if unknown:
+        raise ValueError(
+            f"Unknown slide encoder(s) {unknown}. Available: {sorted(registry)}. "
+            "Check 'raw2features list slide_embedders'."
+        )
+
+
 def build_slide_embedder(name: str) -> SlideEmbedder:
     from raw2features.core.plugins import get
 
@@ -62,8 +73,8 @@ def resolve_patch_encoder(
     value of ``"any"`` (the pooling baselines) means the encoder is
     model-agnostic: it accepts the single available patch model, or - if
     several are present - requires the caller to disambiguate with
-    ``--patch-model``. A specific value (e.g. ``"uni"`` for TITAN) must be
-    present in the embeddings zarr.
+    ``--patch-model``. A specific value (e.g. ``"conch_v1_5"`` for TITAN)
+    must be present in the embeddings zarr.
     """
     spec = get_slide_spec(slide_model)
     required = spec.patch_encoder

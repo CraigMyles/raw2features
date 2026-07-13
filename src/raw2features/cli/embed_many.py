@@ -21,6 +21,7 @@ import time
 
 import typer
 
+from raw2features.core.uris import is_qualified_uri
 from raw2features.pipeline.runner import (
     RunConfig,
     embed_slide,
@@ -175,10 +176,7 @@ def embed_many(
     if manifest:
         from raw2features.core.config import load_manifest
 
-        all_rows = load_manifest(manifest)
-        for r in all_rows:
-            if not os.path.isabs(r["path"]):
-                r["path"] = os.path.join(slide_dir, r["path"])
+        all_rows = _resolve_manifest_sources(load_manifest(manifest), slide_dir)
         all_rows = sorted(all_rows, key=lambda r: r["path"])
     else:
         all_rows = [
@@ -257,6 +255,15 @@ def embed_many(
 def _classify(summary: dict) -> str:
     """'skipped' | 'done' for the running tally (anything not skipped counts done)."""
     return "skipped" if summary["status"] == "skipped" else "done"
+
+
+def _resolve_manifest_sources(rows: list[dict], slide_dir: str) -> list[dict]:
+    """Resolve only relative local manifest paths against ``slide_dir`` in place."""
+
+    for row in rows:
+        if not is_qualified_uri(row["path"]) and not os.path.isabs(row["path"]):
+            row["path"] = os.path.join(slide_dir, row["path"])
+    return rows
 
 
 def _with_source_mpp(cfg: RunConfig, row: dict) -> RunConfig:

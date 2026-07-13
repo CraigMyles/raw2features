@@ -64,6 +64,74 @@ def test_verify_cli_exits_1_when_not_complete(tmp_path):
     assert r.exit_code == 1
 
 
+def test_verify_cli_hides_malformed_source_credentials(tmp_path):
+    secret = "DO_NOT_PRINT"
+    malformed = f"https://user:{secret}@exa／mple.com/image.zarr"
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            malformed,
+            "--receipts-dir",
+            str(tmp_path / "receipts"),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert secret not in result.output
+    assert "source URI is malformed" in result.output
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_verify_cli_binds_receipt_to_expected_output_directory(tmp_path):
+    from raw2features.pipeline.runner import RunConfig, embed_slide
+
+    slide = build_ngff_v04(str(tmp_path / "S.zarr"))
+    out = str(tmp_path / "out")
+    receipts = str(tmp_path / "receipts")
+    cfg = RunConfig(
+        models=["mock"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        device="cpu",
+        amp="fp32",
+    )
+    embed_slide(
+        slide,
+        out,
+        cfg,
+        receipts_dir=receipts,
+        requested_mpp=0.5,
+        requested_patch_px=64,
+        embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+    )
+    common = [
+        "verify",
+        slide,
+        "--receipts-dir",
+        receipts,
+        "-f",
+        "mock",
+        "--no-seg",
+        "--mpp",
+        "0.5",
+        "--patch-size",
+        "64",
+        "--amp",
+        "fp32",
+        "--quiet",
+    ]
+
+    correct = CliRunner().invoke(app, [*common, "--out-dir", out])
+    wrong = CliRunner().invoke(
+        app, [*common, "--out-dir", str(tmp_path / "different-out")]
+    )
+
+    assert correct.exit_code == 0, correct.output
+    assert wrong.exit_code == 1
+
+
 # -- main() error wrapper (torch-free) -----------------------------------------
 
 

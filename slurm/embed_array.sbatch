@@ -112,7 +112,7 @@ COMMON=(
 [[ -n "$STEP" ]] && COMMON+=(--step "$STEP")
 
 # ---- skip-if-complete (validates the actual output, not just the receipt) -
-if raw2features verify "$SLIDE" --receipts-dir "$RECEIPTS_DIR" "${COMMON[@]}" --quiet; then
+if raw2features verify "$SLIDE" --receipts-dir "$RECEIPTS_DIR" --out-dir "$OUT_DIR" "${COMMON[@]}" --quiet; then
   echo "[$(date -u +%FT%TZ)] already complete; skipping ${SLIDE}"
   exit 0
 fi

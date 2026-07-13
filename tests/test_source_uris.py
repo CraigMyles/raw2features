@@ -430,7 +430,7 @@ def test_store_header_persists_credential_free_source_uri(uri, expected):
 def test_multigrid_receipt_persists_credential_free_source_uri(monkeypatch, tmp_path):
     uri = "s3://user:secret@bucket/cohort/image.ome.zarr/0?version=7&token=S"
     captured = []
-    monkeypatch.setattr(runner, "is_complete", lambda *args: False)
+    monkeypatch.setattr(runner, "is_complete", lambda *args, **kwargs: False)
     monkeypatch.setattr(
         runner,
         "run_slide",

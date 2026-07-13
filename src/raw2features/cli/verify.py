@@ -6,15 +6,22 @@ match the ``embed`` invocation so the config hash lines up.
 
 from __future__ import annotations
 
+import os
+
 import typer
 
-from raw2features.pipeline.receipt import is_complete
+from raw2features.pipeline.receipt import canonical_source_uri, is_complete
 from raw2features.pipeline.runner import RunConfig, slide_id_from_path
 
 
 def verify(
     slide: str = typer.Argument(...),
     receipts_dir: str = typer.Option(..., "--receipts-dir"),
+    out_dir: str | None = typer.Option(
+        None,
+        "--out-dir",
+        help="Expected output directory; binds the receipt to this run's target store.",
+    ),
     feature_extractor: list[str] = typer.Option(
         ["resnet50"], "--model", "-m", "--feature-extractor", "-f"
     ),
@@ -71,8 +78,34 @@ def verify(
     )
     # Hash exactly as embed_slide does, so verify matches the embed that wrote it.
     _, _, run_hash = resolve_run(cfg, mpp, patch_size, geometry_config)
-    slide_id = slide_id_from_path(slide)
-    complete = is_complete(receipts_dir, slide_id, run_hash)
+    expected_source = canonical_source_uri(slide)
+    if expected_source is None:
+        if not quiet:
+            typer.echo("source URI is malformed; incomplete", err=True)
+        raise typer.Exit(code=1)
+    try:
+        slide_id = slide_id_from_path(slide)
+    except Exception:  # noqa: BLE001 - suppress credential-bearing parser errors
+        if not quiet:
+            typer.echo("source URI is malformed; incomplete", err=True)
+        raise typer.Exit(code=1) from None
+    expected_path = (
+        os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
+        if out_dir is not None
+        else None
+    )
+    expected_output = (
+        f"file://{os.path.abspath(expected_path)}"
+        if expected_path is not None
+        else None
+    )
+    complete = is_complete(
+        receipts_dir,
+        slide_id,
+        run_hash,
+        expected_source_uri=expected_source,
+        expected_output_uri=expected_output,
+    )
     if not quiet:
         typer.echo(f"{slide_id}: {'complete' if complete else 'incomplete'}")
     raise typer.Exit(code=0 if complete else 1)

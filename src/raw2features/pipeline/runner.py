@@ -31,8 +31,10 @@ from raw2features.sinks.zarr_sink import ZarrSink, write_patches_geojson
 from .receipt import (
     SCHEMA_VERSION,
     Receipt,
+    canonical_source_uri,
     config_hash,
     is_complete,
+    store_source_bindings,
     validate_model,
     write_receipt,
 )
@@ -276,17 +278,42 @@ def run_slide(
     from raw2features.core.device import resolve_device
 
     cfg.device = resolve_device(cfg.device)  # "auto" -> cuda/mps/cpu (idempotent)
-    slide_id = slide_id_from_path(slide_path)
+    expected_source = canonical_source_uri(slide_path)
+    if expected_source is None:
+        raise ValueError("Source URI is malformed and cannot be compared safely.")
+    try:
+        slide_id = slide_id_from_path(slide_path)
+    except Exception:  # noqa: BLE001 - suppress credential-bearing parser errors
+        raise ValueError(
+            "Source URI is malformed and no safe output ID can be derived."
+        ) from None
     content_hash = cfg.content_hash()
+    out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
+    expected_output = f"file://{os.path.abspath(out_path)}"
+    store_exists = os.path.exists(out_path) and not force
+
+    # The v0.1 basename rule deliberately remains stable for ordinary local paths.
+    # Bind the deterministic output to its recorded source instead, before either a
+    # receipt or store inspection can skip/append against a same-named slide.
+    if store_exists:
+        _assert_store_source(out_path, expected_source)
 
     # Fast path: a validated 'complete' receipt for this exact config (incl. the
-    # model set). This is the cohort resume path and is intentionally unchanged.
-    if receipts_dir and is_complete(receipts_dir, slide_id, content_hash):
+    # model set), source, and requested output. ``--force`` deliberately bypasses it.
+    if (
+        not force
+        and receipts_dir
+        and is_complete(
+            receipts_dir,
+            slide_id,
+            content_hash,
+            expected_source_uri=expected_source,
+            expected_output_uri=expected_output,
+        )
+    ):
         return {"slide_id": slide_id, "status": "skipped", "reason": "already complete"}
 
-    out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
     grid_hash = cfg.grid_hash()
-    store_exists = os.path.exists(out_path) and not force
 
     present_valid: list[str] = []
     grid_key_existing: str | None = None
@@ -679,14 +706,36 @@ def embed_slide(
 
     validate_slide_encoder_names(cfg.slide_encoders)
 
-    slide_id = slide_id_from_path(slide_path)
+    expected_source = canonical_source_uri(slide_path)
+    if expected_source is None:
+        raise ValueError("Source URI is malformed and cannot be compared safely.")
+    try:
+        slide_id = slide_id_from_path(slide_path)
+    except Exception:  # noqa: BLE001 - suppress credential-bearing parser errors
+        raise ValueError(
+            "Source URI is malformed and no safe output ID can be derived."
+        ) from None
     groups, group_cfgs, run_hash = resolve_run(
         cfg, requested_mpp, requested_patch_px, geometry_config
     )
     out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
     grids = {grid_key(g.mpp, g.patch_px): list(g.models) for g in groups}
+    expected_output = f"file://{os.path.abspath(out_path)}"
 
-    if receipts_dir and is_complete(receipts_dir, slide_id, run_hash):
+    if os.path.exists(out_path) and not force:
+        _assert_store_source(out_path, expected_source)
+
+    if (
+        not force
+        and receipts_dir
+        and is_complete(
+            receipts_dir,
+            slide_id,
+            run_hash,
+            expected_source_uri=expected_source,
+            expected_output_uri=expected_output,
+        )
+    ):
         return {
             "slide_id": slide_id,
             "status": "skipped",
@@ -1396,6 +1445,52 @@ def _inspect_store(out_path: str, expected_grid_hash: str, requested_models: lis
             valid = [m for m in requested_models if validate_model(g, m, n)]
             return (k, n, valid)
     return (None, 0, [])
+
+
+def _assert_store_source(out_path: str, expected_source_uri: str) -> None:
+    """Refuse to reuse a store whose live root/grid provenance names another slide."""
+
+    expected = canonical_source_uri(expected_source_uri)
+    if expected is None:
+        raise ValueError("Refusing to reuse existing store: invalid source binding.")
+    try:
+        bindings = store_source_bindings(out_path)
+    except Exception as exc:  # noqa: BLE001 - fail safe before any store mutation
+        raise ValueError(
+            f"Refusing to reuse existing store {out_path!r}: its source provenance "
+            "could not be read. Use --force to replace it deliberately, or choose "
+            "a different output directory."
+        ) from exc
+
+    missing = [label for label, recorded in bindings if recorded is None]
+    invalid = [
+        label
+        for label, recorded in bindings
+        if recorded is not None and canonical_source_uri(recorded) is None
+    ]
+    mismatched = [
+        (label, canonical)
+        for label, recorded in bindings
+        if recorded is not None
+        and (canonical := canonical_source_uri(recorded)) is not None
+        and canonical != expected
+    ]
+    if not bindings or missing or invalid or mismatched:
+        details: list[str] = []
+        if missing or not bindings:
+            labels = ", ".join(missing) if missing else "root/grids"
+            details.append(f"missing source.uri at {labels}")
+        if invalid:
+            details.append(f"invalid source.uri at {', '.join(invalid)}")
+        if mismatched:
+            seen = ", ".join(f"{label}={uri}" for label, uri in mismatched)
+            details.append(f"recorded {seen}; requested {expected}")
+        raise ValueError(
+            f"Refusing to reuse existing store {out_path!r}: "
+            f"{'; '.join(details)}. Ordinary local outputs use basename IDs, so "
+            "same-named slides must not share an output directory. Use --force to "
+            "replace this store deliberately, or choose a different output directory."
+        )
 
 
 def _store_geometry(out_path: str, key: str | None = None):

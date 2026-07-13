@@ -18,11 +18,12 @@ import numpy as np
 import pytest
 import zarr
 
-from conftest import MockEmbedder
+from conftest import MockEmbedder, build_ngff_v04
 from raw2features.core.store import GRIDS, open_grid
 from raw2features.pipeline.receipt import validate_model
 from raw2features.pipeline.runner import (
     RunConfig,
+    _assert_store_source,
     _inspect_store,
     embed_slide,
     run_slide,
@@ -38,7 +39,14 @@ except ImportError:
 
 
 def _make_store(
-    out_dir, slide_id="s", *, n=12, models=(("a", 4),), grid_hash="GH", fill=1.0
+    out_dir,
+    slide_id="s",
+    *,
+    n=12,
+    models=(("a", 4),),
+    grid_hash="GH",
+    fill=1.0,
+    source="file:///source/s.zarr",
 ):
     """Build a minimal *.embeddings.zarr by hand (no embedding needed)."""
     os.makedirs(out_dir, exist_ok=True)
@@ -52,11 +60,15 @@ def _make_store(
     for name, dim in models:
         arr = feats.create_array(name, shape=(n, dim), chunks=(n, dim), dtype="float16")
         arr[:] = np.full((n, dim), fill, dtype="float16")
-    header = {"patching": {"read_level": 0, "read_px": 64, "patch_px": 64}}
+    header = {
+        "source": {"uri": source},
+        "patching": {"read_level": 0, "read_px": 64, "patch_px": 64},
+    }
     if grid_hash is not None:
         header["grid_hash"] = grid_hash
     g.attrs["raw2features"] = header
     root.attrs["raw2features"] = {
+        "source": {"uri": source},
         "grids": {key: {"models": [m for m, _ in models], "grid_hash": grid_hash}}
     }
     return path
@@ -120,6 +132,59 @@ def test_inspect_store_legacy_without_grid_hash_is_compatible(tmp_path):
 def test_inspect_store_absent_is_not_appendable(tmp_path):
     key, n, valid = _inspect_store(str(tmp_path / "missing.zarr"), "GH", ["a"])
     assert key is None and n == 0 and valid == []
+
+
+def test_store_source_binding_checks_root_and_every_grid(tmp_path):
+    p = _make_store(str(tmp_path / "o"), source="file:///source/A.zarr")
+    _assert_store_source(p, "file:///source/A.zarr")
+
+    root = zarr.open_group(p, mode="r+")
+    other = root[GRIDS].require_group("mpp2_px64")
+    other.attrs["raw2features"] = {
+        "source": {"uri": "file:///source/B.zarr"}
+    }
+
+    with pytest.raises(ValueError, match="Refusing to reuse existing store"):
+        _assert_store_source(p, "file:///source/A.zarr")
+
+
+def test_store_source_binding_does_not_leak_malformed_recorded_uri(tmp_path):
+    malformed = "https://user:DO_NOT_PRINT@exa／mple.com/image.zarr"
+    p = _make_store(str(tmp_path / "o"), source=malformed)
+
+    with pytest.raises(ValueError) as caught:
+        _assert_store_source(p, "https://example.org/image.zarr")
+
+    assert "DO_NOT_PRINT" not in str(caught.value)
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_runner_rejects_malformed_source_without_leaking_credentials(tmp_path):
+    malformed = "https://user:DO_NOT_PRINT@exa／mple.com/image.zarr"
+
+    with pytest.raises(ValueError) as caught:
+        run_slide(
+            malformed,
+            str(tmp_path / "out"),
+            RunConfig(models=["mock"], device="cpu"),
+            embedders=[],
+        )
+
+    assert "DO_NOT_PRINT" not in str(caught.value)
+    assert caught.value.__cause__ is None
+
+
+def test_store_source_binding_accepts_rotated_signed_uri(tmp_path):
+    old = (
+        "https://user:old@example.org/image.zarr?series=2&"
+        "X-Amz-Credential=old&X-Amz-Signature=old"
+    )
+    new = (
+        "https://user:new@example.org/image.zarr?series=2&"
+        "X-Amz-Credential=new&X-Amz-Signature=new"
+    )
+    p = _make_store(str(tmp_path / "o"), source=old)
+    _assert_store_source(p, new)
 
 
 # -- torch-free: sink open_append is additive ----------------------------------
@@ -260,6 +325,112 @@ def test_embed_force_overwrites(synthetic_ngff, tmp_path):
     assert s["status"] == "complete"
     g = open_grid(s["output_uri"])
     assert set(g["features"].keys()) == {"mockB"}  # mockA overwritten away
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_run_slide_force_bypasses_valid_receipt(synthetic_ngff, tmp_path):
+    out = str(tmp_path / "out")
+    receipts = str(tmp_path / "receipts")
+    cfg = RunConfig(
+        models=["mock"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        device="cpu",
+        amp="fp32",
+    )
+    first = run_slide(
+        synthetic_ngff,
+        out,
+        cfg,
+        receipts_dir=receipts,
+        embedders=[MockEmbedder(name="mock", bias=1.0)],
+    )
+    before = np.asarray(open_grid(first["output_uri"])["features"]["mock"][:])
+
+    forced = run_slide(
+        synthetic_ngff,
+        out,
+        cfg,
+        receipts_dir=receipts,
+        embedders=[MockEmbedder(name="mock", bias=5.0)],
+        force=True,
+    )
+    after = np.asarray(open_grid(forced["output_uri"])["features"]["mock"][:])
+
+    assert forced["status"] == "complete"
+    assert not np.array_equal(before, after)
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_slide_force_bypasses_whole_request_receipt(synthetic_ngff, tmp_path):
+    out = str(tmp_path / "out")
+    receipts = str(tmp_path / "receipts")
+    cfg = RunConfig(models=["mock"], no_seg=True, device="cpu", amp="fp32")
+    geometry = [{"model": "mock", "mpp": 0.5, "patch_px": 64}]
+    first = embed_slide(
+        synthetic_ngff,
+        out,
+        cfg,
+        geometry_config=geometry,
+        receipts_dir=receipts,
+        embedders=[MockEmbedder(name="mock", bias=1.0)],
+    )
+    before = np.asarray(open_grid(first["output_uri"])["features"]["mock"][:])
+
+    forced = embed_slide(
+        synthetic_ngff,
+        out,
+        cfg,
+        geometry_config=geometry,
+        receipts_dir=receipts,
+        embedders=[MockEmbedder(name="mock", bias=5.0)],
+        force=True,
+    )
+    after = np.asarray(open_grid(forced["output_uri"])["features"]["mock"][:])
+
+    assert forced["status"] == "complete"
+    assert not np.array_equal(before, after)
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_same_basename_different_source_cannot_reuse_store(tmp_path):
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_dir.mkdir()
+    second_dir.mkdir()
+    first = build_ngff_v04(str(first_dir / "S.zarr"))
+    second = build_ngff_v04(str(second_dir / "S.zarr"))
+    out = str(tmp_path / "out")
+    receipts = str(tmp_path / "receipts")
+    cfg = RunConfig(
+        models=["mock"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        device="cpu",
+        amp="fp32",
+    )
+    summary = run_slide(
+        first,
+        out,
+        cfg,
+        receipts_dir=receipts,
+        embedders=[MockEmbedder(name="mock")],
+    )
+    before = np.asarray(open_grid(summary["output_uri"])["coords"][:])
+
+    with pytest.raises(ValueError, match="same-named slides"):
+        run_slide(
+            second,
+            out,
+            cfg,
+            receipts_dir=receipts,
+            embedders=[MockEmbedder(name="mock")],
+        )
+
+    after = np.asarray(open_grid(summary["output_uri"])["coords"][:])
+    assert np.array_equal(before, after)
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")

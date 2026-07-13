@@ -63,6 +63,141 @@ def test_embed_many_validates_slide_encoders_before_discovery_or_model_load(
     assert "no slides found" not in result.output
 
 
+@pytest.mark.parametrize(
+    "rows",
+    [
+        ["/cohort/a/S.zarr", "/cohort/b/S.zarr"],
+        ["/cohort/a/S.zarr", "/cohort/a/S.zarr"],
+    ],
+    ids=["same-basename", "identical-row"],
+)
+def test_embed_many_rejects_duplicate_output_ids_before_model_load(
+    tmp_path, monkeypatch, rows
+):
+    import raw2features.cli.embed_many as em
+
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text("path\n" + "\n".join(rows) + "\n")
+    monkeypatch.setattr(
+        em,
+        "load_embedders",
+        lambda *args, **kwargs: pytest.fail("models must not be loaded"),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(tmp_path),
+            str(tmp_path / "out"),
+            "--manifest",
+            str(manifest),
+            "--num-shards",
+            "2",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "multiple inputs derive the same output ID" in result.output
+    assert "'S'" in result.output
+    assert "models must not be loaded" not in result.output
+
+
+def test_duplicate_preflight_never_prints_remote_credentials(tmp_path, monkeypatch):
+    import raw2features.cli.embed_many as em
+
+    first_secret = "FIRST_SECRET"
+    second_secret = "SECOND_SECRET"
+    base = "https://example.org/image.zarr?series=2"
+    rows = [
+        f"https://user:{first_secret}@example.org/image.zarr?series=2&token={first_secret}",
+        f"https://user:{second_secret}@example.org/image.zarr?series=2&token={second_secret}",
+    ]
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text("path\n" + "\n".join(rows) + "\n")
+    monkeypatch.setattr(
+        em,
+        "load_embedders",
+        lambda *args, **kwargs: pytest.fail("models must not be loaded"),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(tmp_path),
+            str(tmp_path / "out"),
+            "--manifest",
+            str(manifest),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert first_secret not in result.output
+    assert second_secret not in result.output
+    assert result.output.count(base) == 2
+
+
+def test_duplicate_preflight_hides_malformed_uri_credentials():
+    from raw2features.cli.embed_many import _validate_unique_output_ids
+
+    malformed = "https://user:DO_NOT_PRINT@exa／mple.com/image.zarr"
+    with pytest.raises(ValueError) as caught:
+        _validate_unique_output_ids([{"path": malformed}])
+
+    assert "DO_NOT_PRINT" not in str(caught.value)
+
+
+def test_manifest_resolution_hides_malformed_uri_credentials(tmp_path):
+    secret = "DO_NOT_PRINT"
+    malformed = f"https://user:{secret}@exa／mple.com/image.zarr"
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text(f"path\n{malformed}\n")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(tmp_path),
+            str(tmp_path / "out"),
+            "--manifest",
+            str(manifest),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert secret not in result.output
+    assert "check the URI syntax" in result.output
+
+
+def test_parallel_worker_startup_failures_make_command_fail(tmp_path, monkeypatch):
+    import raw2features.cli.embed_many as em
+
+    slides = tmp_path / "slides"
+    slides.mkdir()
+    (slides / "S.zarr").mkdir()
+
+    def fail_load(_cfg, device=None):
+        raise RuntimeError(f"cannot load on {device}")
+
+    monkeypatch.setattr(em, "load_embedders", fail_load)
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(slides),
+            str(tmp_path / "out"),
+            "--devices",
+            "cpu,cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert result.output.count("worker startup FAILED") == 2
+    assert "2 device workers failed during model-load startup" in result.output
+    assert "2 failed" not in result.output
+
+
 # -- end-to-end (needs torch; mocks injected so no weight download) ------------
 
 

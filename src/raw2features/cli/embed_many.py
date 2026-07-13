@@ -36,6 +36,10 @@ from raw2features.pipeline.runner import (
 )
 
 
+class _WorkerStartupError(RuntimeError):
+    """One or more slide-parallel workers could not load their models."""
+
+
 def _shard(items: list, index: int, num: int) -> list:
     """This task's strided subset. Across ``index in range(num)`` the strided
     subsets partition *items* exactly (disjoint, covering), and load-balance better
@@ -182,8 +186,15 @@ def embed_many(
     if manifest:
         from raw2features.core.config import load_manifest
 
-        all_rows = _resolve_manifest_sources(load_manifest(manifest), slide_dir)
-        all_rows = sorted(all_rows, key=_manifest_sort_key)
+        rows = load_manifest(manifest)
+        try:
+            all_rows = _resolve_manifest_sources(rows, slide_dir)
+        except Exception as exc:  # noqa: BLE001 - do not echo malformed credentials
+            typer.echo(
+                "Error: could not resolve a manifest source; check the URI syntax",
+                err=True,
+            )
+            raise typer.Exit(1) from exc
     else:
         all_rows = [
             {"path": p} for p in sorted(globmod.glob(os.path.join(slide_dir, glob)))
@@ -192,6 +203,12 @@ def embed_many(
         where = manifest or os.path.join(slide_dir, glob)
         typer.echo(f"Error: no slides found ({where})", err=True)
         raise typer.Exit(1)
+    try:
+        _validate_unique_output_ids(all_rows)
+    except ValueError as exc:
+        typer.echo(redact_uri_credentials(f"Error: {exc}"), err=True)
+        raise typer.Exit(1) from exc
+    all_rows = sorted(all_rows, key=_manifest_sort_key)
     shard = _shard(all_rows, shard_index, num_shards)
     typer.echo(
         f"shard {shard_index}/{num_shards}: {len(shard)} of {len(all_rows)} slides"
@@ -240,16 +257,20 @@ def embed_many(
     device_list = cfg.device_list()
 
     t0 = time.time()
-    if len(device_list) > 1:
-        done, skipped, failed = _embed_shard_parallel(
-            shard, out_dir, cfg, device_list, receipts_dir, cli, force,
-            mpp, patch_size, geometry_config,
-        )
-    else:
-        done, skipped, failed = _embed_shard_serial(
-            shard, out_dir, cfg, receipts_dir, cli, force,
-            mpp, patch_size, geometry_config,
-        )
+    try:
+        if len(device_list) > 1:
+            done, skipped, failed = _embed_shard_parallel(
+                shard, out_dir, cfg, device_list, receipts_dir, cli, force,
+                mpp, patch_size, geometry_config,
+            )
+        else:
+            done, skipped, failed = _embed_shard_serial(
+                shard, out_dir, cfg, receipts_dir, cli, force,
+                mpp, patch_size, geometry_config,
+            )
+    except _WorkerStartupError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
     typer.echo(
         f"shard {shard_index}/{num_shards} done: {done} embedded, {skipped} skipped, "
         f"{failed} failed in {time.time() - t0:.0f}s"
@@ -277,6 +298,44 @@ def _manifest_sort_key(row: dict) -> str:
 
     path = row["path"]
     return source_uri(path) if is_remote_uri(path) else path
+
+
+def _validate_unique_output_ids(rows: list[dict]) -> None:
+    """Reject a cohort whose resolved inputs would target the same output store.
+
+    This runs on the complete cohort before sharding, so identical duplicate rows and
+    same-basename local sources cannot become concurrent writers in different tasks or
+    device threads. Local IDs deliberately retain their v0.1 basename behaviour.
+    """
+
+    by_id: dict[str, list[str]] = {}
+    for row in rows:
+        path = str(row["path"])
+        try:
+            slide_id = slide_id_from_path(path)
+            safe_source = source_uri(path)
+        except Exception as exc:  # noqa: BLE001 - do not echo malformed credentials
+            raise ValueError(
+                "could not derive a safe output ID for one cohort input; "
+                "check the source URI syntax"
+            ) from exc
+        by_id.setdefault(slide_id, []).append(safe_source)
+    duplicates = {sid: sources for sid, sources in by_id.items() if len(sources) > 1}
+    if not duplicates:
+        return
+
+    lines = [
+        "multiple inputs derive the same output ID; each cohort input must target "
+        "a unique *.embeddings.zarr store:"
+    ]
+    for sid in sorted(duplicates):
+        lines.append(f"  {sid!r}:")
+        lines.extend(f"    - {source}" for source in duplicates[sid])
+    lines.append(
+        "Rename same-basename local slides, or run them in separate commands with "
+        "different output directories."
+    )
+    raise ValueError("\n".join(lines))
 
 
 def _with_source_mpp(cfg: RunConfig, row: dict) -> RunConfig:
@@ -368,6 +427,7 @@ def _embed_shard_parallel(
         work.put(row)
     n = len(shard)
     tally = {"done": 0, "skipped": 0, "failed": 0}
+    startup_failures: list[str] = []
     seq = {"i": 0}
     lock = threading.Lock()  # guards the tally, the progress counter, and echo
 
@@ -375,7 +435,18 @@ def _embed_shard_parallel(
         # Build this device's model copies once and reuse across the slides it pulls
         # (warm worker, per device). Done inside the thread so the loads run in
         # parallel and each lands on its own device.
-        embedders = load_embedders(cfg, device)
+        try:
+            embedders = load_embedders(cfg, device)
+        except Exception as exc:  # noqa: BLE001 - report worker startup, then exit 1
+            with lock:
+                startup_failures.append(device)
+                typer.echo(
+                    redact_uri_credentials(
+                        f"worker startup FAILED {type(exc).__name__}: {exc} ({device})"
+                    ),
+                    err=True,
+                )
+            return
         # Each slide is embedded on THIS one device: pin device + drop --devices so
         # run_slide takes the plain single-device path (slide-parallel, not nested
         # patch-parallel). Output is then identical to a one-GPU run of the slide.
@@ -426,4 +497,10 @@ def _embed_shard_parallel(
         t.start()
     for t in threads:
         t.join()
+    if startup_failures:
+        count = len(startup_failures)
+        noun = "worker" if count == 1 else "workers"
+        raise _WorkerStartupError(
+            f"{count} device {noun} failed during model-load startup"
+        )
     return tally["done"], tally["skipped"], tally["failed"]

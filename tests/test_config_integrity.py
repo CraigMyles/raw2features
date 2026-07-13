@@ -104,9 +104,9 @@ def _opt_default(func, name):
 def test_embed_and_verify_share_content_option_defaults():
     e = set(inspect.signature(embed).parameters)
     v = set(inspect.signature(verify).parameters)
-    # exclude slide (positional) and receipts_dir (a path, required in verify /
-    # optional in embed) -- neither is a content-affecting option in the hash.
-    shared = (e & v) - {"slide", "receipts_dir"}
+    # Exclude paths: verify's optional --out-dir binds the receipt target, while embed
+    # requires it positionally; neither it nor the receipt path feeds the content hash.
+    shared = (e & v) - {"slide", "out_dir", "receipts_dir"}
     assert shared, "expected embed/verify to share content options"
     for name in sorted(shared):
         assert _opt_default(embed, name) == _opt_default(verify, name), (

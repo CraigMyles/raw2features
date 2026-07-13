@@ -69,7 +69,7 @@ on another (e.g. an x86 cluster). Verify with `raw2features version`.
 | `raw2features sample <out.zarr>` | write a tiny synthetic OME-Zarr slide (quickstart / testing) |
 | `raw2features embed <slide.zarr> <out_dir>` | extract patch embeddings for one slide |
 | `raw2features embed-many <slide_dir> <out_dir>` | extract embeddings for a directory/cohort of slides (sharded, resumable) |
-| `raw2features verify <slide.zarr> --receipts-dir DIR` | exit 0 iff the slide is already complete & output-validated (used for skip-if-complete) |
+| `raw2features verify <slide.zarr> --receipts-dir DIR --out-dir OUT` | exit 0 iff the requested output is already complete, source-bound, and validated |
 | `raw2features thumbnail <slide.zarr> <out_dir>` | write a thumbnail PNG (+ optional QC overlay) |
 | `raw2features export-spatialdata <store.embeddings.zarr>` | convert an embedding store to scverse SpatialData (squidpy/napari) - see [`INTEROP.md`](INTEROP.md) |
 | `raw2features export-h5 <store.embeddings.zarr> <out_dir>` | export features to HDF5 (one `.h5` per model); needs the `[h5]` extra |
@@ -179,9 +179,8 @@ prefer native `s3://` or `gs://` credential-provider configuration in that case.
 
 For one slide, in order:
 
-1. **(skip check)** If `--receipts-dir` is set and the slide is already complete
-   for this exact config, the run returns `skipped` immediately and does nothing
-   else (see §7).
+1. **(skip check)** If `--receipts-dir` is set and the source-bound target is already
+   complete for this exact config, the run returns `skipped` immediately (see §7).
 2. **Read metadata** via the `omezarr` reader (NGFF version, MPP, pyramid).
 3. **Build the grid** at the **exact target MPP** (below).
 4. **Segment** the tissue (unless `--no-seg`) on a low-res level and keep only the
@@ -293,12 +292,13 @@ added. "Present" is strict: a model counts only if `features/<model>` is
 ### Receipts - the fast path for cohort runs
 
 `--receipts-dir DIR` adds a cheap short-circuit on top of the store inspection
-above. Before touching the store, `embed` checks for a validated `complete`
-receipt for **this exact configuration** (including the model set); if found it
-returns `skipped` immediately, otherwise it processes and writes a `complete`
-receipt at the end (or `failed` on error). This is what the SLURM array uses to
-skip finished slides cheaply. Completeness is validated against the **actual
-output store**, never just the receipt file.
+above. After confirming that any existing target store belongs to the requested
+source, `embed` checks for a validated `complete` receipt for **this exact
+configuration** (including the model set), source, and output target. If found it
+returns `skipped`; otherwise it processes and writes a `complete` receipt at the
+end. This is what the SLURM array uses to skip finished slides cheaply.
+Completeness is validated against the **actual output store**, never just the
+receipt file.
 
 The receipt's config hash covers the **content-affecting** settings *and* the
 model set:
@@ -309,26 +309,31 @@ reader, models (order-independent), segmenter / --no-seg, --mpp, --patch-size,
 --allow-upsample, --amp
 ```
 
-Runtime-only knobs do **not** change the hash and never affect skipping:
+Runtime-only knobs do **not** change the hash:
 `--device`, `--batch-size`, `--emit-geojson`, `--emit-thumbnail`,
 `--thumbnail-mpp`, `--max-px`, `--output-zarr-format`, `--force`.
+`--force` is the exception for control flow: it deliberately bypasses skipping and
+rebuilds the target without changing the content identity.
 
 ### `verify` - the standalone skip check
 
-`raw2features verify <slide> --receipts-dir DIR <same content flags>` runs exactly
-the same completeness check and exits `0` (complete) or `1` (incomplete). It is
-how the SLURM array skips finished slides. **Pass it the same content-affecting
-flags you pass to `embed`**, or the hash won't match.
+`raw2features verify <slide> --receipts-dir DIR --out-dir OUT <same content flags>`
+runs exactly the same completeness check and exits `0` (complete) or `1`
+(incomplete). It is how the SLURM array skips finished slides. A receipt is trusted
+only when its slide ID, credential-free source, requested output target, and the
+actual store's root/grid source provenance all agree. **Pass `--out-dir` and the same
+content-affecting flags you pass to `embed`**, or the check is not target-aware (or
+the config hash will not match).
 
 ```bash
-raw2features verify slide.zarr --receipts-dir receipts/ -m uni -m resnet50 --mpp 1.0 --quiet
+raw2features verify slide.zarr --receipts-dir receipts/ --out-dir embeddings/ -m uni -m resnet50 --mpp 1.0 --quiet
 ```
 
 ### Forcing a rebuild
 
 Pass `--force` to ignore an existing store and rebuild it from scratch (all
-requested models recomputed, the store overwritten). Deleting the output store
-(and any receipt) has the same effect.
+requested models recomputed, the store overwritten). It also bypasses a valid
+receipt's fast path. Deleting the output store (and any receipt) has the same effect.
 
 ### Important: side-products are skipped too
 
@@ -400,6 +405,12 @@ checker - see [`slurm/README.md`](../slurm/README.md) for a plain-language overv
 which script to use. Each task is **idempotent**: it `verify`s the slide first and skips if
 already complete, so re-submitting the same array safely resumes only the missing/failed
 slides.
+
+Before `embed-many` shards or loads models, it requires every resolved cohort input to
+derive a unique output ID. Ordinary local IDs remain basename-based for v0.1
+compatibility, so same-named slides from different directories must be renamed or run
+as separate commands with different output directories. Repeated identical manifest
+rows are also rejected; a per-output lock across independent invocations is not implied.
 
 ```bash
 cd raw2features && uv sync --extra zarr --extra image --extra torch --extra models
@@ -494,7 +505,8 @@ is rewritten. Run all the models you want in a single `embed` invocation.
 
 **`verify` always says incomplete.** It must be given the **same content-affecting
 flags** as the `embed` that produced the store (same `-f` models, `--mpp`,
-`--patch-size`, etc.) so the config hash matches.
+`--patch-size`, etc.) so the config hash matches. Pass the same output directory as
+`--out-dir` so the receipt is also bound to the intended target store.
 
 **`import torch` / model load fails on the cluster.** The venv was built for a
 different CPU architecture. Re-run `uv sync` on the target machine.

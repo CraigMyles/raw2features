@@ -22,6 +22,7 @@ import numpy as np
 
 from raw2features.core.plugins import register
 
+from ._hub import download_pinned_hf_file, verify_sha256
 from .base import Embedder
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -143,14 +144,14 @@ class KronosEmbedder(Embedder):
         import csv
 
         try:
-            from huggingface_hub import hf_hub_download
             from kronos import create_model_from_pretrained
         except ImportError as exc:  # pragma: no cover - only without the extra
             raise ImportError(
                 "KRONOS needs the optional `kronos` package. Install the stack, then "
                 "the (non-PyPI, gated) package:\n"
                 '  pip install "raw2features[kronos]"\n'
-                "  pip install git+https://github.com/mahmoodlab/KRONOS.git"
+                "  pip install git+https://github.com/mahmoodlab/KRONOS.git@"
+                "48979362386c8440c934954be3d88ccfa74d6f36"
             ) from exc
 
         # Use torch SDPA (flash attention) instead of KRONOS's naive fallback - far
@@ -158,10 +159,16 @@ class KronosEmbedder(Embedder):
         if self.spec.timm_kwargs.get("sdpa", True):
             _patch_kronos_attention_to_sdpa()
 
-        repo = self.spec.source.removeprefix("hf_hub:").removeprefix("hf-hub:")
         cache = self.spec.timm_kwargs.get("cache_dir")
+        checkpoint = download_pinned_hf_file(
+            self.spec.source,
+            "kronos_vits16_model.pt",
+            self.spec.weights_revision,
+            cache_dir=cache,
+        )
+        verify_sha256(checkpoint, self.spec.weights_sha256, what=self.spec.name)
         model, precision, _dim = create_model_from_pretrained(
-            checkpoint_path=f"hf_hub:{repo}",
+            checkpoint_path=checkpoint,
             cache_dir=cache,
             cfg={"model_type": "vits16", "token_overlap": False},
         )
@@ -174,10 +181,10 @@ class KronosEmbedder(Embedder):
         # from the model's published marker_metadata.csv. The canonical KRONOS name is
         # kept so the per-slide mapping provenance can record the identity each channel
         # resolved to (not just our normalised key).
-        meta_path = hf_hub_download(
-            repo,
+        meta_path = download_pinned_hf_file(
+            self.spec.source,
             "marker_metadata.csv",
-            revision=self.spec.weights_revision,  # pin the immutable HF commit
+            self.spec.weights_revision,
             cache_dir=cache,
         )
         self._vocab: dict[str, tuple[int, float, float, str]] = {}

@@ -7,8 +7,8 @@ deferred to :meth:`load`.
 
 Load + forward, confirmed by introspecting the real model:
 
-    from madeleine.models.factory import create_model_from_pretrained
-    model, _dtype = create_model_from_pretrained(local_dir)  # downloads the gated repo
+    from madeleine.models.Model import create_model
+    model = create_model(model_cfg, device=device, checkpoint_path=local_checkpoint)
     model = model.to(device).eval()
     with torch.inference_mode():
         slide_vec = model.encode_he(feats, device)           # [1, N, 512] -> [1, 512]
@@ -20,7 +20,7 @@ Licence note: the HF card tags ``mit`` but the GitHub repo's LICENSE says
 CC-BY-NC-ND-4.0 - a conflict we record, not resolve (see registry.yaml). Install::
 
     pip install "raw2features[madeleine]"
-    pip install git+https://github.com/mahmoodlab/MADELEINE.git
+    pip install git+https://github.com/mahmoodlab/MADELEINE.git@419287dc60a57296d959840b893481019c4f0d21
 
 Reference:  https://huggingface.co/MahmoodLab/madeleine
 Paper:      Jaume et al., ECCV 2024 - arXiv:2408.02859
@@ -28,11 +28,15 @@ Paper:      Jaume et al., ECCV 2024 - arXiv:2408.02859
 
 from __future__ import annotations
 
+import json
 import os
+from argparse import Namespace
+from pathlib import Path
 
 import numpy as np
 
 from raw2features.core.plugins import register
+from raw2features.embedders._hub import download_pinned_hf_snapshot, verify_sha256
 
 from .base import SlideEmbedder, SlideModelSpec
 
@@ -51,8 +55,9 @@ _SPEC = SlideModelSpec(
     weights_revision="a5eca29194526644eaa725cbad62c0b5023007db",
     notes=(
         "Multi-stain ABMIL over CONCH v1 (512-d) patch features -> 512-d slide vector. "
-        "Loads via the madeleine package's create_model_from_pretrained; gated - needs "
-        "an accepted MahmoodLab/madeleine gate + the [madeleine] extra and git package."
+        "Loads a revision-pinned local snapshot via the madeleine package's "
+        "create_model; gated - needs an accepted MahmoodLab/madeleine gate + the "
+        "[madeleine] extra and git package."
     ),
 )
 
@@ -68,21 +73,38 @@ class MadeleineSlideEmbedder(SlideEmbedder):
 
     def load(self, device: str = "cuda", dtype=None) -> MadeleineSlideEmbedder:
         try:
-            from madeleine.models.factory import create_model_from_pretrained
+            from madeleine.models.Model import create_model
         except ImportError as exc:  # pragma: no cover - only without the extra
             raise ImportError(
                 "MADELEINE needs the optional `madeleine` package:\n"
                 '  pip install "raw2features[madeleine]"\n'
-                "  pip install git+https://github.com/mahmoodlab/MADELEINE.git"
+                "  pip install git+https://github.com/mahmoodlab/MADELEINE.git@"
+                "419287dc60a57296d959840b893481019c4f0d21"
             ) from exc
 
-        # The factory downloads the (gated) repo into local_dir and loads it. Point it
-        # at a stable cache dir so it fetches once; it returns (model, dtype).
+        # MADELEINE's convenience factory always snapshot_downloads repository HEAD
+        # and exposes no revision argument. Reproduce its small local-load path after
+        # downloading the model config + checkpoint at the registry commit.
         local_dir = os.environ.get("RAW2FEATURES_MADELEINE_DIR") or os.path.join(
             os.path.expanduser("~/.cache/raw2features"), "madeleine"
         )
-        os.makedirs(local_dir, exist_ok=True)
-        model, _ = create_model_from_pretrained(local_dir)
+        snapshot = Path(
+            download_pinned_hf_snapshot(
+                self.spec.source,
+                self.spec.weights_revision,
+                allow_patterns=("model_config.json", "model.pt"),
+                local_dir=local_dir,
+            )
+        )
+        with (snapshot / "model_config.json").open() as fh:
+            model_cfg = Namespace(**json.load(fh))
+        checkpoint = snapshot / "model.pt"
+        verify_sha256(str(checkpoint), self.spec.weights_sha256, what=self.spec.name)
+        model = create_model(
+            model_cfg,
+            device=device,
+            checkpoint_path=str(checkpoint),
+        )
         model.eval().to(device)
         self._model = model
         self._device = device

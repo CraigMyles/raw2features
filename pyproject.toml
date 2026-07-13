@@ -117,9 +117,9 @@ models = ["timm>=1.0", "huggingface-hub>=0.24", "einops>=0.7", "transformers>=4.
 # on upload - so these extras carry only their PyPI-resolvable dependencies. The encoder's
 # own (non-PyPI, gated) git package is a one-line post-install step, documented in the
 # README ("Gated git-package encoders") and each model's docs/MODELS.md row:
-#   CONCH:  pip install "git+https://github.com/Mahmoodlab/CONCH.git"
-#   KRONOS: pip install "git+https://github.com/mahmoodlab/KRONOS.git"
-#   MUSK:   pip install "git+https://github.com/lilab-stanford/MUSK"
+#   CONCH:  pip install "git+https://github.com/Mahmoodlab/CONCH.git@141cc09c7d4ff33d8eda562bd75169b457f71a62"
+#   KRONOS: pip install "git+https://github.com/mahmoodlab/KRONOS.git@48979362386c8440c934954be3d88ccfa74d6f36"
+#   MUSK:   pip install "git+https://github.com/lilab-stanford/MUSK@714b666969c1911e5efe70d991140a21030f4ef3"
 # Each extra pulls the torch+models stack the encoder needs so the post-install git
 # package finds its build/runtime deps already present.
 conch = ["raw2features[torch,models]"]
@@ -133,9 +133,9 @@ kronos = ["raw2features[torch,models]", "tifffile>=2024", "imagecodecs"]
 # declares no deps, so it can't downgrade torch/timm; install it separately - see above).
 musk = ["raw2features[torch,models]", "fairscale", "open_clip_torch"]
 # open_clip image towers (QuiltNet, BiomedCLIP): CLIP-style vision-language pathology
-# models; we use only the image tower's encode_image. open_clip resolves the weights
-# from the `hf-hub:` source, so no separate git package is needed.
-open_clip = ["raw2features[torch,models]", "open_clip_torch>=2.20"]
+# models; we use only the image tower's encode_image. raw2features resolves the registry
+# revision to a local snapshot before open_clip loads it; no git package is needed.
+open_clip = ["raw2features[torch,models]", "open_clip_torch>=3.0"]
 # GrandQC tissue + artifact QC (UNet++/EfficientNet-B0 via segmentation-models-pytorch),
 # for `--segmenter grandqc` + `--qc grandqc`. Opt-in: GrandQC weights are CC-BY-NC-SA
 # (non-commercial), fetched on first use and NEVER bundled - see docs/SEGMENTATION.md /
@@ -146,7 +146,8 @@ grandqc = ["raw2features[torch]", "segmentation-models-pytorch>=0.3", "timm>=1.0
 # sacremoses at module load (the BioGPT decoder path, unused for slide embeddings). Gated.
 prism = ["raw2features[torch,models]", "environs", "sacremoses"]
 # MADELEINE slide encoder (Mahmood Lab): loads via the authors' non-PyPI `madeleine` git
-# package (post-install, like conch) - pip install git+https://github.com/mahmoodlab/MADELEINE.git
+# package (post-install, like conch):
+# pip install git+https://github.com/mahmoodlab/MADELEINE.git@419287dc60a57296d959840b893481019c4f0d21
 madeleine = ["raw2features[torch,models]"]
 # Prov-GigaPath slide encoder (LongNet over gigapath 1536-d tile features). Two post-install
 # steps (all --no-deps so they can't repin torch): the gigapath git package provides
@@ -155,7 +156,7 @@ madeleine = ["raw2features[torch,models]"]
 # fallback, so install a wheel matching your torch/ABI - or source-build it (needs nvcc; ~15-20 min). Prebuilt wheels: x86 + torch 2.7-2.9; for torch 2.6
 # or aarch64 torch >=2.10, build from source. Needs an Ampere+/Blackwell GPU + accepted
 # prov-gigapath/prov-gigapath gate (HF_TOKEN):
-#   pip install --no-deps fairscale "git+https://github.com/prov-gigapath/prov-gigapath.git"
+#   pip install --no-deps fairscale "git+https://github.com/prov-gigapath/prov-gigapath.git@3505f87e197d167522be491bb3f18fb5a08ca584"
 #   pip install flash-attn  (prebuilt wheel matching torch/ABI, or --no-build-isolation source build)
 gigapath_slide = ["raw2features[torch,models]"]
 # CHIEF slide encoder (Wang et al., Nature 2024): gated-attention MIL over CTransPath. Its
@@ -175,7 +176,7 @@ tangle = ["raw2features[torch,models]", "gdown>=5.2"]
 # runs from a repo checkout. Swap to mahmoodlab/SEAL when the PR merges. The backbone's own
 # package is also needed (e.g. CONCH). Set HF_TOKEN for the gates.
 #   pip install --no-deps "git+https://github.com/cjmielke/SEAL.git@5334490645e8410e7d8ef6978cebc4fd98f9cf9a"
-#   pip install git+https://github.com/Mahmoodlab/CONCH.git   # for seal_conch
+#   pip install git+https://github.com/Mahmoodlab/CONCH.git@141cc09c7d4ff33d8eda562bd75169b457f71a62  # for seal_conch
 seal = ["raw2features[torch,models]", "peft", "scanpy"]
 # scverse SpatialData export (post-hoc converter: embeddings.zarr -> SpatialData .zarr).
 # spatialdata pulls anndata + ome-zarr/zarr itself and pins anndata to exclude the
@@ -227,4 +228,5 @@ select = ["E", "F", "I", "UP", "B"]
 testpaths = ["tests"]
 markers = [
     "slow: downloads real model weights + runs a forward (deselect with -m 'not slow')",
+    "network: makes live network requests to validate external resources",
 ]

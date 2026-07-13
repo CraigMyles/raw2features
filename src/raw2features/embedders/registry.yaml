@@ -896,7 +896,7 @@ biomedclip:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   weights_sha256: "52cc993c5c5ff962bd0c60931874bc001e7e9b41666a385530f4a036294576be"   # open_clip_pytorch_model.bin
-  weights_revision: "9f341de4b7a3f86baf8a0b09fa4d3afca6a3a86b"
+  weights_revision: "9f341de24bfb00180f1b847274256e9b65a3a32e"
   doi: "10.48550/arXiv.2303.00915"   # BiomedCLIP (Zhang et al.)
   license: "MIT (BiomedCLIP, Microsoft)"
   gated: false
@@ -906,7 +906,12 @@ biomedclip:
     (15M figure-caption pairs from PubMed Central). General-biomedical, not pathology-native:
     a VLM baseline, not an H&E specialist. open_clip
     create_model_from_pretrained("hf-hub:microsoft/BiomedCLIP-...") -> encode_image -> 512-d
-    projected embedding. OpenAI-CLIP norm @ 224 px, asserted at load. MIT, ungated.
+    projected embedding. OpenAI-CLIP norm @ 224 px, asserted at load. OpenCLIP also
+    constructs the unused text tower: its construction-only PubMedBERT config/tokenizer
+    dependency is pinned to
+    microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract@d673b8835373c6fa116d6d8006b33d48734e305d
+    and localized before model construction; it is not part of grid/model identity.
+    MIT, ungated.
 
 plip:
   family: clip_hf          # optional family: transformers CLIPModel (in the [models] extra)
@@ -1151,8 +1156,8 @@ slide_encoders:
     doi: "10.48550/arXiv.2408.02859"
     notes: >-
       Multi-stain ABMIL slide encoder over CONCH v1 (512-d) patch features -> 512-d slide
-      vector. Loads via the madeleine package's create_model_from_pretrained(local_dir) ->
-      (model, dtype); model.encode_he(feats[1,N,512], device) -> [1,512]. No coords. Needs
+      vector. Loads a revision-pinned local snapshot via the madeleine package's
+      create_model; model.encode_he(feats[1,N,512], device) -> [1,512]. No coords. Needs
       the [madeleine] extra + git package + accepted MahmoodLab/madeleine gate. Licence is
       contested (HF tag mit vs GitHub CC-BY-NC-ND) - recorded, not resolved. `-f conch -s
       madeleine`.

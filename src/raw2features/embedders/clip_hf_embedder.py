@@ -51,7 +51,11 @@ class ClipHFEmbedder(Embedder):
                 'pip install "raw2features[models]"'
             ) from exc
 
-        model = AutoModel.from_pretrained(self.spec.source, trust_remote_code=True)
+        model = AutoModel.from_pretrained(
+            self.spec.source,
+            trust_remote_code=True,
+            revision=self.spec.weights_revision,
+        )
         model.eval().to(device)
         self._model = model
         self._device = device

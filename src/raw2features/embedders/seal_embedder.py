@@ -14,8 +14,8 @@ it only runs from a repo checkout; the fork resolves them from the install dir (
 Swap the install URL to ``mahmoodlab/SEAL`` once the PR merges.
 
 Needs the ``[seal]`` extra (``peft`` + ``scanpy``) + the pinned ``seal`` fork + the
-backbone's own package (e.g. CONCH:
-``pip install git+https://github.com/Mahmoodlab/CONCH.git``), and an ``HF_TOKEN`` env
+backbone's own pinned package (for CONCH, revision
+``141cc09c7d4ff33d8eda562bd75169b457f71a62``), and an ``HF_TOKEN`` env
 var with accepted access to ``MahmoodLab/SEAL`` and the base model's gate (SEAL reads
 ``HF_TOKEN`` from the environment; raw2features stores no credentials).
 
@@ -73,7 +73,8 @@ class SealEmbedder(Embedder):
                 "  pip install --no-deps "
                 '"git+https://github.com/cjmielke/SEAL.git'
                 '@5334490645e8410e7d8ef6978cebc4fd98f9cf9a"\n'
-                "  + the backbone's own package (e.g. git+https://github.com/Mahmoodlab/CONCH.git)"
+                "  + the backbone's own package (e.g. git+https://github.com/"
+                "Mahmoodlab/CONCH.git@141cc09c7d4ff33d8eda562bd75169b457f71a62)"
             ) from exc
 
         from huggingface_hub import hf_hub_download

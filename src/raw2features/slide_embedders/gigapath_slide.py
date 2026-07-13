@@ -99,7 +99,8 @@ class GigapathSlideEmbedder(SlideEmbedder):
                 "GigaPath's slide encoder needs the optional gigapath stack:\n"
                 '  pip install "raw2features[gigapath_slide]"\n'
                 "  pip install --no-deps fairscale "
-                '"git+https://github.com/prov-gigapath/prov-gigapath.git"\n'
+                '"git+https://github.com/prov-gigapath/prov-gigapath.git@'
+                '3505f87e197d167522be491bb3f18fb5a08ca584"\n'
                 "  + a prebuilt flash-attn wheel for your torch+CUDA "
                 "(hard dep, no SDPA fallback; Ampere+ GPU at runtime)"
             ) from exc

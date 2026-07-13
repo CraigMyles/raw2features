@@ -21,6 +21,7 @@ from raw2features.cli.thumbnail import thumbnail
 from raw2features.cli.validate_store import validate_store
 from raw2features.cli.verify import verify
 from raw2features.core import plugins
+from raw2features.core.uris import redact_uri_credentials
 
 app = typer.Typer(
     help="raw2features - OME-Zarr → foundation-model patch embeddings.",
@@ -110,7 +111,11 @@ def main() -> None:
     try:
         app()
     except FileNotFoundError as exc:
-        typer.secho(f"Error: {exc}", fg=typer.colors.RED, err=True)
+        typer.secho(
+            redact_uri_credentials(f"Error: {exc}"),
+            fg=typer.colors.RED,
+            err=True,
+        )
         raise SystemExit(2) from exc
     except ModuleNotFoundError as exc:
         extra = _EXTRA_FOR_MODULE.get((exc.name or "").split(".")[0])
@@ -122,4 +127,15 @@ def main() -> None:
             fg=typer.colors.RED,
             err=True,
         )
+        raise SystemExit(2) from exc
+    except Exception as exc:
+        # Remote backends may put the complete signed child-object URL in an
+        # otherwise ordinary HTTP/Zarr exception. Hide that specific class of
+        # failure at the CLI boundary, while preserving tracebacks for unrelated
+        # programming errors whose message needs no redaction.
+        message = str(exc)
+        redacted = redact_uri_credentials(message)
+        if redacted == message:
+            raise
+        typer.secho(f"Error: {redacted}", fg=typer.colors.RED, err=True)
         raise SystemExit(2) from exc

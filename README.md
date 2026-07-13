@@ -115,7 +115,7 @@ rerun-safe / skip-if-complete model, thumbnails, and example SLURM cohort runs.
 raw2features info slide.ome.zarr
 raw2features embed slide.ome.zarr out/ \
     --model uni --model resnet50 \
-    --mpp 1.0 --patch-size 224 --hf-token "$HF_TOKEN" \
+    --mpp 1.0 --patch-size 224 \
     --emit-thumbnail                                  # optional QC thumbnail + overlay
 raw2features list embedders
 
@@ -130,6 +130,10 @@ raw2features thumbnail slide.ome.zarr out/ --overlay
 raw2features export-spatialdata out/slide.embeddings.zarr   # -> slide.spatialdata.zarr
 raw2features export-h5 out/slide.embeddings.zarr --layout trident   # or --layout clam / stamp
 ```
+
+For gated Hugging Face models, authenticate once with `hf auth login` or set
+`HF_TOKEN` in the environment. Passing `--hf-token` is supported, but environment or
+cached authentication avoids placing a token in shell history or process listings.
 
 ## Output
 
@@ -169,6 +173,15 @@ raw2features embed \
   https://uk1s3.embassy.ebi.ac.uk/bia-integrator-data/S-BIAD1285/.../image.ome.zarr/0 \
   out/ -m uni --mpp 0.5 --read-block 16        # fewer, larger reads cut round-trips
 ```
+
+Authenticated URLs are kept intact only while opening the source. Stored metadata,
+receipts, output IDs, and captured command provenance use a credential-free URI:
+userinfo and known AWS, Google, Azure, and generic authentication parameters are
+removed, while selectors such as an object version or series remain. Rotating a signed
+URL therefore reuses the same output ID. Query credentials must authorize the Zarr
+prefix and its child objects; a presigned URL for one S3/GCS object generally cannot
+authorize an entire Zarr hierarchy. Prefer native `s3://` / `gs://` credential-provider
+configuration for those stores.
 
 Validated end-to-end against the EBI BioImage Archive. Remote reads are latency-bound, but
 **in our read benchmark** (`raw2features benchmark`) a cold embed-once run (the normal case)

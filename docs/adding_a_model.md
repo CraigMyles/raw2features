@@ -36,7 +36,9 @@ uni:
   gated: true
 ```
 
-Gated weights are downloaded with the user's `--hf-token` / `HF_TOKEN`.
+Gated weights use the user's cached Hugging Face login or `HF_TOKEN`; `--hf-token`
+is also supported but is less suitable for interactive shells because it can enter
+shell history or process listings.
 
 ## 2. Reuse or extend the embedder
 

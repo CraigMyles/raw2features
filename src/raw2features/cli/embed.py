@@ -7,6 +7,7 @@ import sys
 
 import typer
 
+from raw2features.core.provenance import sanitize_argv
 from raw2features.pipeline.runner import RunConfig, embed_slide
 from raw2features.viz import DEFAULT_THUMBNAIL_MPP
 
@@ -225,7 +226,7 @@ def embed(
         requested_patch_px=patch_size,
         geometry_config=geometry_config,
         receipts_dir=receipts_dir,
-        cli=" ".join(sys.argv),
+        cli=sanitize_argv(sys.argv),
         force=force,
     )
     for key, value in summary.items():

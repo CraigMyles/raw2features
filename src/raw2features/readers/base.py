@@ -14,6 +14,7 @@ import numpy as np
 
 from raw2features.core.geometry import Region, Size
 from raw2features.core.mpp import LevelChoice, level_for_mpp
+from raw2features.core.uris import source_uri
 
 
 class WSISource(ABC):
@@ -33,7 +34,16 @@ class WSISource(ABC):
         """Release any handles."""
 
     def __enter__(self) -> WSISource:
-        return self.open()
+        try:
+            return self.open()
+        except Exception:
+            # A partially-open remote reader may already own HTTP sessions/stores.
+            # ``with Reader(...)`` does not call __exit__ when __enter__ fails.
+            try:
+                self.close()
+            except Exception:  # noqa: BLE001 - preserve the original open failure
+                pass
+            raise
 
     def __exit__(self, *exc: object) -> None:
         self.close()
@@ -98,7 +108,8 @@ class WSISource(ABC):
         """Resolve the exact-MPP read plan for this source (see ``core.mpp``)."""
         if self.mpp is None:
             raise ValueError(
-                f"{self.path}: source MPP is unknown; cannot target {target_mpp} um/px"
+                f"{source_uri(self.path)}: source MPP is unknown; cannot target "
+                f"{target_mpp} um/px"
             )
         return level_for_mpp(
             target_mpp,

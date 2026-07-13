@@ -141,6 +141,10 @@ A JSON object; the normative definition is the packaged JSON Schema (see
 - `source` - the slide this was extracted from:
   `uri`, `slide_id`, `mpp_level0` (µm/px at level 0), `ngff_version`, `reader`,
   `level_dimensions` (`[[w, h], …]`), `level_downsamples`.
+  `uri` is safe-to-persist provenance: plain local paths use their absolute `file://`
+  form, while remote URIs omit userinfo and recognised authentication parameters but
+  retain semantic selectors. It is therefore an identity/provenance URI and may need
+  credentials supplied separately before it can be reopened.
   Optional coordinate-frame self-description (present when the reader can supply it):
   `axes` (the source NGFF axis order, e.g. `["c", "y", "x"]`), `axis_units` (per-axis
   unit string), `scale_um` (per-axis level-0 pixel size in µm, e.g.
@@ -166,7 +170,8 @@ A JSON object; the normative definition is the packaged JSON Schema (see
 - `grid_hash` - a hash of the patch geometry. Two grids with the same `grid_hash` share an
   identical grid, so feature arrays from different runs are row-comparable.
 - `provenance` - `raw2features_version`, `created_utc`, `cli`, `git_sha`, `host`, `arch`,
-  `platform`, `python`, and `gpu` when applicable.
+  `platform`, `python`, and `gpu` when applicable. Secret option values and credentials
+  embedded in URIs are redacted from `cli`.
 
 Optional grid keys: `segmentation` (segmenter name + parameters), `thumbnail` (thumbnail
 metadata when one was written), `slide_embeddings` (provenance for any `slide/<model>`).

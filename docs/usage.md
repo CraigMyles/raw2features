@@ -122,9 +122,13 @@ raw2features embed slide.zarr out/ -m uni -m resnet50 -m dinov2 --mpp 1.0
 the model page:
 
 ```bash
-export HF_TOKEN=hf_...          # or: huggingface-cli login
-raw2features embed slide.zarr out/ -m uni --hf-token "$HF_TOKEN"
+hf auth login                   # cached login; alternatively set HF_TOKEN
+raw2features embed slide.zarr out/ -m uni
 ```
+
+`--hf-token` remains available for automation, but cached login or the `HF_TOKEN`
+environment variable avoids exposing a token through shell history or process listings.
+Any token passed on the command line is redacted from stored command provenance.
 
 ### Key options
 
@@ -153,9 +157,21 @@ raw2features embed slide.zarr out/ -m uni --hf-token "$HF_TOKEN"
 | `--emit-geojson` | off | also write `<id>.patches.geojson` (QuPath patch polygons) |
 | `--emit-thumbnail` | off | also write a thumbnail + QC overlay (see §8) |
 | `--receipts-dir DIR` | none | enable receipts + **skip-if-complete** (see §7) |
-| `--hf-token` | `$HF_TOKEN` | token for gated models |
+| `--hf-token` | `$HF_TOKEN` | token for gated models; cached login or the environment is preferred, and command provenance is redacted |
 
 See `raw2features models` for available extractors and which are gated.
+
+### Authenticated remote sources
+
+The reader receives the complete remote URI in memory so query-authenticated OME-Zarr
+stores can be opened. The persisted `source.uri`, receipts, output identity, and
+captured CLI remove userinfo and known AWS, Google, Azure, and generic authentication
+parameters, while retaining semantic selectors such as object versions, generations,
+series, and fragments. Credential rotation therefore does not rename the output.
+
+Query credentials must be valid for the Zarr prefix and all child metadata/chunk objects.
+A presigned S3 or GCS URL for one object usually cannot authorize the whole hierarchy;
+prefer native `s3://` or `gs://` credential-provider configuration in that case.
 
 ---
 
@@ -485,7 +501,8 @@ different CPU architecture. Re-run `uv sync` on the target machine.
 
 **Gated model 401 / access error.** You need both a token (`--hf-token` /
 `HF_TOKEN` / cached login) **and** access granted on the model's HuggingFace page.
-Open models (`resnet50`, `dinov2`) need neither.
+Open models (`resnet50`, `dinov2`) need neither. Prefer `HF_TOKEN` or `hf auth login`
+so the token never appears in shell history or a process listing.
 
 **Embeddings are `float16`.** Default storage dtype (inode/byte-light). Use
 `--features-dtype float32` if you need full precision on disk.

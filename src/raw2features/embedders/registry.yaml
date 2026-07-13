@@ -896,7 +896,7 @@ biomedclip:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   weights_sha256: "52cc993c5c5ff962bd0c60931874bc001e7e9b41666a385530f4a036294576be"   # open_clip_pytorch_model.bin
-  weights_revision: "9f341de4b7a3f86baf8a0b09fa4d3afca6a3a86b"
+  weights_revision: "9f341de24bfb00180f1b847274256e9b65a3a32e"
   doi: "10.48550/arXiv.2303.00915"   # BiomedCLIP (Zhang et al.)
   license: "MIT (BiomedCLIP, Microsoft)"
   gated: false

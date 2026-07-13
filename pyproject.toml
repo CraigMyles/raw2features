@@ -228,4 +228,5 @@ select = ["E", "F", "I", "UP", "B"]
 testpaths = ["tests"]
 markers = [
     "slow: downloads real model weights + runs a forward (deselect with -m 'not slow')",
+    "network: makes live network requests to validate external resources",
 ]

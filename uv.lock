@@ -301,6 +301,19 @@ wheels = [
 ]
 
 [[package]]
+name = "beautifulsoup4"
+version = "4.15.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "soupsieve" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/43/65/318323f98dbee45d42dff61d8f047181bc6f2268a9068cfad035a46be5af/beautifulsoup4-4.15.0.tar.gz", hash = "sha256:288e3ca7d54b06f2ac191970bc275c1939cb46d450b255bf6718b04aa37ab4f7", size = 632571, upload-time = "2026-06-07T16:44:20.453Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/88/c6/92fcd42f1ba33e1184263f25bfabf3d27c383410470f169e4b8163bf9c17/beautifulsoup4-4.15.0-py3-none-any.whl", hash = "sha256:d6f88de62e1d4e38ecb1077eb9724cd0eff29d2a08ca16a401e9b9e93f117cf9", size = 109924, upload-time = "2026-06-07T16:44:21.566Z" },
+]
+
+[[package]]
 name = "botocore"
 version = "1.43.0"
 source = { registry = "https://pypi.org/simple" }
@@ -982,6 +995,22 @@ wheels = [
 ]
 
 [[package]]
+name = "gdown"
+version = "6.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "beautifulsoup4" },
+    { name = "filelock" },
+    { name = "requests", extra = ["socks"] },
+    { name = "tqdm" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/6a/b5/a45f62f20664031bf74a6aeb6f8d8cd5910e411bf90d756bd6b09bdc6c35/gdown-6.1.0.tar.gz", hash = "sha256:361c6e04c6ca335df50b9d71f40bcfe9ab70fb26a1b0e890a427267781389553", size = 269670, upload-time = "2026-05-30T11:56:21.322Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/56/a99f0f159cce5b26d267317d436afee184f45fc7911938757d7cbbd2d10c/gdown-6.1.0-py3-none-any.whl", hash = "sha256:38a36a94275b8272f684db469bbd73b4d1f64cbbc1751bcb993a1b2be8f013c8", size = 19216, upload-time = "2026-05-30T11:56:20.016Z" },
+]
+
+[[package]]
 name = "geopandas"
 version = "1.1.3"
 source = { registry = "https://pypi.org/simple" }
@@ -1190,16 +1219,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/36/d3/2dba651d8d830b2823a3e750fe231cf183f1eb11f88d4ca280450efeab57/imagecodecs-2026.6.6-cp312-abi3-win32.whl", hash = "sha256:00596506fcea638063491db1baeef9a2445b3e0147bcbd76633561df702b1eb1", size = 16480894, upload-time = "2026-06-06T15:01:28.639Z" },
     { url = "https://files.pythonhosted.org/packages/20/2a/62a84ce74794664c62d571266b1c8c13261e9dbe82dfc1f0fd1887b6c68b/imagecodecs-2026.6.6-cp312-abi3-win_amd64.whl", hash = "sha256:3ba2bcee53dabfb7d4dbd6f3c3ae731f3bfa43fa9c936d969886dff2f50e2160", size = 20220064, upload-time = "2026-06-06T15:01:32.128Z" },
     { url = "https://files.pythonhosted.org/packages/89/fb/90daf65a4e9b6136fc36b59a0d23aac020707ae8f831de36eceba2a7241f/imagecodecs-2026.6.6-cp312-abi3-win_arm64.whl", hash = "sha256:031c5ea4d0c8bfacc87a5ca0ffdfee9a06b64265960d8b0b5d3f4a32434404c3", size = 16041147, upload-time = "2026-06-06T15:01:35.371Z" },
-    { url = "https://files.pythonhosted.org/packages/62/0d/d953120557150f31e879c6cdb977a89a1d987eb063048d9be83fbc62d1ce/imagecodecs-2026.6.6-cp314-cp314t-macosx_10_15_x86_64.whl", hash = "sha256:5ee77053841dc7a8fbe59df774c0456fbe604edf2cd12c795c29deee1384ce8d", size = 15339668, upload-time = "2026-06-06T15:01:39.935Z" },
-    { url = "https://files.pythonhosted.org/packages/73/1b/cec19d0428188f85b78981087e837e9f30166f013cdf98227a1b20e2c38d/imagecodecs-2026.6.6-cp314-cp314t-macosx_11_0_arm64.whl", hash = "sha256:1fe0a7c8fb67bdd1bbb406c0e830dd1652acf6dce62620071a47e20f7d00619a", size = 12987803, upload-time = "2026-06-06T15:01:42.829Z" },
-    { url = "https://files.pythonhosted.org/packages/e6/73/ad06b8b5944b063ad5f6f55253bb44b64673fd1a776567f7895ffc25d788/imagecodecs-2026.6.6-cp314-cp314t-manylinux_2_28_aarch64.whl", hash = "sha256:2673fc78fc6e2178b13957eccaa2e97c716ea03607af6a2a44a2f09d00919f3f", size = 32256108, upload-time = "2026-06-06T18:12:19.557Z" },
-    { url = "https://files.pythonhosted.org/packages/9e/32/2e67ec87bbcd1c4055f97c3962f5f49598e9c63d2809711c88084959c7dd/imagecodecs-2026.6.6-cp314-cp314t-manylinux_2_28_x86_64.whl", hash = "sha256:ed0760b9d428408798c010593ef204f88d949a9f57fa037623544e811c462c67", size = 32630019, upload-time = "2026-06-06T15:01:47.239Z" },
-    { url = "https://files.pythonhosted.org/packages/6f/13/4ebe5100ff4daf4acb2220481cb7a0d18e623eec7458b85c846b6ec850f0/imagecodecs-2026.6.6-cp314-cp314t-win32.whl", hash = "sha256:16540ed96854312d235bb86f885cb5f6ca2f4f1acde8e283d13a2bda2fb01e26", size = 17234217, upload-time = "2026-06-06T15:01:50.672Z" },
-    { url = "https://files.pythonhosted.org/packages/d7/3a/4298fa62a5d94ce860e0d12082c96707f8b952b499f669daf9b3031716fc/imagecodecs-2026.6.6-cp314-cp314t-win_amd64.whl", hash = "sha256:325f72db99e2678c9ad0ccca8ac9f274b6ac7b4a1a5df71db0f96e23f964aeab", size = 21259530, upload-time = "2026-06-06T15:01:54.316Z" },
-    { url = "https://files.pythonhosted.org/packages/7a/fb/b5eb0049b31558e439af0e06f3b206ac0b45930773d15abcb0236c0399a1/imagecodecs-2026.6.6-cp314-cp314t-win_arm64.whl", hash = "sha256:fcd8b838bbe10c6b312b8aa67add4bb375bd1537ae4d92815c1ea522bef43cbc", size = 16759012, upload-time = "2026-06-06T15:01:57.729Z" },
-    { url = "https://files.pythonhosted.org/packages/1a/84/46857efdc71a8ddb6632858534a74625025824ca77285655a49c246a25bd/imagecodecs-2026.6.6-cp315-cp315t-win32.whl", hash = "sha256:b20be458a4d4a0283acaae17c94ad8128dfc6ce62fefdd55f1882c8e3a67850c", size = 17230579, upload-time = "2026-06-06T15:02:00.722Z" },
-    { url = "https://files.pythonhosted.org/packages/71/cc/91dca22a7bfd0905da6e82c2f6777087294ad07a8e87fdc8727bc6def326/imagecodecs-2026.6.6-cp315-cp315t-win_amd64.whl", hash = "sha256:51703586bb553d3b3ef9a0ab5c5b26432611c2bbb262f5f8fdeb19095c5e130f", size = 21253502, upload-time = "2026-06-06T15:02:04.283Z" },
-    { url = "https://files.pythonhosted.org/packages/3d/95/cf1c29b96ba3d2b644e27eac92389876e286d28391b046b4f486cee6fde5/imagecodecs-2026.6.6-cp315-cp315t-win_arm64.whl", hash = "sha256:e4a059c2f57df75f99024bf9499b17b10d5a3916c5b5addba31317a523f120cd", size = 16757440, upload-time = "2026-06-06T15:02:07.924Z" },
 ]
 
 [[package]]
@@ -3138,6 +3157,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pysocks"
+version = "1.7.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/11/293dd436aea955d45fc4e8a35b6ae7270f5b8e00b53cf6c024c83b657a11/PySocks-1.7.1.tar.gz", hash = "sha256:3f8804571ebe159c380ac6de37643bb4685970655d3bba243530d6558b799aa0", size = 284429, upload-time = "2019-09-20T02:07:35.714Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/59/b4572118e098ac8e46e399a1dd0f2d85403ce8bbaad9ec79373ed6badaf9/PySocks-1.7.1-py3-none-any.whl", hash = "sha256:2725bd0a9925919b9b51739eea5f9e2bae91e83288108a9ad338b2e3a4435ee5", size = 16725, upload-time = "2019-09-20T02:06:22.938Z" },
+]
+
+[[package]]
 name = "pytest"
 version = "9.0.3"
 source = { registry = "https://pypi.org/simple" }
@@ -3264,13 +3292,14 @@ dependencies = [
 all = [
     { name = "einops" },
     { name = "einops-exts" },
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
     { name = "huggingface-hub" },
     { name = "ngff-zarr" },
     { name = "numcodecs" },
     { name = "ome-zarr" },
     { name = "opencv-python-headless" },
     { name = "pillow" },
+    { name = "scikit-learn" },
     { name = "shapely" },
     { name = "timm" },
     { name = "torch" },
@@ -3283,6 +3312,16 @@ benchmark = [
     { name = "psutil" },
     { name = "pynvml" },
 ]
+chief = [
+    { name = "einops" },
+    { name = "einops-exts" },
+    { name = "gdown" },
+    { name = "huggingface-hub" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
+]
 conch = [
     { name = "einops" },
     { name = "einops-exts" },
@@ -3291,6 +3330,21 @@ conch = [
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
+]
+gigapath-slide = [
+    { name = "einops" },
+    { name = "einops-exts" },
+    { name = "huggingface-hub" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
+]
+grandqc = [
+    { name = "segmentation-models-pytorch" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "torchvision" },
 ]
 h5 = [
     { name = "h5py" },
@@ -3383,17 +3437,30 @@ spatialdata = [
     { name = "geopandas" },
     { name = "spatialdata" },
 ]
+stain = [
+    { name = "scikit-learn" },
+]
 tables = [
     { name = "pandas", version = "2.3.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and sys_platform != 'win32') or (python_full_version > '3.11' and sys_platform == 'win32')" },
     { name = "pandas", version = "3.0.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and sys_platform != 'win32') or (python_full_version <= '3.11' and sys_platform == 'win32')" },
     { name = "pyarrow" },
+]
+tangle = [
+    { name = "einops" },
+    { name = "einops-exts" },
+    { name = "gdown" },
+    { name = "huggingface-hub" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
 ]
 torch = [
     { name = "torch" },
     { name = "torchvision" },
 ]
 zarr = [
-    { name = "fsspec" },
+    { name = "fsspec", extra = ["http"] },
     { name = "ngff-zarr" },
     { name = "numcodecs" },
     { name = "ome-zarr" },
@@ -3403,6 +3470,7 @@ zarr = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fsspec", extra = ["http"] },
     { name = "h5py" },
     { name = "ngff-zarr" },
     { name = "numcodecs" },
@@ -3420,7 +3488,9 @@ requires-dist = [
     { name = "einops-exts", marker = "extra == 'models'", specifier = ">=0.0.4" },
     { name = "environs", marker = "extra == 'prism'" },
     { name = "fairscale", marker = "extra == 'musk'" },
-    { name = "fsspec", marker = "extra == 'zarr'", specifier = ">=2024.0" },
+    { name = "fsspec", extras = ["http"], marker = "extra == 'zarr'", specifier = ">=2024.0" },
+    { name = "gdown", marker = "extra == 'chief'", specifier = ">=5.2" },
+    { name = "gdown", marker = "extra == 'tangle'", specifier = ">=5.2" },
     { name = "geopandas", marker = "extra == 'spatialdata'", specifier = ">=0.14" },
     { name = "h5py", marker = "extra == 'h5'", specifier = ">=3.0" },
     { name = "huggingface-hub", marker = "extra == 'models'", specifier = ">=0.24" },
@@ -3441,20 +3511,27 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pynvml", marker = "extra == 'benchmark'", specifier = ">=11.5" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "raw2features", extras = ["torch"], marker = "extra == 'grandqc'" },
+    { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'chief'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'conch'" },
+    { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'gigapath-slide'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'kronos'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'madeleine'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'musk'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'open-clip'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'prism'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'seal'" },
-    { name = "raw2features", extras = ["zarr", "image", "torch", "models"], marker = "extra == 'all'" },
+    { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'tangle'" },
+    { name = "raw2features", extras = ["zarr", "image", "torch", "models", "stain"], marker = "extra == 'all'" },
     { name = "s3fs", marker = "extra == 's3'", specifier = ">=2024.0" },
     { name = "sacremoses", marker = "extra == 'prism'" },
     { name = "scanpy", marker = "extra == 'seal'" },
+    { name = "scikit-learn", marker = "extra == 'stain'", specifier = ">=1.3" },
+    { name = "segmentation-models-pytorch", marker = "extra == 'grandqc'", specifier = ">=0.3" },
     { name = "shapely", marker = "extra == 'image'", specifier = ">=2.0" },
     { name = "spatialdata", marker = "extra == 'spatialdata'", specifier = ">=0.2" },
     { name = "tifffile", marker = "extra == 'kronos'", specifier = ">=2024" },
+    { name = "timm", marker = "extra == 'grandqc'", specifier = ">=1.0" },
     { name = "timm", marker = "extra == 'models'", specifier = ">=1.0" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.2" },
     { name = "torchvision", marker = "extra == 'torch'", specifier = ">=0.17" },
@@ -3464,10 +3541,11 @@ requires-dist = [
     { name = "typer", specifier = ">=0.12" },
     { name = "zarr", marker = "extra == 'zarr'", specifier = ">=3.1" },
 ]
-provides-extras = ["all", "zarr", "image", "torch", "models", "conch", "hibou", "kronos", "musk", "open-clip", "prism", "madeleine", "seal", "spatialdata", "h5", "tables", "s3", "benchmark"]
+provides-extras = ["all", "zarr", "image", "stain", "torch", "models", "conch", "hibou", "kronos", "musk", "open-clip", "grandqc", "prism", "madeleine", "gigapath-slide", "chief", "tangle", "seal", "spatialdata", "h5", "tables", "s3", "benchmark"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fsspec", extras = ["http"], specifier = ">=2024.0" },
     { name = "h5py", specifier = ">=3.0" },
     { name = "ngff-zarr", specifier = ">=0.13" },
     { name = "numcodecs", specifier = ">=0.15" },
@@ -3609,6 +3687,11 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ac/c3/e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf/requests-2.34.2.tar.gz", hash = "sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed", size = 142856, upload-time = "2026-05-14T19:25:27.735Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl", hash = "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0", size = 73075, upload-time = "2026-05-14T19:25:26.443Z" },
+]
+
+[package.optional-dependencies]
+socks = [
+    { name = "pysocks" },
 ]
 
 [[package]]
@@ -4169,6 +4252,25 @@ wheels = [
 ]
 
 [[package]]
+name = "segmentation-models-pytorch"
+version = "0.5.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "pillow" },
+    { name = "safetensors" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "tqdm" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/15/fa/d5a29d49240fb10bdead608b4d0c6805684a8f63b1f65863502be65b1ca4/segmentation_models_pytorch-0.5.0.tar.gz", hash = "sha256:cabba8aced6ef7bdcd6288dd9e1dc2840848aa819d539c455bd07aeceb2fdf96", size = 105150, upload-time = "2025-04-17T10:43:45.755Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ef/62/a50e5ac6191a498ad631e54df13d7e2d7eeb1325b15ee9ea1ee3ec065aaa/segmentation_models_pytorch-0.5.0-py3-none-any.whl", hash = "sha256:c34e09047771aa4dd8878b4f899e8125700cd1f8f7db16e58c37204154151a05", size = 154789, upload-time = "2025-04-17T10:43:43.668Z" },
+]
+
+[[package]]
 name = "session-info2"
 version = "0.4.1"
 source = { registry = "https://pypi.org/simple" }
@@ -4279,6 +4381,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/e8/c4/ba2f8066cceb6f23394729afe52f3bf7adec04bf9ed2c820b39e19299111/sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88", size = 30594, upload-time = "2021-05-16T22:03:42.897Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0", size = 29575, upload-time = "2021-05-16T22:03:41.177Z" },
+]
+
+[[package]]
+name = "soupsieve"
+version = "2.8.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/2c/0a5f6f8ee0d5589e48c7640213ed5175d52cf540a06725b628cc1a45d6ce/soupsieve-2.8.4.tar.gz", hash = "sha256:e121fd02e975c695e4e9e8774a5ee35d74714b59307868dcc5319ad2d9e3328e", size = 121110, upload-time = "2026-05-24T13:55:57.154Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/5e/f5/0c41cb68dcae6b7de4fac4188a3a9589e21fb31df21ea3a2e888db95e6c9/soupsieve-2.8.4-py3-none-any.whl", hash = "sha256:e7e6b0769c8f51ed59acab6e994b00621096cfb1c640a7509295987388fbaf65", size = 37304, upload-time = "2026-05-24T13:55:55.406Z" },
 ]
 
 [[package]]

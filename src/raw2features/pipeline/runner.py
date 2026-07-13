@@ -19,7 +19,11 @@ from raw2features.benchmark.profiler import null_profiler
 from raw2features.core import plugins, provenance
 from raw2features.core.geometry import Point, Region, Size
 from raw2features.core.store import grid_key
-from raw2features.core.uris import slide_id_from_source, source_uri
+from raw2features.core.uris import (
+    redact_uri_credentials,
+    slide_id_from_source,
+    source_uri,
+)
 from raw2features.embedders.model_registry import build_embedder, resolve_geometry
 from raw2features.patcher.grid import GridPatcher, resample_patch
 from raw2features.sinks.zarr_sink import ZarrSink, write_patches_geojson
@@ -582,7 +586,7 @@ def run_slide(
                     reader=cfg.reader,
                     models=cfg.models,
                     config_hash=content_hash,
-                    error=f"{type(exc).__name__}: {exc}",
+                    error=redact_uri_credentials(f"{type(exc).__name__}: {exc}"),
                 ),
             )
         raise

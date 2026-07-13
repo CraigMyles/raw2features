@@ -5,6 +5,7 @@ from __future__ import annotations
 import typer
 
 from raw2features.core import plugins
+from raw2features.core.uris import source_uri
 
 
 def info(
@@ -20,7 +21,7 @@ def info(
     """Print NGFF version, MPP, pyramid levels, and the exact-MPP read plan."""
     reader_cls = plugins.get("readers", reader)
     with reader_cls(slide) as rdr:
-        typer.echo(f"path:          {rdr.path}")
+        typer.echo(f"path:          {source_uri(rdr.path)}")
         typer.echo(f"ngff_version:  {getattr(rdr, 'ngff_version', None)}")
         typer.echo(f"mpp_level0:    {rdr.mpp}")
         typer.echo("levels:")

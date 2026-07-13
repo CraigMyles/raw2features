@@ -2,10 +2,73 @@
 
 from __future__ import annotations
 
-import numpy as np
+import functools
+import http.server
+import re
+import threading
+from urllib.parse import urlsplit
 
+import numpy as np
+import zarr
+
+from conftest import build_ngff_v04
 from raw2features.core.geometry import Point, Region, Size
 from raw2features.readers.omezarr import OmeZarrReader, _ChunkCache
+
+
+def test_query_auth_is_attached_to_every_http_zarr_request(tmp_path):
+    root = tmp_path / "remote.zarr"
+    zarr.open_group(str(root), mode="w", zarr_format=2)
+    build_ngff_v04(str(root / "0"), sizes=((64, 64), (32, 32)))
+    expected_query = (
+        "token=R2F%2FSECRET%2BVALUE%3D&series=1&series=2&empty="
+    )
+    seen = []
+
+    class AuthenticatedHandler(http.server.SimpleHTTPRequestHandler):
+        def _authorized(self):
+            seen.append(self.path)
+            if urlsplit(self.path).query == expected_query:
+                return True
+            self.send_error(403, "missing query authentication")
+            return False
+
+        def do_GET(self):  # noqa: N802 - stdlib handler API
+            if self._authorized():
+                super().do_GET()
+
+        def do_HEAD(self):  # noqa: N802 - stdlib handler API
+            if self._authorized():
+                super().do_HEAD()
+
+        def log_message(self, *args):
+            return None
+
+    handler = functools.partial(AuthenticatedHandler, directory=str(tmp_path))
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    uri = f"http://{host}:{port}/remote.zarr?{expected_query}"
+    try:
+        with OmeZarrReader(uri) as reader:
+            image = reader.read_region(Region.patch(x=0, y=0, size=16, level=0))
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert image.shape == (16, 16, 3)
+    assert seen
+    assert all(urlsplit(path).query == expected_query for path in seen)
+    assert any(".zattrs" in path or "zarr.json" in path for path in seen)
+    assert any("/remote.zarr/0/0/" in urlsplit(path).path for path in seen)
+    assert any(
+        (request_path := urlsplit(path).path).startswith("/remote.zarr/0/0/")
+        and re.fullmatch(r"\d+(?:\.\d+)+", request_path.rsplit("/", 1)[-1])
+        is not None
+        for path in seen
+    )
 
 
 def _direct_slice_block(r: OmeZarrReader, level: int, x0: int, y0: int, w: int, h: int):

@@ -22,11 +22,17 @@ import threading
 import warnings
 from collections import OrderedDict
 from functools import partial
+from urllib.parse import urlsplit
 
 import numpy as np
 
 from raw2features.core.geometry import Region, Size
 from raw2features.core.plugins import register
+from raw2features.core.uris import (
+    join_uri_path,
+    redact_uri_credentials,
+    source_uri,
+)
 
 from .base import WSISource
 
@@ -165,20 +171,25 @@ class OmeZarrReader(WSISource):
         # the on-disk chunk grid for whatever layout the store actually uses.
         self._chunk_hw: list[tuple[int, int]] = []
         self._chunk_cache = _ChunkCache(_chunk_cache_capacity())
+        # Query-authenticated HTTP paths use a custom read-only store so the raw
+        # query is attached after every metadata/chunk key. Cache one per child root.
+        self._source_stores: dict[str, object] = {}
 
     # -- lifecycle -----------------------------------------------------------
     def open(self) -> OmeZarrReader:
         import ngff_zarr
 
         prefix, multiscales = self._resolve_multiscales()
-        ms_path = self.path if prefix == "" else os.path.join(self.path, prefix)
+        ms_path = self.path if prefix == "" else join_uri_path(self.path, prefix)
 
-        ms = ngff_zarr.from_ngff_zarr(ms_path)
+        ms = ngff_zarr.from_ngff_zarr(self._store_for(ms_path))
         images = ms.images
         im0 = images[0]
         self._dims = tuple(im0.dims)
         if "x" not in self._dims or "y" not in self._dims:
-            raise ValueError(f"{self.path}: multiscales axes lack x/y: {self._dims}")
+            raise ValueError(
+                f"{source_uri(self.path)}: multiscales axes lack x/y: {self._dims}"
+            )
         self._ngff_version = str(
             multiscales.get("version") or self._ome_version or "unknown"
         )
@@ -203,7 +214,7 @@ class OmeZarrReader(WSISource):
             # average when x and y differ (the per-axis scale_um is the faithful value).
             if min(sx_um, sy_um) > 0 and abs(sx_um - sy_um) / min(sx_um, sy_um) > 1e-3:
                 warnings.warn(
-                    f"{self.path}: anisotropic level-0 pixel size "
+                    f"{source_uri(self.path)}: anisotropic level-0 pixel size "
                     f"(x={sx_um:g} µm, y={sy_um:g} µm); mpp_level0 reports their mean "
                     f"({(sx_um + sy_um) / 2.0:g}). Per-axis scale in source.scale_um.",
                     stacklevel=2,
@@ -230,12 +241,14 @@ class OmeZarrReader(WSISource):
         import zarr
 
         self._arrays = [
-            zarr.open_array(os.path.join(ms_path, d["path"]), mode="r")
+            zarr.open_array(
+                self._store_for(join_uri_path(ms_path, d["path"])), mode="r"
+            )
             for d in multiscales["datasets"]
         ]
         if len(self._arrays) != len(self._level_dims):
             raise ValueError(
-                f"{self.path}: dataset/level count mismatch "
+                f"{source_uri(self.path)}: dataset/level count mismatch "
                 f"({len(self._arrays)} arrays vs {len(self._level_dims)} levels)"
             )
 
@@ -264,7 +277,8 @@ class OmeZarrReader(WSISource):
                 extent = int(level0_shape[self._dims.index(axis)])
                 if extent > 1:
                     warnings.warn(
-                        f"{self.path}: source has {axis}={extent}; only {axis}=0 is "
+                        f"{source_uri(self.path)}: source has {axis}={extent}; only "
+                        f"{axis}=0 is "
                         "read (the reader serves one 2D plane per patch).",
                         stacklevel=2,
                     )
@@ -273,7 +287,29 @@ class OmeZarrReader(WSISource):
         self._arrays = []
         self._chunk_hw = []
         self._chunk_cache.clear()
+        for store in self._source_stores.values():
+            store.close()  # type: ignore[attr-defined]
+            fs = getattr(store, "fs", None)
+            if fs is not None and hasattr(fs, "close"):
+                fs.close()
+        self._source_stores.clear()
         self._open = False
+
+    def _store_for(self, path: str):
+        """Return a query-safe HTTP store, or the original non-query path."""
+
+        parsed = urlsplit(path)
+        if parsed.scheme.casefold() not in {"http", "https"} or not (
+            parsed.query or parsed.fragment
+        ):
+            return path
+        store = self._source_stores.get(path)
+        if store is None:
+            from ._http_store import query_http_store
+
+            store = query_http_store(path)
+            self._source_stores[path] = store
+        return store
 
     # -- metadata ------------------------------------------------------------
     @property
@@ -404,7 +440,7 @@ class OmeZarrReader(WSISource):
         import zarr
 
         try:
-            attrs = dict(zarr.open_group(ms_path, mode="r").attrs)
+            attrs = dict(zarr.open_group(self._store_for(ms_path), mode="r").attrs)
         except Exception:  # noqa: BLE001 - no omero block -> plain RGB source
             return None
         channels = (attrs.get("omero") or {}).get("channels") or []
@@ -619,10 +655,11 @@ class OmeZarrReader(WSISource):
             return None
 
         try:
-            root = zarr.open_group(self.path, mode="r")
+            root = zarr.open_group(self._store_for(self.path), mode="r")
         except Exception as exc:  # noqa: BLE001 - re-raised as one actionable error
             raise FileNotFoundError(
-                f"could not open {self.path!r} as an OME-Zarr store ({exc}). Check the "
+                f"could not open {source_uri(self.path)!r} as an OME-Zarr store "
+                f"({redact_uri_credentials(str(exc))}). Check the "
                 "path/URL exists and points at the .zarr group; for a bioformats2raw "
                 "layout, include the image-series subpath (e.g. .../image.zarr/0)."
             ) from exc
@@ -633,13 +670,17 @@ class OmeZarrReader(WSISource):
         # bioformats2raw layout: image series under an integer subgroup.
         for key in ("0", "1"):
             try:
-                sub = zarr.open_group(os.path.join(self.path, key), mode="r")
+                sub = zarr.open_group(
+                    self._store_for(join_uri_path(self.path, key)), mode="r"
+                )
             except Exception:  # noqa: BLE001
                 continue
             ms = _extract(dict(sub.attrs))
             if ms is not None:
                 return key, ms
-        raise ValueError(f"{self.path}: no OME-NGFF multiscales metadata found")
+        raise ValueError(
+            f"{source_uri(self.path)}: no OME-NGFF multiscales metadata found"
+        )
 
     def _build_level_mapping(self, datasets: list, xi: int, yi: int) -> None:
         """Per-axis downsample + translation offset per level, for ``read_region``.

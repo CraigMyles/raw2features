@@ -21,7 +21,13 @@ import time
 
 import typer
 
-from raw2features.core.uris import is_qualified_uri
+from raw2features.core.provenance import sanitize_argv
+from raw2features.core.uris import (
+    is_qualified_uri,
+    is_remote_uri,
+    redact_uri_credentials,
+    source_uri,
+)
 from raw2features.pipeline.runner import (
     RunConfig,
     embed_slide,
@@ -177,7 +183,7 @@ def embed_many(
         from raw2features.core.config import load_manifest
 
         all_rows = _resolve_manifest_sources(load_manifest(manifest), slide_dir)
-        all_rows = sorted(all_rows, key=lambda r: r["path"])
+        all_rows = sorted(all_rows, key=_manifest_sort_key)
     else:
         all_rows = [
             {"path": p} for p in sorted(globmod.glob(os.path.join(slide_dir, glob)))
@@ -230,7 +236,7 @@ def embed_many(
         read_block=read_block,
         compile=compile,
     )
-    cli = " ".join(sys.argv)
+    cli = sanitize_argv(sys.argv)
     device_list = cfg.device_list()
 
     t0 = time.time()
@@ -264,6 +270,13 @@ def _resolve_manifest_sources(rows: list[dict], slide_dir: str) -> list[dict]:
         if not is_qualified_uri(row["path"]) and not os.path.isabs(row["path"]):
             row["path"] = os.path.join(slide_dir, row["path"])
     return rows
+
+
+def _manifest_sort_key(row: dict) -> str:
+    """Keep credential rotation from reshuffling remote manifest shards."""
+
+    path = row["path"]
+    return source_uri(path) if is_remote_uri(path) else path
 
 
 def _with_source_mpp(cfg: RunConfig, row: dict) -> RunConfig:
@@ -314,7 +327,9 @@ def _embed_shard_serial(
         except Exception as exc:  # noqa: BLE001 - record + continue; one bad slide
             failed += 1  # must not abort the rest of the shard (receipt logs it)
             typer.echo(
-                f"[{i}/{len(shard)}] {sid}: FAILED {type(exc).__name__}: {exc}",
+                redact_uri_credentials(
+                    f"[{i}/{len(shard)}] {sid}: FAILED {type(exc).__name__}: {exc}"
+                ),
                 err=True,
             )
     return done, skipped, failed
@@ -396,8 +411,10 @@ def _embed_shard_parallel(
                     seq["i"] += 1
                     tally["failed"] += 1
                     typer.echo(
-                        f"[{seq['i']}/{n}] {sid}: FAILED {type(exc).__name__}: {exc}"
-                        f" ({device})",
+                        redact_uri_credentials(
+                            f"[{seq['i']}/{n}] {sid}: FAILED "
+                            f"{type(exc).__name__}: {exc} ({device})"
+                        ),
                         err=True,
                     )
 

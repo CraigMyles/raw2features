@@ -100,7 +100,7 @@ tangle = "raw2features.slide_embedders.tangle:TangleSlideEmbedder"
 # encoders (conch/kronos) and the export-only extras (spatialdata/h5), which stay opt-in.
 all = ["raw2features[zarr,image,torch,models,stain]"]
 # OME-Zarr reading: ngff-zarr/ome-zarr for metadata, zarr-python 3 for hot reads.
-zarr = ["zarr>=3.1", "numcodecs>=0.15", "ngff-zarr>=0.13", "ome-zarr>=0.10", "fsspec>=2024.0"]
+zarr = ["zarr>=3.1", "numcodecs>=0.15", "ngff-zarr>=0.13", "ome-zarr>=0.10", "fsspec[http]>=2024.0"]
 # Tissue segmentation + geometry (permissive, classical).
 image = ["opencv-python-headless>=4.9", "shapely>=2.0", "pillow>=11.0"]
 # Vahadane stain normalization (NMF) needs scikit-learn; macenko/reinhard are numpy-only.
@@ -200,6 +200,7 @@ dev = [
     "zarr>=3.1",
     "numcodecs>=0.15",
     "ngff-zarr>=0.13",
+    "fsspec[http]>=2024.0",
     "opencv-python-headless>=4.9",
     "pillow>=11.0",
     # h5py is light, so the .h5 exporter tests run unguarded - keep it in the test env.

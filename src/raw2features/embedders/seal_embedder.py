@@ -6,6 +6,12 @@ for inference still means: build the frozen base + merge the LoRA. We use SEAL's
 image-only loader (``ModelMixin.get_img_model``) - the gene/omics model is not loaded.
 Output dim = the base encoder's (512 for CONCH, 1536 for UNI2-h).
 
+SEAL is **experimental in raw2features v0.1.1**. The LoRA adapter is revision-pinned,
+SHA-256 verified, and loaded with a frozen constructor contract, but SEAL's upstream
+factory still fetches the frozen CONCH/UNI2-h base from mutable Hugging Face HEAD. The
+persisted composite fingerprint records that limitation explicitly; SEAL is outside the
+stable exact-weight pinning guarantee until the base download can be injected locally.
+
 The ``[seal]`` extra installs the ``seal`` package from a **pinned fork commit**
 (``cjmielke/SEAL`` @ ``5334490`` - the open PR #1 to ``mahmoodlab/SEAL``). Upstream
 ``seal`` reads ``conf/config.yaml`` and ``cache/organ_ids.json`` relative to the CWD, so
@@ -31,11 +37,15 @@ Paper:      Hemker, Song et al., "Towards Spatial Transcriptomics-driven Patholo
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import TYPE_CHECKING
 
 from raw2features.core.plugins import register
 
+from ._hub import download_pinned_hf_file, verify_sha256
 from .base import Embedder
+from .fingerprint import SEAL_CONSTRUCTOR_CONTRACT
 
 if TYPE_CHECKING:  # pragma: no cover
     import torch
@@ -57,15 +67,11 @@ class SealEmbedder(Embedder):
         dtype: torch.dtype | None = None,
         compile: bool = False,
     ) -> SealEmbedder:
-        import argparse
-
         import torch
 
         try:
-            from seal.models.encoder_factory import find_config_yaml
             from seal.models.load_model import ModelMixin
             from seal.utils.constants import EMB_DICT
-            from seal.utils.exp_utils import update_config
         except ImportError as exc:  # pragma: no cover - only without the extra
             raise ImportError(
                 "SEAL needs the optional `seal` stack:\n"
@@ -77,18 +83,22 @@ class SealEmbedder(Embedder):
                 "Mahmoodlab/CONCH.git@141cc09c7d4ff33d8eda562bd75169b457f71a62)"
             ) from exc
 
-        from huggingface_hub import hf_hub_download
-
         backbone = self.spec.source  # "conch" | "univ2"
-        # The fork resolves conf/config.yaml + cache/organ_ids.json from its install
-        # dir, so this works from any CWD (no repo checkout / chdir).
-        conf = update_config(argparse.Namespace(config=find_config_yaml()))
+        # Freeze every output-affecting constructor input instead of asking SEAL's
+        # update_config(), which permits CWD-local config and per-user overrides.
+        conf = deepcopy(SEAL_CONSTRUCTOR_CONTRACT)
         conf["encoder"] = backbone
-        # Disable SEAL's image-reconstruction decoder - a training-only head we don't
-        # use (our forward returns the encoder features). It also avoids loading its
-        # weights, which are encoder-dim-specific: univ2's decoder is [512, 1536], so it
-        # would size-mismatch a default [512, 512] build.
-        conf["lambda_recon_img"] = 0.0
+        conf["out_dim"] = int(EMB_DICT[backbone])
+
+        # Resolve and verify the adapter before either deserialising it or paying to
+        # construct its large frozen base. The base itself remains upstream-managed
+        # and unpinned, which is why SEAL is marked experimental in v0.1.1.
+        ckpt_path = download_pinned_hf_file(
+            f"hf-hub:{_SEAL_REPO}",
+            self.spec.weights_filename or f"seal_{backbone}_vision.pth",
+            self.spec.weights_revision,
+        )
+        verify_sha256(ckpt_path, self.spec.weights_sha256, what=self.spec.name)
 
         mixin = ModelMixin()
         mixin.conf = conf
@@ -103,13 +113,18 @@ class SealEmbedder(Embedder):
 
         # Merge the SEAL LoRA delta onto the frozen base (strict=False: PEFT key names +
         # unused projection/decoder keys; module./virchow2 prefixes per SEAL's code).
-        ckpt_path = hf_hub_download(
-            _SEAL_REPO,
-            f"seal_{backbone}_vision.pth",
-            revision=self.spec.weights_revision,
-        )
-        ckpt = torch.load(ckpt_path, map_location="cpu")
+        try:
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+        except TypeError:  # older torch / narrow test doubles
+            ckpt = torch.load(ckpt_path, map_location="cpu")
+        except Exception:  # verified legacy checkpoints may contain non-tensor metadata
+            ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
         sd = ckpt.get("state_dict", ckpt) if isinstance(ckpt, dict) else ckpt
+        if not isinstance(sd, Mapping) or not all(isinstance(k, str) for k in sd):
+            raise ValueError(
+                f"{self.spec.name}: SEAL adapter is not a string-keyed state dict"
+            )
+        sd = dict(sd)
         if any(k.startswith("module.") for k in sd):
             sd = {k.replace("module.", ""): v for k, v in sd.items()}
         if any("encoder.base_model.model.encoder." in k for k in sd):
@@ -120,6 +135,36 @@ class SealEmbedder(Embedder):
                 ): v
                 for k, v in sd.items()
             }
+        # strict=False is necessary for unused SEAL projection/decoder keys, but it
+        # must not turn a wrong backbone or broken prefix rewrite into a silent no-op.
+        lora_a = {key for key in sd if "lora_A" in key}
+        lora_b = {key for key in sd if "lora_B" in key}
+        if not lora_a or not lora_b:
+            raise ValueError(
+                f"{self.spec.name}: checkpoint contains no complete LoRA A/B adapter"
+            )
+        model_keys = set(model.state_dict())
+        checkpoint_lora = lora_a | lora_b
+        model_lora = {key for key in model_keys if "lora_A" in key or "lora_B" in key}
+        unmatched_lora = sorted(checkpoint_lora - model_keys)
+        if unmatched_lora:
+            sample = ", ".join(unmatched_lora[:3])
+            raise ValueError(
+                f"{self.spec.name}: {len(unmatched_lora)} LoRA adapter keys do not "
+                f"match the constructed {backbone} base (for example: {sample})"
+            )
+        missing_lora = sorted(model_lora - checkpoint_lora)
+        if missing_lora:
+            sample = ", ".join(missing_lora[:3])
+            raise ValueError(
+                f"{self.spec.name}: checkpoint is missing {len(missing_lora)} LoRA "
+                f"adapter keys required by the constructed {backbone} base "
+                f"(for example: {sample})"
+            )
+        if not (set(sd) & model_keys):
+            raise ValueError(
+                f"{self.spec.name}: checkpoint has no keys in common with the model"
+            )
         model.load_state_dict(sd, strict=False)
         model.eval().to(device)
         self._model = model

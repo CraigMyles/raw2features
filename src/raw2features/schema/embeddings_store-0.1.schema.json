@@ -5,6 +5,19 @@
   "description": "Normative schema for the JSON header on each grid group - <slide>.embeddings.zarr/grids/<key>'s attr ['raw2features']. Patch sets nest uniformly under grids/<key>/ (one per geometry); `validate-store` applies this schema to EVERY grid header. The `required` set is the stable read contract; `additionalProperties: true` keeps it forward-compatible (a store written by a newer version still validates). Array-level invariants the JSON layer cannot express - array shapes/dtypes, the `role`/`units` attrs, and the 1:1 coords<->features correspondence within a grid - are out of scope here and checked by `raw2features validate-store`. The store root carries a lightweight `grids` discovery index, not validated by this schema.",
   "type": "object",
   "additionalProperties": true,
+  "$defs": {
+    "output_fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "algorithm", "digest", "payload"],
+      "properties": {
+        "version": { "type": "integer", "minimum": 1 },
+        "algorithm": { "const": "sha256" },
+        "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "payload": { "type": "object" }
+      }
+    }
+  },
   "required": ["schema_version", "source", "patching", "models", "grid_hash", "provenance"],
   "properties": {
     "schema_version": { "type": "string" },
@@ -65,9 +78,12 @@
           "transform_source_url": { "type": "string" },
           "license": { "type": "string" },
           "gated": { "type": "boolean" },
+          "experimental": { "type": "boolean" },
           "weights_sha256": { "type": ["string", "null"] },
           "weights_revision": { "type": ["string", "null"] },
-          "doi": { "type": ["string", "null"] }
+          "weights_filename": { "type": ["string", "null"] },
+          "doi": { "type": ["string", "null"] },
+          "output_fingerprint": { "$ref": "#/$defs/output_fingerprint" }
         }
       }
     },

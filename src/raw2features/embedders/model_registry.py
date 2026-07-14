@@ -45,6 +45,8 @@ def load_registry() -> dict[str, ModelSpec]:
             checkpoint=d.get("checkpoint"),
             weights_sha256=d.get("weights_sha256"),
             weights_revision=d.get("weights_revision"),
+            weights_filename=d.get("weights_filename"),
+            experimental=bool(d.get("experimental", False)),
             notes=d.get("notes", ""),
             doi=d.get("doi"),
         )

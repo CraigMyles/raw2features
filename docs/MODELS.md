@@ -51,9 +51,15 @@ read and decide on. raw2features makes no commercial-use determination.
 | `quiltnet` | open_clip | 512 | 224 | 0.5 | conv. | MIT | no | [HF](https://huggingface.co/wisdomik/QuiltNet-B-32) · [GH](https://github.com/wisdomikezogwo/quilt1m) · [paper](https://arxiv.org/abs/2306.11207) |
 | `biomedclip` | open_clip | 512 | 224 | 0.5 | conv. | MIT ¹⁴ | no | [HF](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) · [paper](https://arxiv.org/abs/2303.00915) |
 | `plip` | clip_hf | 512 | 224 | 0.5 | conv. | MIT ¹⁵ | no | [HF](https://huggingface.co/vinid/plip) · [GH](https://github.com/PathologyFoundation/plip) · [paper](https://doi.org/10.1038/s41591-023-02504-3) |
-| `seal_conch` | seal | 512 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
-| `seal_univ2` | seal | 1536 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
+| `seal_conch` ⚠ | seal | 512 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
+| `seal_univ2` ⚠ | seal | 1536 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
 | `kronos` | kronos | 384 | 224 | -¹² | n/a | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/KRONOS) · [GH](https://github.com/mahmoodlab/KRONOS) · [paper](https://arxiv.org/abs/2506.03373) |
+
+⚠ **SEAL is experimental in v0.1.1 and is outside the exact-weight pinning
+guarantee.** raw2features pins and SHA-256 verifies the SEAL LoRA adapter, freezes
+the adapter constructor, and records its composite identity. The pinned upstream
+factory still downloads the frozen CONCH/UNI2-h base from mutable HEAD, however, so
+the complete base+adapter output cannot yet be reproduced from immutable weights.
 
 ## Slide encoders
 

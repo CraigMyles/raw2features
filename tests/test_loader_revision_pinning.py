@@ -215,7 +215,8 @@ def test_biomedclip_construction_dependency_pin_is_auditable():
     assert nested_repo in notes
     assert open_clip_embedder._BIOMEDCLIP_TEXT_REVISION in notes
     assert "construction-only" in notes
-    assert "not part of grid/model identity" in notes
+    assert "output fingerprint includes it" in notes
+    assert "separate from grid identity" in notes
 
 
 def test_conch_verifies_pinned_checkpoint_then_uses_local_path(monkeypatch, tmp_path):
@@ -393,7 +394,289 @@ def test_madeleine_downloads_pinned_snapshot_then_loads_local_files(
     assert checkpoint == str(tmp_path / "model.pt")
 
 
-@pytest.mark.parametrize("model_name", ["quiltnet", "conch", "kronos"])
+def _fake_seal_stack(monkeypatch, model, captured):
+    seal = ModuleType("seal")
+    seal.__path__ = []
+    models = ModuleType("seal.models")
+    models.__path__ = []
+    load_model = ModuleType("seal.models.load_model")
+    constants = ModuleType("seal.utils.constants")
+    utils = ModuleType("seal.utils")
+    utils.__path__ = []
+
+    class ModelMixin:
+        def get_img_model(self, backbone, **kwargs):
+            captured.append((backbone, dict(self.conf), kwargs))
+            return model, None, object()
+
+    load_model.ModelMixin = ModelMixin
+    constants.EMB_DICT = {"conch": 512, "univ2": 1536}
+    monkeypatch.setitem(sys.modules, "seal", seal)
+    monkeypatch.setitem(sys.modules, "seal.models", models)
+    monkeypatch.setitem(sys.modules, "seal.models.load_model", load_model)
+    monkeypatch.setitem(sys.modules, "seal.utils", utils)
+    monkeypatch.setitem(sys.modules, "seal.utils.constants", constants)
+
+
+def test_seal_verifies_adapter_before_deserialising_and_enforces_constructor(
+    monkeypatch, tmp_path
+):
+    import raw2features.embedders.seal_embedder as seal_embedder
+    from raw2features.embedders.fingerprint import SEAL_CONSTRUCTOR_CONTRACT
+
+    events = []
+    captured = []
+    checkpoint = tmp_path / "seal_conch_vision.pth"
+    checkpoint.write_bytes(b"pinned SEAL adapter")
+    keys = {
+        "encoder.base_model.model.trunk.blocks.11.attn.qkv.lora_A.default.weight": 1,
+        "encoder.base_model.model.trunk.blocks.11.attn.qkv.lora_B.default.weight": 2,
+    }
+
+    class Model(_Model):
+        def state_dict(self):
+            return dict(keys)
+
+        def load_state_dict(self, state, strict=False):
+            events.append("load_state_dict")
+            assert state == keys
+            assert strict is False
+            return [], []
+
+    model = Model()
+    _fake_seal_stack(monkeypatch, model, captured)
+    downloads = []
+
+    torch = ModuleType("torch")
+    torch.float32 = object()
+
+    def torch_load(path, **kwargs):
+        events.append("torch.load")
+        assert path == str(checkpoint)
+        assert kwargs["map_location"] == "cpu"
+        return {"state_dict": keys}
+
+    torch.load = torch_load
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    def file_download(**kwargs):
+        downloads.append(kwargs)
+        return str(checkpoint)
+
+    _fake_hub(monkeypatch, file_download=file_download)
+
+    original_verify = seal_embedder.verify_sha256
+
+    def verify(*args, **kwargs):
+        events.append("verify")
+        original_verify(*args, **kwargs)
+
+    monkeypatch.setattr(seal_embedder, "verify_sha256", verify)
+    spec = replace(
+        get_spec("seal_conch"),
+        weights_sha256=_digest(checkpoint.read_bytes()),
+    )
+    seal_embedder.SealEmbedder(spec).load(device="cpu", dtype=object())
+
+    assert events == ["verify", "torch.load", "load_state_dict"]
+    backbone, conf, kwargs = captured[0]
+    assert backbone == "conch"
+    assert {k: conf[k] for k in SEAL_CONSTRUCTOR_CONTRACT} == SEAL_CONSTRUCTOR_CONTRACT
+    assert conf["encoder"] == "conch"
+    assert conf["out_dim"] == 512
+    assert kwargs["partial_blocks"] == 1
+    assert kwargs["use_adapter"] is False
+    assert downloads == [
+        {
+            "repo_id": "MahmoodLab/SEAL",
+            "filename": "seal_conch_vision.pth",
+            "revision": spec.weights_revision,
+            "cache_dir": None,
+        }
+    ]
+
+
+def test_seal_bad_digest_never_constructs_or_deserialises(monkeypatch, tmp_path):
+    import raw2features.embedders.seal_embedder as seal_embedder
+
+    checkpoint = tmp_path / "seal_conch_vision.pth"
+    checkpoint.write_bytes(b"wrong bytes")
+    captured = []
+    _fake_seal_stack(monkeypatch, _Model(), captured)
+    torch = ModuleType("torch")
+    torch.float32 = object()
+    torch.load = lambda *_args, **_kwargs: pytest.fail("torch.load must not run")
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _fake_hub(monkeypatch, file_download=lambda **_kwargs: str(checkpoint))
+
+    with pytest.raises(ValueError, match="sha256"):
+        seal_embedder.SealEmbedder(get_spec("seal_conch")).load(
+            device="cpu", dtype=object()
+        )
+    assert captured == []
+
+
+def test_seal_rejects_a_lora_delta_that_matches_no_model_keys(monkeypatch, tmp_path):
+    import raw2features.embedders.seal_embedder as seal_embedder
+
+    checkpoint = tmp_path / "seal_conch_vision.pth"
+    checkpoint.write_bytes(b"adapter")
+    adapter = {
+        "wrong.lora_A.default.weight": 1,
+        "wrong.lora_B.default.weight": 2,
+    }
+
+    class Model(_Model):
+        def state_dict(self):
+            return {"right.lora_A.default.weight": 1, "right.lora_B.default.weight": 2}
+
+        def load_state_dict(self, *_args, **_kwargs):
+            pytest.fail("load_state_dict must not accept a non-matching adapter")
+
+    _fake_seal_stack(monkeypatch, Model(), [])
+    torch = ModuleType("torch")
+    torch.float32 = object()
+    torch.load = lambda *_args, **_kwargs: {"state_dict": adapter}
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _fake_hub(monkeypatch, file_download=lambda **_kwargs: str(checkpoint))
+    spec = replace(get_spec("seal_conch"), weights_sha256=_digest(b"adapter"))
+
+    with pytest.raises(ValueError, match="do not match"):
+        seal_embedder.SealEmbedder(spec).load(device="cpu", dtype=object())
+
+
+def test_seal_rejects_a_partial_lora_delta(monkeypatch, tmp_path):
+    import raw2features.embedders.seal_embedder as seal_embedder
+
+    checkpoint = tmp_path / "seal_conch_vision.pth"
+    checkpoint.write_bytes(b"partial adapter")
+    adapter = {
+        "block.0.lora_A.default.weight": 1,
+        "block.0.lora_B.default.weight": 2,
+        "block.1.lora_A.default.weight": 3,
+    }
+    complete_model = {
+        **adapter,
+        "block.1.lora_B.default.weight": 4,
+    }
+
+    class Model(_Model):
+        def state_dict(self):
+            return complete_model
+
+        def load_state_dict(self, *_args, **_kwargs):
+            pytest.fail("load_state_dict must not accept a partial adapter")
+
+    _fake_seal_stack(monkeypatch, Model(), [])
+    torch = ModuleType("torch")
+    torch.float32 = object()
+    torch.load = lambda *_args, **_kwargs: {"state_dict": adapter}
+    monkeypatch.setitem(sys.modules, "torch", torch)
+    _fake_hub(monkeypatch, file_download=lambda **_kwargs: str(checkpoint))
+    spec = replace(
+        get_spec("seal_conch"),
+        weights_sha256=_digest(checkpoint.read_bytes()),
+    )
+
+    with pytest.raises(ValueError, match="missing 1 LoRA adapter key"):
+        seal_embedder.SealEmbedder(spec).load(device="cpu", dtype=object())
+
+
+def _fake_gigapath_stack(monkeypatch, create_model):
+    gigapath = ModuleType("gigapath")
+    gigapath.__path__ = []
+    slide_encoder = ModuleType("gigapath.slide_encoder")
+    slide_encoder.create_model = create_model
+    torchscale = ModuleType("torchscale")
+    torchscale.__path__ = []
+    architecture = ModuleType("torchscale.architecture")
+    architecture.__path__ = []
+    config = ModuleType("torchscale.architecture.config")
+
+    class EncoderConfig:
+        pass
+
+    EncoderConfig.__module__ = config.__name__
+    config.EncoderConfig = EncoderConfig
+    monkeypatch.setitem(sys.modules, "gigapath", gigapath)
+    monkeypatch.setitem(sys.modules, "gigapath.slide_encoder", slide_encoder)
+    monkeypatch.setitem(sys.modules, "torchscale", torchscale)
+    monkeypatch.setitem(sys.modules, "torchscale.architecture", architecture)
+    monkeypatch.setitem(sys.modules, "torchscale.architecture.config", config)
+
+
+def test_gigapath_slide_verifies_before_create_model(monkeypatch, tmp_path):
+    import raw2features.slide_embedders.gigapath_slide as gigapath_slide
+    from raw2features.slide_embedders.model_registry import get_slide_spec
+
+    checkpoint = tmp_path / "slide_encoder.pth"
+    checkpoint.write_bytes(b"pinned GigaPath slide weights")
+    events = []
+    calls = []
+    downloads = []
+
+    def create_model(*args, **kwargs):
+        events.append("create_model")
+        calls.append((args, kwargs))
+        return _Model()
+
+    _fake_gigapath_stack(monkeypatch, create_model)
+    def file_download(**kwargs):
+        downloads.append(kwargs)
+        return str(checkpoint)
+
+    _fake_hub(monkeypatch, file_download=file_download)
+    original_verify = gigapath_slide.verify_sha256
+
+    def verify(*args, **kwargs):
+        events.append("verify")
+        original_verify(*args, **kwargs)
+
+    monkeypatch.setattr(gigapath_slide, "verify_sha256", verify)
+    emb = gigapath_slide.GigapathSlideEmbedder()
+    emb.spec = replace(
+        get_slide_spec("gigapath_slide"),
+        weights_sha256=_digest(checkpoint.read_bytes()),
+    )
+    emb.load(device="cpu")
+
+    assert events == ["verify", "create_model"]
+    assert calls == [
+        (
+            (str(checkpoint), "gigapath_slide_enc12l768d", 1536),
+            {"global_pool": True},
+        )
+    ]
+    assert downloads == [
+        {
+            "repo_id": "prov-gigapath/prov-gigapath",
+            "filename": "slide_encoder.pth",
+            "revision": emb.spec.weights_revision,
+            "cache_dir": None,
+        }
+    ]
+
+
+def test_gigapath_bad_digest_never_reaches_create_model(monkeypatch, tmp_path):
+    import raw2features.slide_embedders.gigapath_slide as gigapath_slide
+    from raw2features.slide_embedders.model_registry import get_slide_spec
+
+    checkpoint = tmp_path / "slide_encoder.pth"
+    checkpoint.write_bytes(b"wrong bytes")
+    _fake_gigapath_stack(
+        monkeypatch,
+        lambda *_args, **_kwargs: pytest.fail("create_model must not run"),
+    )
+    _fake_hub(monkeypatch, file_download=lambda **_kwargs: str(checkpoint))
+    emb = gigapath_slide.GigapathSlideEmbedder()
+    emb.spec = get_slide_spec("gigapath_slide")
+
+    with pytest.raises(ValueError, match="sha256"):
+        emb.load(device="cpu")
+
+
+@pytest.mark.parametrize(
+    "model_name", ["quiltnet", "conch", "kronos", "seal_conch", "seal_univ2"]
+)
 def test_loader_checksum_contract_is_recorded(model_name):
     """Every file-deserialising loader covered above has a registry digest."""
     assert len(get_spec(model_name).weights_sha256 or "") == 64

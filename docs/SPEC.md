@@ -157,24 +157,43 @@ A JSON object; the normative definition is the packaged JSON Schema (see
   `level0_patch` (patch side in level-0 px), `level0_step`, `read_level`, `step_out_px`,
   `n_patches`, `grid_shape` (`[rows, cols]`), `coords_convention` (`"level0_xy"`).
 - `models` - map of model name → `{ source, embedding_dim, input_size, pooling, mean,
-  std, interpolation, license, gated, weights_sha256, weights_revision,
-  transform_source_url, inference_amp, doi }` for the models in **this grid**. These pin
+  std, interpolation, license, gated, experimental, weights_sha256, weights_revision,
+  weights_filename, transform_source_url, inference_amp, doi, output_fingerprint }`
+  for the models in
+  **this grid**. These pin
   the exact preprocessing and weights per model. `weights_revision` is the immutable
   HuggingFace commit the loader pins the download to (or a torchvision weights enum such as
   `IMAGENET1K_V2`, which is itself immutable, for which `weights_sha256` is `null`; or a
   release tag for weights pinned by a stable URL + `weights_sha256`); `weights_sha256` is
-  the weight file's digest, recorded in every output and verified before load for the
+  the exact artifact named by `weights_filename`; its digest is recorded in every
+  output and verified before load for the
   bare-checkpoint and URL-pinned models - so each feature set is traceable to the exact
   weights. `doi` is a resolvable DOI for the model's paper (`null` for an open-weights
-  release with no paper).
-- `grid_hash` - a hash of the patch geometry. Two grids with the same `grid_hash` share an
-  identical grid, so feature arrays from different runs are row-comparable.
+  release with no paper). `output_fingerprint` is a self-validating canonical SHA-256
+  record of the complete output contract: effective checkpoint repo/file and pins,
+  preprocessing, pooling/dimension, resolved AMP, family/constructor parameters, and
+  loader-contract version. Composite models include every component (SEAL records its
+  pinned adapter and its experimental, upstream-unpinned base separately). The same
+  record is written on `features/<model>` only after every feature row succeeds; that
+  array attribute is the completion commit marker.
+- `grid_hash` - a hash of the patch geometry only. Two grids with the same `grid_hash`
+  share an identical grid, so feature arrays from different runs are row-comparable.
+  Model identity deliberately remains separate: a changed output fingerprint replaces
+  only that model array without renaming or rebuilding the grid.
 - `provenance` - `raw2features_version`, `created_utc`, `cli`, `git_sha`, `host`, `arch`,
   `platform`, `python`, and `gpu` when applicable. Secret option values and credentials
   embedded in URIs are redacted from `cli`.
 
 Optional grid keys: `segmentation` (segmenter name + parameters), `thumbnail` (thumbnail
 metadata when one was written), `slide_embeddings` (provenance for any `slide/<model>`).
+
+Each `slide/<model>` array carries an analogous `output_fingerprint`, mirrored in
+`slide_embeddings`. It includes the selected patch array's fingerprint, so replacing
+patch features invalidates any derived slide vector, and records the effective fp16/fp32
+slide-forward precision for the resolved device. Fingerprint fields are optional in
+the 0.1 schema so older stores remain readable and exportable, but current completion
+checks never reconstruct them from legacy headers: requesting an unfingerprinted patch
+model recomputes it, and standalone slide encoding asks for that recomputation first.
 
 ### Root header (store root)
 

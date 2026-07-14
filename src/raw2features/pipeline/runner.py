@@ -24,6 +24,11 @@ from raw2features.core.uris import (
     slide_id_from_source,
     source_uri,
 )
+from raw2features.embedders.fingerprint import (
+    expected_patch_outputs,
+    patch_output_fingerprint,
+    resolved_patch_amp,
+)
 from raw2features.embedders.model_registry import build_embedder, resolve_geometry
 from raw2features.patcher.grid import GridPatcher, resample_patch
 from raw2features.sinks.zarr_sink import ZarrSink, write_patches_geojson
@@ -152,13 +157,19 @@ class RunConfig:
     )
 
     def _hash_payload(
-        self, *, include_models: bool, models: list[str] | None = None
+        self,
+        *,
+        include_models: bool,
+        include_amp: bool = True,
+        models: list[str] | None = None,
     ) -> str:
         # Build the hashed payload from _CONTENT_FIELDS, applying the few value
         # transforms inline. config_hash sorts keys, so insertion order is
         # irrelevant -- the bytes are identical to listing the dict by hand.
         payload: dict = {}
         for name in self._CONTENT_FIELDS:
+            if name == "amp" and not include_amp:
+                continue
             if name == "models":
                 if not include_models:
                     continue
@@ -187,12 +198,25 @@ class RunConfig:
         return self._hash_payload(include_models=True, models=models)
 
     def grid_hash(self) -> str:
-        """Identity of the store *geometry* alone (everything except the model set).
+        """Identity of the shared extraction/storage grid, excluding model settings.
 
-        Two runs with the same grid_hash build the same patch grid, so a new model
-        can be embedded and appended into an existing store in place.
+        AMP is per-model output identity and lives in the output fingerprint. Keeping
+        it out here lets a precision change replace that model in the existing grid.
         """
-        return self._hash_payload(include_models=False)
+        return self._hash_payload(include_models=False, include_amp=False)
+
+    def legacy_grid_hash(self) -> str:
+        """Pre-fingerprint grid identity, retained solely to append to v0.1 stores."""
+
+        return self._hash_payload(include_models=False, include_amp=True)
+
+    def compatible_legacy_grid_hashes(self) -> tuple[str, ...]:
+        """Old grid identities, preferring this request's configured AMP first."""
+
+        amps = (self.amp, "auto", "fp32", "bf16", "fp16")
+        return tuple(
+            dict.fromkeys(replace(self, amp=value).legacy_grid_hash() for value in amps)
+        )
 
     def device_list(self) -> list[str]:
         """The devices to run on, in order. ``--devices`` overrides the single
@@ -215,7 +239,11 @@ class RunConfig:
             except Exception:  # noqa: BLE001 - no torch/cuda visible -> single device
                 n = 0
             return [f"cuda:{i}" for i in range(n)] if n > 1 else [single]
-        out = [d.strip() for d in self.devices.split(",") if d.strip()]
+        out = [
+            resolve_device(d.strip())
+            for d in self.devices.split(",")
+            if d.strip()
+        ]
         return out or [single]
 
 
@@ -278,6 +306,8 @@ def run_slide(
     from raw2features.core.device import resolve_device
 
     cfg.device = resolve_device(cfg.device)  # "auto" -> cuda/mps/cpu (idempotent)
+    devices = cfg.device_list()
+    multi_device = len(devices) > 1
     expected_source = canonical_source_uri(slide_path)
     if expected_source is None:
         raise ValueError("Source URI is malformed and cannot be compared safely.")
@@ -298,6 +328,13 @@ def run_slide(
     if store_exists:
         _assert_store_source(out_path, expected_source)
 
+    model_contracts = _expected_contracts_with_factory_probe(
+        cfg,
+        embedders,
+        embedder_factory if multi_device else None,
+        devices=devices,
+    )
+
     # Fast path: a validated 'complete' receipt for this exact config (incl. the
     # model set), source, and requested output. ``--force`` deliberately bypasses it.
     if (
@@ -309,6 +346,7 @@ def run_slide(
             content_hash,
             expected_source_uri=expected_source,
             expected_output_uri=expected_output,
+            expected_model_contracts=model_contracts,
         )
     ):
         return {"slide_id": slide_id, "status": "skipped", "reason": "already complete"}
@@ -319,7 +357,11 @@ def run_slide(
     grid_key_existing: str | None = None
     if store_exists:
         grid_key_existing, _, present_valid = _inspect_store(
-            out_path, grid_hash, cfg.models
+            out_path,
+            grid_hash,
+            cfg.models,
+            expected_model_contracts=model_contracts,
+            compatible_grid_hashes=cfg.compatible_legacy_grid_hashes(),
         )
     # append: a grid of THIS geometry already exists -> add the missing models to it.
     # Otherwise we create a fresh store (no store yet) or ADD a new grid to an existing
@@ -345,8 +387,6 @@ def run_slide(
     thumb_meta = None
     sink = ZarrSink(output_zarr_format=cfg.output_zarr_format)
 
-    devices = cfg.device_list()
-    multi_device = len(devices) > 1
     # Per-device model-copy factory for the patch-parallel path (only built when
     # >1 device). Defaults to building from the registry on each device; a test may
     # inject one to replicate a mock. The single-device path ignores it entirely.
@@ -366,8 +406,12 @@ def run_slide(
                 run_embedders = (
                     embedder_factory(devices[0])
                     if multi_device
-                    else _select_embedders(embedders, cfg, models_to_do)
+                    else _select_embedders(
+                        embedders, cfg, models_to_do, device=devices[0]
+                    )
                 )
+            run_contracts = {name: model_contracts[name] for name in models_to_do}
+            _assert_loaded_model_contracts(run_embedders, run_contracts)
             # Modality of this run: multiplex (marker stacks, e.g. KRONOS) routes the
             # nuclear segmenter + N-channel reads; brightfield is the RGB default.
             multiplex = any(
@@ -411,7 +455,8 @@ def run_slide(
                         slide_id,
                         key=grid_key_existing,
                         new_model_dims={e.name: e.embedding_dim for e in run_embedders},
-                        new_model_meta=_models_header(run_embedders),
+                        new_model_meta=_models_header(run_embedders, run_contracts),
+                        replace_models=models_to_do,
                     )
                 else:
                     patcher = GridPatcher(
@@ -462,6 +507,7 @@ def run_slide(
                         grid_hash,
                         prov,
                         panel_meta,
+                        run_contracts,
                     )
                     sink.create(
                         out_dir,
@@ -516,6 +562,7 @@ def run_slide(
                         cfg,
                         devices,
                         normalizer,
+                        run_contracts,
                     )
                 else:
                     # Marker panels were bound once when the reader opened (above).
@@ -531,7 +578,11 @@ def run_slide(
                         prof,
                         multichannel=multiplex,
                         normalizer=normalizer,
+                        device=devices[0],
                     )
+                # The array fingerprint is the completion commit marker. Stamp it
+                # only after every row for every model was written successfully.
+                sink.finalize_models(run_contracts)
                 # Optional per-patch QC (--qc): the producer needs the open reader,
                 # so it runs here on a freshly-built grid (its coords + level0_patch). A
                 # later model added to an existing grid keeps that grid's qc layer.
@@ -706,6 +757,11 @@ def embed_slide(
 
     validate_slide_encoder_names(cfg.slide_encoders)
 
+    from raw2features.core.device import resolve_device
+
+    cfg.device = resolve_device(cfg.device)
+    devices = cfg.device_list()
+
     expected_source = canonical_source_uri(slide_path)
     if expected_source is None:
         raise ValueError("Source URI is malformed and cannot be compared safely.")
@@ -721,6 +777,12 @@ def embed_slide(
     out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
     grids = {grid_key(g.mpp, g.patch_px): list(g.models) for g in groups}
     expected_output = f"file://{os.path.abspath(out_path)}"
+    model_contracts = _expected_contracts_with_factory_probe(
+        cfg,
+        embedders,
+        embedder_factory,
+        devices=devices,
+    )
 
     if os.path.exists(out_path) and not force:
         _assert_store_source(out_path, expected_source)
@@ -734,6 +796,7 @@ def embed_slide(
             run_hash,
             expected_source_uri=expected_source,
             expected_output_uri=expected_output,
+            expected_model_contracts=model_contracts,
         )
     ):
         return {
@@ -825,10 +888,97 @@ def embed_slide(
     }
 
 
-def _resolve_amp(cfg: RunConfig, spec) -> str:
-    """The precision to run *spec* at: its card precision when ``--amp auto``,
-    otherwise the explicit override applied to every model."""
-    return spec.inference_amp if cfg.amp == "auto" else cfg.amp
+def _resolve_amp(cfg: RunConfig, spec, device: str | None = None) -> str:
+    """The precision the forward path actually uses on the concrete device."""
+
+    return resolved_patch_amp(spec, cfg.amp, device or cfg.device)
+
+
+def expected_model_contracts(
+    cfg: RunConfig,
+    embedders: list | None = None,
+    *,
+    device: str | None = None,
+) -> dict:
+    """Current output dimension/fingerprint for every model requested by *cfg*.
+
+    Injected embedders override registry specs by name, preserving the public plugin
+    and test seam while normal registry runs stay load-free for receipt/store checks.
+    """
+
+    specs = {e.name: e.spec for e in (embedders or [])}
+    return expected_patch_outputs(
+        cfg.models,
+        cfg.amp,
+        cfg.device if device is None else device,
+        specs=specs,
+    )
+
+
+def _expected_contracts_for_devices(
+    cfg: RunConfig,
+    embedders: list | None,
+    devices: list[str],
+) -> dict[str, dict]:
+    """Return one output contract shared by every configured patch worker.
+
+    A feature array has one fingerprint. Mixed devices are therefore safe only when
+    they resolve every model to the same complete contract (for example explicit
+    fp32 on CPU and CUDA). Device-dependent precision differences fail before any
+    receipt or store can be used or mutated.
+    """
+
+    if not devices:
+        raise ValueError("At least one patch worker device is required.")
+    by_device = {
+        device: expected_model_contracts(cfg, embedders, device=device)
+        for device in dict.fromkeys(devices)
+    }
+    first_device = next(iter(by_device))
+    expected = by_device[first_device]
+    mismatches: list[str] = []
+    for name in cfg.models:
+        contracts = {device: values[name] for device, values in by_device.items()}
+        if any(value != contracts[first_device] for value in contracts.values()):
+            amps = ", ".join(
+                f"{device}="
+                f"{value['output_fingerprint']['payload']['output']['resolved_amp']}"
+                for device, value in contracts.items()
+            )
+            mismatches.append(f"{name} ({amps})")
+    if mismatches:
+        raise ValueError(
+            "Configured patch worker devices resolve to different model output "
+            f"contracts: {', '.join(mismatches)}. Use devices with matching "
+            "effective precision or pass --amp fp32."
+        )
+    return expected
+
+
+def _expected_contracts_with_factory_probe(
+    cfg: RunConfig,
+    embedders: list | None,
+    embedder_factory,
+    *,
+    devices: list[str] | None = None,
+) -> dict[str, dict]:
+    """Resolve custom-only factory specs without leaving a model copy resident."""
+
+    worker_devices = list(devices or cfg.device_list())
+    try:
+        return _expected_contracts_for_devices(cfg, embedders, worker_devices)
+    except KeyError:
+        factory = embedder_factory or (
+            lambda device: _build_embedders_on(cfg, cfg.models, device)
+        )
+    probe = factory(worker_devices[0])
+    try:
+        contracts = _expected_contracts_for_devices(cfg, probe, worker_devices)
+        _assert_loaded_model_contracts(probe, contracts)
+        return contracts
+    finally:
+        for embedder in probe:
+            embedder.unload()
 
 
 def _amp_label(dtype) -> str:
@@ -842,6 +992,44 @@ def _amp_label(dtype) -> str:
         torch.float16: "fp16",
         torch.float32: "fp32",
     }.get(dtype, "fp32")
+
+
+def _loaded_model_contracts(embedders: list) -> dict[str, dict]:
+    """Derive contracts from loaded specs and their effective execution precision."""
+
+    contracts: dict[str, dict] = {}
+    for embedder in embedders:
+        selected = _amp_label(getattr(embedder, "_dtype", None))
+        effective = resolved_patch_amp(
+            embedder.spec,
+            selected,
+            getattr(embedder, "_device", "cpu"),
+        )
+        contracts[embedder.name] = {
+            "embedding_dim": int(embedder.embedding_dim),
+            "output_fingerprint": patch_output_fingerprint(embedder.spec, effective),
+        }
+    return contracts
+
+
+def _assert_loaded_model_contracts(embedders: list, expected: dict[str, dict]) -> None:
+    """Fail before store mutation if loaded model copies differ from provenance."""
+
+    actual = _loaded_model_contracts(embedders)
+    if set(actual) != set(expected):
+        missing = sorted(set(expected) - set(actual))
+        extra = sorted(set(actual) - set(expected))
+        raise ValueError(
+            "Loaded model set does not match the output contract "
+            f"(missing={missing}, unexpected={extra})."
+        )
+    mismatched = [name for name in expected if actual[name] != expected[name]]
+    if mismatched:
+        raise ValueError(
+            "Loaded model contract differs from the requested/persisted contract for "
+            f"{mismatched}. Check effective AMP, preprocessing, dimensions, and "
+            "weights."
+        )
 
 
 def load_embedders(cfg: RunConfig, device: str | None = None) -> list:
@@ -870,7 +1058,7 @@ def _build_embedders_on(cfg: RunConfig, names: list[str], device: str) -> list:
     for m in names:
         emb = build_embedder(m)
         _warn_scale_mismatch(cfg, emb.spec)
-        dtype = _amp_dtype(_resolve_amp(cfg, emb.spec))
+        dtype = _amp_dtype(_resolve_amp(cfg, emb.spec, device))
         built.append(emb.load(device=device, dtype=dtype, compile=cfg.compile))
     return built
 
@@ -922,7 +1110,13 @@ def _warn_channel_collapse(reader, multiplex: bool) -> None:
         )
 
 
-def _select_embedders(embedders: list | None, cfg: RunConfig, names: list[str]) -> list:
+def _select_embedders(
+    embedders: list | None,
+    cfg: RunConfig,
+    names: list[str],
+    *,
+    device: str | None = None,
+) -> list:
     """The embedders to run for *names*: filter injected ones (tests), else build.
 
     Each model is loaded at its resolved precision (``--amp auto`` -> the model's
@@ -931,7 +1125,7 @@ def _select_embedders(embedders: list | None, cfg: RunConfig, names: list[str]) 
     """
     if embedders is not None:
         return [e for e in embedders if e.name in names]
-    return _build_embedders_on(cfg, names, cfg.device)
+    return _build_embedders_on(cfg, names, device or cfg.device)
 
 
 def _segment(reader, cfg: RunConfig, segmenter_name: str | None = None):
@@ -1123,7 +1317,7 @@ def _group_by_transform(embedders: list) -> list[list]:
 
 def _embed_patches(
     reader, coords, read_level, read_px, patch_px, embedders, sink, cfg, prof=None,
-    multichannel=False, normalizer=None,
+    multichannel=False, normalizer=None, device=None,
 ):
     """Decode each patch once at the store geometry and embed it with every
     extractor in *embedders*, writing ``features/<model>`` in batches.
@@ -1166,7 +1360,7 @@ def _embed_patches(
         read_px,
         patch_px,
         embedders,
-        cfg.device,
+        device or cfg.device,
         sink.write_block,
         cfg,
         prof,
@@ -1339,6 +1533,7 @@ def _embed_patches_multi(
     cfg,
     devices,
     normalizer=None,
+    expected_contracts: dict[str, dict] | None = None,
 ):
     """Patch-parallel embedding: shard ``coords`` across ``devices`` and gather.
 
@@ -1370,6 +1565,8 @@ def _embed_patches_multi(
     def _worker(idx: int, device: str, lo: int, hi: int) -> None:
         try:
             embedders = embedder_factory(device)
+            if expected_contracts is not None:
+                _assert_loaded_model_contracts(embedders, expected_contracts)
             collector = _FeatureCollector(hi - lo, model_dims, cfg.features_dtype)
             # Own reader per worker: per-reader chunk cache, thread-safe zarr reads.
             with reader_cls(slide_path) as reader:
@@ -1418,7 +1615,14 @@ def _embed_patches_multi(
         sink.write_block(model, 0, full)
 
 
-def _inspect_store(out_path: str, expected_grid_hash: str, requested_models: list[str]):
+def _inspect_store(
+    out_path: str,
+    expected_grid_hash: str,
+    requested_models: list[str],
+    *,
+    expected_model_contracts: dict[str, dict] | None = None,
+    compatible_grid_hashes: tuple[str, ...] = (),
+):
     """Find the grid matching ``expected_grid_hash``: ``(key | None, n, valid_models)``.
 
     Returns the key of the grid whose geometry matches (so the caller appends missing
@@ -1427,23 +1631,49 @@ def _inspect_store(out_path: str, expected_grid_hash: str, requested_models: lis
     ``valid_models`` is the subset of *requested_models* already present + output-valid
     in that grid, so the caller embeds only the rest.
     """
-    from raw2features.core.store import GRIDS, grid_keys, open_root
+    import zarr
+
+    from raw2features.core.store import GRIDS, grid_keys
 
     try:
-        root = open_root(out_path)
+        # Completion is a live-metadata decision. Consolidated metadata can retain a
+        # pre-crash fingerprint after replacement removed the array commit marker.
+        root = zarr.open_group(out_path, mode="r", use_consolidated=False)
         keys = grid_keys(root)
     except Exception:  # noqa: BLE001 - an unreadable/absent store is "not appendable"
         return (None, 0, [])
-    for k in keys:
+
+    def _result_for(k: str):
         g = root[GRIDS][k]
-        stored_gh = dict(g.attrs.get("raw2features", {})).get("grid_hash")
-        if stored_gh is None or stored_gh == expected_grid_hash:
-            try:
-                n = int(g["coords"].shape[0])
-            except Exception:  # noqa: BLE001 - skip an unreadable grid
-                continue
-            valid = [m for m in requested_models if validate_model(g, m, n)]
-            return (k, n, valid)
+        try:
+            n = int(g["coords"].shape[0])
+        except Exception:  # noqa: BLE001 - skip an unreadable grid
+            return None
+        valid = []
+        for model in requested_models:
+            contract = (expected_model_contracts or {}).get(model, {})
+            if validate_model(
+                g,
+                model,
+                n,
+                expected_dim=contract.get("embedding_dim"),
+                expected_fingerprint=contract.get("output_fingerprint"),
+            ):
+                valid.append(model)
+        return (k, n, valid)
+
+    # Prefer the new identity, then the exact requested legacy AMP, then other legal
+    # legacy AMP values. A hashless hand-built/legacy grid is the last-resort match.
+    candidates = tuple(dict.fromkeys((expected_grid_hash, *compatible_grid_hashes)))
+    for candidate in candidates:
+        for k in keys:
+            stored = dict(root[GRIDS][k].attrs.get("raw2features", {})).get("grid_hash")
+            if stored == candidate and (result := _result_for(k)) is not None:
+                return result
+    for k in keys:
+        stored = dict(root[GRIDS][k].attrs.get("raw2features", {})).get("grid_hash")
+        if stored is None and (result := _result_for(k)) is not None:
+            return result
     return (None, 0, [])
 
 
@@ -1598,6 +1828,7 @@ def _run_slide_encoders(
             sink._group,
             slide_model_name,
             patch_model=patch_model,
+            device=device,
         ):
             results[slide_model_name] = f"slide/{slide_model_name}"
             continue
@@ -1621,8 +1852,20 @@ def _run_slide_encoders(
     return results
 
 
-def _models_header(embedders: list) -> dict:
+def _models_header(
+    embedders: list,
+    model_contracts: dict[str, dict] | None = None,
+) -> dict:
     """The per-model provenance block stored in the zarr header's ``models`` key."""
+    contracts = model_contracts or {
+        e.name: {
+            "embedding_dim": e.spec.embedding_dim,
+            "output_fingerprint": patch_output_fingerprint(
+                e.spec, _amp_label(getattr(e, "_dtype", None))
+            ),
+        }
+        for e in embedders
+    }
     return {
         e.name: {
             "source": e.spec.source,
@@ -1638,6 +1881,9 @@ def _models_header(embedders: list) -> dict:
             "gated": e.spec.gated,
             "weights_sha256": e.spec.weights_sha256,
             "weights_revision": e.spec.weights_revision,
+            "weights_filename": e.spec.weights_filename,
+            "experimental": e.spec.experimental,
+            "output_fingerprint": contracts[e.name]["output_fingerprint"],
             # The precision the embedding was actually computed at (provenance).
             "inference_amp": _amp_label(getattr(e, "_dtype", None)),
         }
@@ -1647,7 +1893,7 @@ def _models_header(embedders: list) -> dict:
 
 def _build_header(
     reader, grid, seg_meta, embedders, slide_id, n, thumbnail, grid_hash, prov,
-    panel_meta=None,
+    panel_meta=None, model_contracts=None,
 ) -> dict:
     header = {
         "schema_version": SCHEMA_VERSION,
@@ -1688,7 +1934,7 @@ def _build_header(
             "coords_convention": "level0_xy",
         },
         "segmentation": seg_meta,
-        "models": _models_header(embedders),
+        "models": _models_header(embedders, model_contracts),
     }
     # Multiplex marker-panel resolution (per model): which of the slide's channels
     # matched the model's marker vocabulary and which were dropped. Absent for

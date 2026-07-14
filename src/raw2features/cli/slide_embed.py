@@ -152,6 +152,7 @@ def slide_embed(
             group,
             slide_model_name,
             patch_model=selected_patch_model,
+            device=device,
         ):
             typer.echo(
                 f"{slide_model_name} [{selected_grid}]: already complete (skipping)"

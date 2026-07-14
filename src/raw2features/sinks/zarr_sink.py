@@ -167,12 +167,15 @@ class ZarrSink(Sink):
         key: str | None = None,
         new_model_dims: dict[str, int],
         new_model_meta: dict | None = None,
+        replace_models: list[str] | tuple[str, ...] | set[str] = (),
     ) -> int:
         """Open an existing store's grid ``r+`` to add feature arrays, no clobber.
 
         Creates ``features/<model>`` only for models in *new_model_dims* not already
         present in the grid, matching the grid's existing feature dtype so it stays
-        homogeneous. Coords/grid/mask and existing feature arrays are left untouched.
+        homogeneous. Names explicitly listed in *replace_models* are deleted and
+        recreated; callers use that only after the old output fails its current model
+        contract. Coords/grid/mask and unrelated feature arrays are left untouched.
         ``key=None`` targets the sole grid. Returns the grid's patch count. Pass empty
         ``new_model_dims`` to open for slide-only work.
         """
@@ -193,9 +196,18 @@ class ZarrSink(Sink):
         self._dtype = feats[existing[0]].dtype if existing else "float16"
         n = int(g["coords"].shape[0])
         added: list[str] = []
+        replace = set(replace_models)
+        invalidating = replace & set(new_model_dims)
+        if invalidating:
+            # A corrupt store may have lost features/<model> while retaining a slide
+            # vector derived from it, so invalidate dependents even when the patch
+            # array itself is already absent.
+            self._drop_slide_dependents(g, invalidating)
         for model, dim in new_model_dims.items():
-            if model in feats:  # never clobber an existing model
-                continue
+            if model in feats:
+                if model not in replace:  # default remains no-clobber
+                    continue
+                del feats[model]
             a = feats.create_array(
                 model,
                 shape=(n, dim),
@@ -214,6 +226,30 @@ class ZarrSink(Sink):
         self._root = root
         self._group = g
         return n
+
+    @staticmethod
+    def _drop_slide_dependents(group, patch_models: set[str]) -> None:
+        """Remove slide vectors derived from feature arrays being replaced."""
+
+        if "slide" in group:
+            slide = group["slide"]
+            for name in list(slide.keys()):
+                if dict(slide[name].attrs).get("patch_encoder") in patch_models:
+                    del slide[name]
+        header = dict(group.attrs.get("raw2features", {}))
+        slide_meta = dict(header.get("slide_embeddings", {}))
+        kept = {
+            name: value
+            for name, value in slide_meta.items()
+            if not isinstance(value, dict)
+            or value.get("patch_encoder") not in patch_models
+        }
+        if kept != slide_meta:
+            if kept:
+                header["slide_embeddings"] = kept
+            else:
+                header.pop("slide_embeddings", None)
+            group.attrs["raw2features"] = header
 
     @staticmethod
     def _update_root_models(root, key: str, models: list[str]) -> None:
@@ -239,6 +275,45 @@ class ZarrSink(Sink):
             raise RuntimeError("sink not created; call create() first")
         block = np.asarray(feats, dtype=self._dtype)
         self._group["features"][model][start : start + block.shape[0]] = block
+
+    def finalize_models(self, contracts: dict[str, dict]) -> None:
+        """Commit successfully-written feature arrays with their output fingerprints.
+
+        The array attribute is deliberately absent while rows are being written.  A
+        crash therefore leaves the model incomplete even if the old finite values or
+        zarr fill values would otherwise pass structural checks.
+        """
+
+        if self._group is None:
+            raise RuntimeError("sink not created; call create() first")
+        from raw2features.embedders.fingerprint import output_fingerprints_equal
+
+        header = dict(self._group.attrs.get("raw2features", {}))
+        model_meta = header.get("models", {})
+        for model, contract in contracts.items():
+            if model not in self._group["features"]:
+                raise KeyError(f"cannot finalize missing features/{model}")
+            expected_dim = int(contract["embedding_dim"])
+            array = self._group["features"][model]
+            if array.ndim != 2 or int(array.shape[1]) != expected_dim:
+                raise ValueError(
+                    f"features/{model} has shape {array.shape}; "
+                    f"expected (*, {expected_dim})"
+                )
+            fingerprint = contract["output_fingerprint"]
+            stored_header = (
+                model_meta.get(model, {}).get("output_fingerprint")
+                if isinstance(model_meta, dict)
+                and isinstance(model_meta.get(model), dict)
+                else None
+            )
+            if not output_fingerprints_equal(stored_header, fingerprint):
+                raise ValueError(
+                    f"header fingerprint for {model!r} does not match the "
+                    "output contract"
+                )
+            # This is the completion commit marker and must be the final model write.
+            array.attrs["output_fingerprint"] = fingerprint
 
     def write_slide_embedding(
         self,

@@ -266,7 +266,8 @@ to shared-stream float reordering.
 `embed` inspects any existing `<slide>.embeddings.zarr` before doing work, so
 re-runs are **additive and idempotent - no `--receipts-dir` required**:
 
-- A requested model already present and output-validated is **skipped**.
+- A requested model already present and output-validated against its current model
+  fingerprint is **skipped**.
 - A **missing** model is embedded and **appended in place**: `features/<model>` is
   added next to the existing arrays, decoded once at the store's existing patch
   coordinates. Existing models and `coords` are left untouched.
@@ -282,12 +283,17 @@ raw2features embed slide.zarr out/ -m virchow2         # ADDS features/virchow2;
 raw2features embed slide.zarr out/ -m uni -m virchow2  # both present -> nothing to do
 ```
 
-The store's geometry is identified by a **`grid_hash`** (everything
-content-affecting *except* the model set), recorded in the header. Two runs with
-the same grid_hash target the same store; the model set decides which arrays are
-added. "Present" is strict: a model counts only if `features/<model>` is
-`(n_patches, dim)`, fully finite, with no unwritten (all-zero) rows and
-`len(coords) == n_patches`. A truncated or damaged array is re-embedded.
+The shared extraction/storage grid is identified by a **`grid_hash`**, recorded in
+the header. Model-specific settings such as resolved AMP live in each output
+fingerprint instead, so changing them replaces that model in the same grid. "Present"
+is strict: a model counts only if `features/<model>` has the
+current expected dimension and a matching output fingerprint in both the array and
+grid header, is fully finite, has no unwritten (all-zero) tail, and has
+`len(coords) == n_patches`. The fingerprint covers the effective weights,
+preprocessing, pooling, resolved AMP, and loader construction. A truncated, damaged,
+legacy-unfingerprinted, or stale-contract array is re-embedded; unrelated model arrays
+and coordinates remain untouched. A derived `slide/<model>` fingerprint includes its
+patch input fingerprint, so stale slide vectors are recomputed too.
 
 ### Receipts - the fast path for cohort runs
 

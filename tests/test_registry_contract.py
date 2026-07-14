@@ -51,6 +51,7 @@ def test_every_patch_spec_is_complete_and_consistent():
                 f"{name}: needs a 64-hex weights_sha256"
             )
             assert spec.weights_revision, f"{name}: needs a pinned HF weights_revision"
+        assert spec.weights_filename, f"{name}: needs the exact weights_filename"
         # family must resolve to a registered embedder plugin
         plugins.get("embedders", spec.family)
 
@@ -69,6 +70,7 @@ def test_every_slide_spec_is_complete():
         # FAIR DOI; pooling baselines legitimately have none.
         if spec.family != "pool":
             assert spec.doi and spec.doi.startswith("10."), f"{name}: needs a DOI"
+            assert spec.weights_filename, f"{name}: needs the exact weights_filename"
 
 
 def test_optional_fields_round_trip_through_loader():
@@ -94,3 +96,6 @@ def test_optional_fields_round_trip_through_loader():
     # doi is cherry-picked by the loader too -> guard it survives.
     assert get_spec("uni").doi == "10.1038/s41591-024-02857-3"
     assert get_spec("h_optimus_0").doi is None  # open-weights release, no paper
+    assert get_spec("seal_conch").experimental is True
+    assert get_spec("seal_univ2").experimental is True
+    assert get_spec("uni").experimental is False

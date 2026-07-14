@@ -10,8 +10,15 @@ import os
 
 import typer
 
-from raw2features.pipeline.receipt import canonical_source_uri, is_complete
-from raw2features.pipeline.runner import RunConfig, slide_id_from_path
+from raw2features.pipeline.receipt import (
+    canonical_source_uri,
+    is_complete,
+)
+from raw2features.pipeline.runner import (
+    RunConfig,
+    expected_model_contracts,
+    slide_id_from_path,
+)
 
 
 def verify(
@@ -41,6 +48,11 @@ def verify(
         None, "--stain-norm", help="Must match the embed run (content-hash field)."
     ),
     amp: str = typer.Option("auto", "--amp"),
+    device: str = typer.Option(
+        "auto",
+        "--device",
+        help="auto | cuda | mps | cpu (must match the effective embed precision)",
+    ),
     snap_to_level: bool = typer.Option(False, "--snap-to-level"),
     mpp_tolerance: float = typer.Option(0.001, "--mpp-tolerance"),
     allow_upsample: bool = typer.Option(False, "--allow-upsample"),
@@ -50,6 +62,7 @@ def verify(
     quiet: bool = typer.Option(False, "--quiet"),
 ) -> None:
     """Exit 0 if the slide is already complete & output-validated, else exit 1."""
+    from raw2features.core.device import resolve_device
     from raw2features.pipeline.runner import resolve_run
 
     geometry_config = None
@@ -75,6 +88,7 @@ def verify(
         mpp_tolerance=mpp_tolerance,
         allow_upsample=allow_upsample,
         amp=amp,
+        device=resolve_device(device),
     )
     # Hash exactly as embed_slide does, so verify matches the embed that wrote it.
     _, _, run_hash = resolve_run(cfg, mpp, patch_size, geometry_config)
@@ -99,12 +113,26 @@ def verify(
         if expected_path is not None
         else None
     )
+    from raw2features.embedders.model_registry import load_registry
+
+    registered = load_registry()
+    unknown = [model for model in models if model not in registered]
+    if unknown:
+        if not quiet:
+            typer.echo(
+                "cannot derive the current output contract for unregistered "
+                f"model(s) {', '.join(unknown)}; incomplete",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+    contracts = expected_model_contracts(cfg)
     complete = is_complete(
         receipts_dir,
         slide_id,
         run_hash,
         expected_source_uri=expected_source,
         expected_output_uri=expected_output,
+        expected_model_contracts=contracts,
     )
     if not quiet:
         typer.echo(f"{slide_id}: {'complete' if complete else 'incomplete'}")

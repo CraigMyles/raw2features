@@ -30,6 +30,7 @@
 resnet50:
   family: torchvision
   source: "torchvision://resnet50?weights=IMAGENET1K_V2"
+  weights_filename: "ResNet50_Weights.IMAGENET1K_V2"
   embedding_dim: 2048
   input_size: 224
   pooling: pooled
@@ -54,6 +55,7 @@ dinov2:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/timm/vit_large_patch14_dinov2.lvd142m"
   weights_sha256: "0424a5d1b515278cba3c6640ccbeaacc41de59d3a93df0dd5e494285eea2b355"
+  weights_filename: "model.safetensors"
   weights_revision: "4741e1cafbf45415e77074bb0cb42dba76c8684a"
   doi: "10.48550/arXiv.2304.07193"
   license: "Apache-2.0 (DINOv2)"
@@ -76,6 +78,7 @@ uni:
   interpolation: bilinear
   transform_source_url: "https://huggingface.co/MahmoodLab/UNI"
   weights_sha256: "56ef09b44a25dc5c7eedc55551b3d47bcd17659a7a33837cf9abc9ec4e2ffb40"
+  weights_filename: "pytorch_model.bin"
   weights_revision: "b55a5ec6cade1a39edfe6534189a9b8ca7a022f0"
   doi: "10.1038/s41591-024-02857-3"
   license: "CC-BY-NC-ND-4.0 (UNI, non-commercial)"
@@ -98,6 +101,7 @@ uni2_h:
   interpolation: bilinear
   transform_source_url: "https://huggingface.co/MahmoodLab/UNI2-h"
   weights_sha256: "6e077eda234bebc595868d918d3458d9dd32a050199b0ff04443b2f46a0a3b1e"
+  weights_filename: "pytorch_model.bin"
   weights_revision: "d517a8dd47902dd7c308b3c36f63bce47e7b9a43"
   doi: "10.1038/s41591-024-02857-3"
   license: "CC-BY-NC-ND-4.0 (UNI2, non-commercial)"
@@ -130,6 +134,7 @@ path_orchestra:
   interpolation: bilinear
   transform_source_url: "https://huggingface.co/AI4Pathology/PathOrchestra"
   weights_sha256: "3bcf28a162ed187d63ce42b41096eb298702b6d1be8640555660b053354db912"
+  weights_filename: "pytorch_model.bin"
   weights_revision: "8280b11a63919f25e4610f3315c2646b5f38bbb5"
   doi: "10.48550/arXiv.2503.24345"   # PathOrchestra; published npj Digit Med 2025
   license: "CC-BY-NC-ND-4.0 (PathOrchestra, non-commercial)"
@@ -159,6 +164,7 @@ virchow2:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/paige-ai/Virchow2"
   weights_sha256: "8d6cea947eb2418c3b0dff48cfb9b238e47744ab0dfca21b2b0637b140769b4b"
+  weights_filename: "model.safetensors"
   weights_revision: "3158645804b69e3f3bc4439d4116edddf0840a72"
   doi: "10.48550/arXiv.2408.00738"
   license: "CC-BY-NC-ND-4.0 (Virchow2, non-commercial)"
@@ -187,6 +193,7 @@ virchow:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/paige-ai/Virchow"
   weights_sha256: "3416891b37a2349a2d9ce7ecf00b64a6277011b41351436c1ceb0abb80805408"
+  weights_filename: "model.safetensors"
   weights_revision: "19eebc84ae33e79f1b2d866e6ff90ae50e522f9a"
   doi: "10.1038/s41591-024-03141-0"
   license: "Apache-2.0 (Virchow v1, Paige AI; commercial use permitted, gated by acceptance)"
@@ -213,6 +220,7 @@ gigapath:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/prov-gigapath/prov-gigapath"
   weights_sha256: "877947214318afa9e011754b74bbc3894a1f480a253afc7bc8045b8321dedd63"
+  weights_filename: "pytorch_model.bin"
   weights_revision: "eba85dd46097c3eedfcc2a3a9a930baecb6bcc19"
   doi: "10.1038/s41586-024-07441-w"
   license: "Apache-2.0 (Prov-GigaPath; open, gated only by HF login)"
@@ -241,6 +249,7 @@ conch:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/MahmoodLab/CONCH"
   weights_sha256: "40a9644b9ba0e83a74576e0a5e5f7313599fa9c9cdaf3c20f8a3e271b0e9ae7c"
+  weights_filename: "pytorch_model.bin"
   weights_revision: "f9ca9f877171a28ade80228fb195ac5d79003357"
   doi: "10.1038/s41591-024-02856-4"
   license: "CC-BY-NC-ND-4.0 (CONCH, non-commercial)"
@@ -268,6 +277,7 @@ conch_v1_5:
   interpolation: bilinear  # CONCH v1.5 uses Resize(448, BILINEAR)
   transform_source_url: "https://huggingface.co/MahmoodLab/conch_v1_5"
   weights_sha256: "09daf1912a016512e084636f9c76eee7c42f5c1f09b0461bb76082a3e0fecfa5"
+  weights_filename: "conch_v1_5_pytorch_model.bin"
   weights_revision: "dac6773d9961cfc75503440676ff157a2c6e8d2e"
   doi: "10.1038/s41591-025-03982-3"   # introduced with TITAN (Ding et al., Nat Med 2025)
   license: "CC-BY-NC-ND-4.0 (CONCH v1.5, non-commercial)"
@@ -296,6 +306,7 @@ h_optimus_0:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/bioptimus/H-optimus-0"
   weights_sha256: "bf47b8467403079798661601b6ab06533be789da48d3f8b510aaefe2fbc55cd3"
+  weights_filename: "pytorch_model.bin"
   weights_revision: "b145cc1e6c6b30d3251aa8b1f844e6974188a743"
   # No paper - an open-weights model release; cite the software (HF artifact above).
   license: "Apache-2.0 (H-optimus-0, Bioptimus; open, gated by HF login)"
@@ -324,6 +335,7 @@ h_optimus_1:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/bioptimus/H-optimus-1"
   weights_sha256: "c4f1e5b457ddf00679626053b0bf2899be6a19c3a04ad191c87ad1cdfd1abfe1"
+  weights_filename: "model.safetensors"
   weights_revision: "3592cb220dec7a150c5d7813fb56e68bd57473b9"
   doi: "10.1158/1538-7445.AM2026-LB174"
   license: "CC-BY-NC-ND-4.0 (H-optimus-1, Bioptimus; non-commercial)"
@@ -354,6 +366,7 @@ gpfm:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/majiabo/GPFM"
   weights_sha256: "ebde1a9d7d9098848034bcff30f8771034c8d0b69e32846fa266940f2fd4604c"
+  weights_filename: "GPFM.pth"
   weights_revision: "c2e0c6c7cea4d7ae67151c3375d780712f82254e"
   doi: "10.1038/s41551-025-01488-4"
   # LICENCE CONFLICT (verified from primary sources 2026-06): the HF card metadata
@@ -389,6 +402,7 @@ midnight:
   interpolation: bilinear    # v2.Resize default in the card's transform
   transform_source_url: "https://huggingface.co/kaiko-ai/midnight"
   weights_sha256: "52c14f20386ca17c2af8a7bf32c31c352668a8fbf6aefc88d86be6eaa0c72ca1"
+  weights_filename: "model.safetensors"
   weights_revision: "adc6b15679c981cce6f9b018bbad09d16eeeda9f"
   doi: "10.1007/978-3-032-04984-1_55"
   license: "MIT (Midnight, kaiko.ai; open, not gated)"
@@ -412,6 +426,7 @@ phikon:
   interpolation: bilinear       # ViTImageProcessor default (no resample key pinned)
   transform_source_url: "https://huggingface.co/owkin/phikon/raw/main/preprocessor_config.json"
   weights_sha256: "d01642bfeb683c6b039622eca273e0a8e4208065a4595b63edba178c1c4cfa68"
+  weights_filename: "model.safetensors"
   weights_revision: "057cc0295895c2df3dd7681a89680da6015cbefe"
   doi: "10.1101/2023.07.21.23292757"
   license: "Owkin non-commercial (HF 'other'); non-commercial research only"
@@ -434,6 +449,7 @@ phikon_v2:
   interpolation: bicubic        # preprocessor_config resample:3 = PIL BICUBIC
   transform_source_url: "https://huggingface.co/owkin/phikon-v2/raw/main/preprocessor_config.json"
   weights_sha256: "261ae680fa699b3b951597fd57aa19c02ef735805acb104b93af69b36d928569"
+  weights_filename: "model.safetensors"
   weights_revision: "2ae989a9c40cffaa27f0a6cb29cc94d1d6f9a5fd"
   doi: "10.48550/arXiv.2409.09173"
   license: "Owkin non-commercial (HF 'other'); non-commercial research only"
@@ -460,6 +476,7 @@ lunit_dino:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/1aurent/vit_small_patch16_224.lunit_dino"
   weights_sha256: "a19eb37d6cf038a7e8a34c7e9ec50698d02759b2f49dd799492f6ce7e4cb5937"
+  weights_filename: "model.safetensors"
   weights_revision: "9ed09909d93f9d39a092d8e49717ae48f9b44e6f"
   doi: "10.48550/arXiv.2212.04690"
   license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
@@ -486,6 +503,7 @@ lunit_dino8:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/1aurent/vit_small_patch8_224.lunit_dino"
   weights_sha256: "0b7e0236ce430064b31485bbb6f85e661dc5eca0cde709e8f04d59f1c2b23e0b"
+  weights_filename: "model.safetensors"
   weights_revision: "c23bc01cfbe022bc1f2a8a9306125a07818e4eb4"
   doi: "10.48550/arXiv.2212.04690"
   license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
@@ -511,6 +529,7 @@ lunit_bt:
   interpolation: bilinear
   transform_source_url: "https://github.com/lunit-io/benchmark-ssl-pathology"
   weights_sha256: "1ecf2f0888b598708e912cab689e797db099ec48df07d3b0b1fac04bc767f899"
+  weights_filename: "bt_rn50_ep200.torch"
   weights_revision: "pretrained-weights"   # immutable GitHub release (URL + sha256 pin)
   doi: "10.48550/arXiv.2212.04690"
   license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
@@ -538,6 +557,7 @@ lunit_mocov2:
   interpolation: bilinear
   transform_source_url: "https://github.com/lunit-io/benchmark-ssl-pathology"
   weights_sha256: "caddcff7980577722e9227fb90e61364556f15978483b19a1729831e770733b6"
+  weights_filename: "mocov2_rn50_ep200.torch"
   weights_revision: "pretrained-weights"   # immutable GitHub release (URL + sha256 pin)
   doi: "10.48550/arXiv.2212.04690"
   license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
@@ -564,6 +584,7 @@ lunit_swav:
   interpolation: bilinear
   transform_source_url: "https://github.com/lunit-io/benchmark-ssl-pathology"
   weights_sha256: "bf99442e9ce3367e3895e80b4d24e7f21d74b3c791347970b91eb82bcefa366f"
+  weights_filename: "swav_rn50_ep200.torch"
   weights_revision: "pretrained-weights"   # immutable GitHub release (URL + sha256 pin)
   doi: "10.48550/arXiv.2212.04690"
   license: "Lunit non-commercial (Public License, Lunit Inc.); non-commercial research only"
@@ -592,6 +613,7 @@ sp22m:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/MountSinaiCompPath/SP22M"
   weights_sha256: "4776892690a941a5728157c38d64aab549d7b861394a328cf3a5620222c4ff41"
+  weights_filename: "pytorch_model.bin"
   weights_revision: "8f636e50446c6b45008fa8cecf30f7bc92633a11"
   doi: "10.48550/arXiv.2310.07033"   # SP22M origin (Campanella et al., "...Three Billion Images"); named/benchmarked in arXiv:2407.06508. NOT 2403.04865 (a different Campanella paper)
   license: "CC-BY-NC-SA-4.0 (Mount Sinai SP22M; non-commercial, share-alike)"
@@ -619,6 +641,7 @@ retccl:
   interpolation: bilinear        # PIL Resize default
   transform_source_url: "https://github.com/Xiyue-Wang/RetCCL/blob/main/get_feature.py"
   weights_sha256: "931956f31d3f1a3f6047f3172b9e59ee3460d29f7c0c2bb219cbc8e9207795ff"
+  weights_filename: "retccl.pth"
   weights_revision: "076c6d18dd11f9ca951c6e294c31a021b42df494"
   doi: "10.1016/j.media.2022.102645"
   license: "GPL-3.0 (RetCCL/CCL, Xiyue Wang et al.; COPYLEFT weights, non-commercial academic)"
@@ -650,6 +673,7 @@ hipt:
   interpolation: bicubic
   transform_source_url: "https://github.com/mahmoodlab/HIPT/blob/master/HIPT_4K/hipt_model_utils.py"
   weights_sha256: "6960cd5a8657dc8bb214671aa0c6dbd3f5b698e84386884955836487ddc89e24"
+  weights_filename: "vit256_small_dino.pth"
   weights_revision: "3529ea3d95a390e210768ca4db29fa7cae39ded9"
   doi: "10.48550/arXiv.2206.02647"
   license: "Apache-2.0 WITH Commons Clause (Mahmood Lab HIPT; non-commercial)"
@@ -679,6 +703,7 @@ mstar:
   interpolation: bilinear
   transform_source_url: "https://huggingface.co/Wangyh/mSTAR"
   weights_sha256: "13b2df84648420bbc0fd2eca43ddfb5b7c9764920149988b3e015f39ed6f07ee"
+  weights_filename: "model.safetensors"
   weights_revision: "162ae5da9897d4ff8b9a4c2daea175ae45012ef7"
   doi: "10.1038/s41467-025-66220-x"
   license: "CC-BY-NC-ND-4.0 (mSTAR, Wang et al.; non-commercial)"
@@ -707,6 +732,7 @@ kaiko_vitl:
   interpolation: bilinear    # card uses torchvision v2.Resize (default bilinear)
   transform_source_url: "https://huggingface.co/1aurent/vit_large_patch14_reg4_224.kaiko_ai_towards_large_pathology_fms"
   weights_sha256: "149c8b21c60a7115a17572073b09ef142411c91b5194c84a99ebba8b83f20e69"   # HF LFS x-linked-etag; verify on first download
+  weights_filename: "model.safetensors"
   weights_revision: "fb802e347d2c59f05207b70ad75f7df30019c188"
   doi: "10.48550/arXiv.2404.15217"
   license: "Kaiko Non-Commercial Public License v1 (kaiko.ai; non-commercial)"
@@ -737,6 +763,7 @@ ctranspath:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/1aurent/swin_tiny_patch4_window7_224.CTransPath"
   weights_sha256: "158e29683f19cfb0018d040b95610802b640db60d38b00b25ea7db674cd141e4"
+  weights_filename: "model.safetensors"
   weights_revision: "59c740e4ed91dda4ebe094b64e4cd2e015c31810"
   doi: "10.1016/j.media.2022.102559"
   license: "GPL-3.0 (CTransPath / TransPath; COPYLEFT weights)"
@@ -764,6 +791,7 @@ hibou_l:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/histai/hibou-L"
   weights_sha256: "a63d1699448143ceccf2b7e1c4bf35b995c51f86ef8a6efb471af2eee210b79c"
+  weights_filename: "model.safetensors"
   weights_revision: "31a3b9fee16554c8552cb643d311733bce8faf7c"
   doi: "10.48550/arXiv.2406.05074"
   license: "Apache-2.0 (Hibou-L, HistAI; open, gated by HF login)"
@@ -791,6 +819,7 @@ hibou_b:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/histai/hibou-b"
   weights_sha256: "2121db3cac83bc9abf13a458a37b0740e2ce725609ff8d4b8e6b6c56c30c3ab6"
+  weights_filename: "model.safetensors"
   weights_revision: "7fdc8cce365ebfd9e7e60ee6ee9a8d4d59388f3c"
   doi: "10.48550/arXiv.2406.05074"
   license: "Apache-2.0 (Hibou-B, HistAI; open, gated by HF login)"
@@ -820,6 +849,7 @@ kronos:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/MahmoodLab/kronos"
   weights_sha256: "a0bc5cced0543ebf2f66634510991992fc689431a1d3b53ee61133d8824a7aaa"
+  weights_filename: "kronos_vits16_model.pt"
   weights_revision: "8edc2719ad67b2e2b766073b35c6cf8e6f5da516"
   doi: "10.48550/arXiv.2506.03373"
   license: "CC-BY-NC-ND-4.0 (KRONOS, non-commercial)"
@@ -847,6 +877,7 @@ musk:
   interpolation: bicubic
   transform_source_url: "https://github.com/lilab-stanford/MUSK/blob/main/README.md"
   weights_sha256: "83d9f2429ec3f04fc3bdc4bc6d8e6c78035ea196fdce9fe05d76ea0e8cad0375"
+  weights_filename: "model.safetensors"
   weights_revision: "de1ffed28608c197d2903f6fa42b491a3fbf0fb8"
   doi: "10.1038/s41586-024-08378-w"
   license: "CC-BY-NC-ND-4.0 (MUSK, Stanford/Harvard; non-commercial, no-derivatives)"
@@ -871,6 +902,7 @@ quiltnet:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/wisdomik/QuiltNet-B-32"
   weights_sha256: "e88815d05f50493a54fc2bab7ccf54075d24339d7b217e6f173c0c158ace92e7"   # open_clip_pytorch_model.bin
+  weights_filename: "open_clip_pytorch_model.bin"
   weights_revision: "8ce77289ce35a90b2f1db1137dfa4bc2df175e33"
   doi: "10.48550/arXiv.2306.11207"   # Quilt-1M (Ikezogwo et al., NeurIPS 2023)
   license: "MIT (QuiltNet, Ikezogwo et al.)"
@@ -896,6 +928,7 @@ biomedclip:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224"
   weights_sha256: "52cc993c5c5ff962bd0c60931874bc001e7e9b41666a385530f4a036294576be"   # open_clip_pytorch_model.bin
+  weights_filename: "open_clip_pytorch_model.bin"
   weights_revision: "9f341de24bfb00180f1b847274256e9b65a3a32e"
   doi: "10.48550/arXiv.2303.00915"   # BiomedCLIP (Zhang et al.)
   license: "MIT (BiomedCLIP, Microsoft)"
@@ -910,7 +943,8 @@ biomedclip:
     constructs the unused text tower: its construction-only PubMedBERT config/tokenizer
     dependency is pinned to
     microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract@d673b8835373c6fa116d6d8006b33d48734e305d
-    and localized before model construction; it is not part of grid/model identity.
+    and localized before model construction; the output fingerprint includes it as a
+    construction dependency (separate from grid identity).
     MIT, ungated.
 
 plip:
@@ -925,6 +959,7 @@ plip:
   interpolation: bicubic
   transform_source_url: "https://huggingface.co/vinid/plip"
   weights_sha256: "98a7f8d2a1f4a8fc8f6dedb3a16ff7efbe02a7ef67c93904c80bca9767c69630"   # pytorch_model.bin
+  weights_filename: "pytorch_model.bin"
   weights_revision: "67ade53ddd32195868f422585f72698ef5d15094"
   doi: "10.1038/s41591-023-02504-3"   # PLIP (Huang et al., Nature Medicine 2023)
   license: "MIT (PLIP, Huang et al.; from the project setup.py)"
@@ -943,6 +978,7 @@ plip:
 # frozen base. Needs the [seal] extra + the backbone's own package + both gates. seal_embedder.py.
 seal_conch:
   family: seal
+  experimental: true       # adapter pinned+verified; frozen base is upstream-managed HEAD in v0.1.1
   source: "conch"          # SEAL backbone key; checkpoint seal_conch_vision.pth in MahmoodLab/SEAL
   recommended_mpp: 0.5   # CONCH convention (unsourced); SEAL keeps the base's scale
   embedding_dim: 512       # CONCH base dim, unchanged by the LoRA
@@ -954,12 +990,16 @@ seal_conch:
   transform_source_url: "https://huggingface.co/MahmoodLab/SEAL"
   weights_revision: "c20762e7a04551e21e62c083a9c443bdbc48cb89"
   weights_sha256: "0f7c1386ff79062ccf6ceadaffbbca27f2f239eb738876e8adefe2991f0f968e"   # seal_conch_vision.pth
+  weights_filename: "seal_conch_vision.pth"
   doi: "10.48550/arXiv.2602.14177"
   license: "CC-BY-NC-ND-4.0 (SEAL, Mahmood Lab; non-commercial)"
   gated: true
   inference_amp: fp32
   notes: >-
-    SEAL-CONCH (MahmoodLab) -- CONCH ViT-B/16 + a spatial-transcriptomics LoRA, 512-d. The HF
+    EXPERIMENTAL in v0.1.1: the SEAL adapter is revision-pinned and SHA-256 verified, but the
+    upstream SEAL factory still downloads the frozen CONCH base from mutable HEAD, so this model
+    is outside the exact-weight pinning guarantee. SEAL-CONCH (MahmoodLab) -- CONCH ViT-B/16 + a
+    spatial-transcriptomics LoRA, 512-d. The HF
     checkpoint is a LoRA delta: we build the frozen CONCH base + merge it via SEAL's own
     get_img_model (image path only; no gene model). Needs the [seal] extra (the seal package
     pinned to the cjmielke fork / PR #1, which resolves config from the install dir) + the
@@ -968,6 +1008,7 @@ seal_conch:
 
 seal_univ2:
   family: seal
+  experimental: true       # adapter pinned+verified; frozen base is upstream-managed HEAD in v0.1.1
   source: "univ2"          # checkpoint seal_univ2_vision.pth
   recommended_mpp: 0.5   # UNI2-h convention (unsourced)
   embedding_dim: 1536      # UNI2-h base dim
@@ -979,12 +1020,16 @@ seal_univ2:
   transform_source_url: "https://huggingface.co/MahmoodLab/SEAL"
   weights_revision: "c20762e7a04551e21e62c083a9c443bdbc48cb89"
   weights_sha256: "e7ae736968c355ae02e565ee828f1ed6bd9ffe01b7dbc5a9166b3a55d746bd49"   # seal_univ2_vision.pth
+  weights_filename: "seal_univ2_vision.pth"
   doi: "10.48550/arXiv.2602.14177"
   license: "CC-BY-NC-ND-4.0 (SEAL, Mahmood Lab; non-commercial)"
   gated: true
   inference_amp: fp32
   notes: >-
-    SEAL-UNIv2 (MahmoodLab) -- UNI2-h ViT-H/14 + a spatial-transcriptomics LoRA, 1536-d. Same
+    EXPERIMENTAL in v0.1.1: the SEAL adapter is revision-pinned and SHA-256 verified, but the
+    upstream SEAL factory still downloads the frozen UNI2-h base from mutable HEAD, so this model
+    is outside the exact-weight pinning guarantee. SEAL-UNIv2 (MahmoodLab) -- UNI2-h ViT-H/14 +
+    a spatial-transcriptomics LoRA, 1536-d. Same
     load path as seal_conch (frozen UNI2-h base + LoRA merge); needs the [seal] extra + accepted
     MahmoodLab/SEAL + MahmoodLab/UNI2-h gates. v0.0.1.
 
@@ -1058,6 +1103,7 @@ slide_encoders:
     license: "CC-BY-NC-ND-4.0 (non-commercial)"
     transform_source_url: "https://huggingface.co/MahmoodLab/TITAN"
     weights_sha256: "4e92128317dca5c9e47d8173467105c21e4095f88d3bde9077e7f1e784b195fe"
+    weights_filename: "model.safetensors"
     weights_revision: "dac6773d9961cfc75503440676ff157a2c6e8d2e"
     doi: "10.1038/s41591-025-03982-3"
     notes: >-
@@ -1079,6 +1125,7 @@ slide_encoders:
     transform_source_url: "https://huggingface.co/paige-ai/Prism"
     weights_revision: "b5ef311e78a0811c71ecf618f6f7140e9ebb5fc6"
     weights_sha256: "01a0f7bcfd1559de31794e08a99e9fe4f9bd758c3b9f1482fe9cb3f5e1e7c5e1"   # model.safetensors
+    weights_filename: "model.safetensors"
     doi: "10.48550/arXiv.2405.10254"
     notes: >-
       Slide encoder over Virchow v1 (2560-d) patch features. Load via
@@ -1101,6 +1148,7 @@ slide_encoders:
     transform_source_url: "https://huggingface.co/MahmoodLab/abmil.base.conch_v15.pc108-24k"
     weights_revision: "423c894c738294e8b0ac38938108180a2c21dd43"
     weights_sha256: "08a40daa9e00cca62c65d26f00f7765f5c1b2fe58532806aeda521cb1bc8a708"   # model.safetensors
+    weights_filename: "model.safetensors"
     doi: "10.48550/arXiv.2506.09022"
     notes: >-
       FEATHER ABMIL slide encoder over CONCH v1.5 (768-d) patch features -> 512-d slide
@@ -1119,6 +1167,7 @@ slide_encoders:
     transform_source_url: "https://huggingface.co/MahmoodLab/abmil.base.uni_v2.pc108-24k"
     weights_revision: "7c0a057001e369ff6b55833188775bdb21f9b8c8"
     weights_sha256: "d9c2612d55615999043539f6abc4fe44902ed1680fdbfb3bc81f6b2915ba451d"   # model.safetensors
+    weights_filename: "model.safetensors"
     doi: "10.48550/arXiv.2506.09022"
     notes: >-
       FEATHER ABMIL slide encoder over UNI2-h (1536-d) patch features -> 512-d slide vector.
@@ -1135,6 +1184,7 @@ slide_encoders:
     transform_source_url: "https://huggingface.co/MahmoodLab/abmil.base.uni.pc108-24k"
     weights_revision: "9290d7720a2260501cf9cbbbc1f6b7134b251637"
     weights_sha256: "19b7edb4582ea534f63c74b8b83735c0529388d1b8f26945786cce9d0b4aea19"   # model.safetensors
+    weights_filename: "model.safetensors"
     doi: "10.48550/arXiv.2506.09022"
     notes: >-
       FEATHER ABMIL slide encoder over UNI (1024-d) patch features -> 512-d slide vector.
@@ -1153,6 +1203,7 @@ slide_encoders:
     transform_source_url: "https://huggingface.co/MahmoodLab/madeleine"
     weights_revision: "a5eca29194526644eaa725cbad62c0b5023007db"
     weights_sha256: "34437fe7cf6e1d9b6fb41ef592416ef890dc07c599ca1cc8d1ff00c40ce23496"   # model.pt
+    weights_filename: "model.pt"
     doi: "10.48550/arXiv.2408.02859"
     notes: >-
       Multi-stain ABMIL slide encoder over CONCH v1 (512-d) patch features -> 512-d slide
@@ -1177,6 +1228,7 @@ slide_encoders:
     transform_source_url: "https://huggingface.co/prov-gigapath/prov-gigapath"
     weights_revision: "eba85dd46097c3eedfcc2a3a9a930baecb6bcc19"
     weights_sha256: "04194a4c393e6a713b144356791c0d2e27ca769ee50c6e111fd6abc1f17ed551"  # slide_encoder.pth
+    weights_filename: "slide_encoder.pth"
     doi: "10.1038/s41586-024-07441-w"
     notes: >-
       LongNet slide encoder over GigaPath (1536-d) patch features + level-0 coords. Load via
@@ -1202,6 +1254,7 @@ slide_encoders:
     transform_source_url: "https://github.com/hms-dbmi/CHIEF"
     weights_revision: null           # Drive has no immutable revision; the SHA is the pin
     weights_sha256: "6a46d200b32a65e5ce4774611b889b5f1bbf7a39f9111321a2a1b5dbdb9996b8"
+    weights_filename: "CHIEF_pretraining.pth"
     doi: "10.1038/s41586-024-07894-z"
     notes: >-
       Gated-attention MIL slide encoder over CTransPath (768-d) patch features -> 768-d
@@ -1224,6 +1277,7 @@ slide_encoders:
     transform_source_url: "https://github.com/mahmoodlab/TANGLE"
     weights_revision: null           # Drive has no immutable revision; the SHA is the pin
     weights_sha256: "786d43c9ce0bd257f954faa0e484e543402eea1e0d014ab71398c3c872b17d55"
+    weights_filename: "tangle_pancancer_model.pt"
     doi: "10.48550/arXiv.2405.11618"
     notes: >-
       Multi-head ABMIL slide encoder over UNI (1024-d) patch features -> 512-d slide

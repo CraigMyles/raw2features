@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from raw2features.embedders._hub import download_pinned_hf_file, verify_sha256
 from raw2features.embedders.model_registry import load_registry
 from raw2features.embedders.open_clip_embedder import (
     _BIOMEDCLIP_TEXT_REVISION,
@@ -121,3 +122,25 @@ def test_huggingface_registry_revision_resolves(pin: _HubPin):
     assert info.sha == pin.revision, (
         f"{label}: {pin.repo}@{pin.revision} resolved to {info.sha!r}"
     )
+
+
+@pytest.mark.network
+@pytest.mark.parametrize(
+    ("kind", "name", "source"),
+    [
+        ("patch", "seal_conch", "hf-hub:MahmoodLab/SEAL"),
+        ("patch", "seal_univ2", "hf-hub:MahmoodLab/SEAL"),
+        ("slide", "gigapath_slide", None),
+    ],
+)
+def test_direct_loader_file_checksum_matches_registry(kind, name, source):
+    """The files newly verified before SEAL/GigaPath loader boundaries match pins."""
+
+    registry = load_registry() if kind == "patch" else load_slide_registry()
+    spec = registry[name]
+    path = download_pinned_hf_file(
+        source or spec.source,
+        spec.weights_filename,
+        spec.weights_revision,
+    )
+    verify_sha256(path, spec.weights_sha256, what=name)

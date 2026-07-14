@@ -50,6 +50,7 @@ from __future__ import annotations
 import numpy as np
 
 from raw2features.core.plugins import register
+from raw2features.embedders._hub import download_pinned_hf_file, verify_sha256
 
 from .base import SlideEmbedder, SlideModelSpec
 
@@ -118,15 +119,14 @@ class GigapathSlideEmbedder(SlideEmbedder):
         if not hasattr(_cfg_mod, "np"):
             _cfg_mod.np = _np
 
-        from huggingface_hub import hf_hub_download
-
         # create_model's hf_hub path forces the repo HEAD (no revision); download the
         # pinned commit ourselves and pass the local file so the weights stay pinnable.
-        ckpt = hf_hub_download(
-            "prov-gigapath/prov-gigapath",
-            "slide_encoder.pth",
-            revision=self.spec.weights_revision,
+        ckpt = download_pinned_hf_file(
+            self.spec.source,
+            self.spec.weights_filename or "slide_encoder.pth",
+            self.spec.weights_revision,
         )
+        verify_sha256(ckpt, self.spec.weights_sha256, what=self.spec.name)
         model = create_model(ckpt, "gigapath_slide_enc12l768d", 1536, global_pool=True)
         model.eval().to(device)
         self._model = model

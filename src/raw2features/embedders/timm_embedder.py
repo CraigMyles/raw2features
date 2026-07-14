@@ -142,6 +142,12 @@ class TimmEmbedder(Embedder):
                     f"the card-documented registry {field}={want}; update the "
                     f"registry (do not guess)."
                 )
+        if interp and str(interp).lower() != str(self.spec.interpolation).lower():
+            raise ValueError(
+                f"{self.spec.name}: pretrained_cfg interpolation={interp!r} disagrees "
+                f"with registry interpolation={self.spec.interpolation!r}; update "
+                "the registry (do not guess)."
+            )
         # Frozen dataclass: mutate via object.__setattr__ (same idiom as tests).
         object.__setattr__(self.spec, "mean", mean)
         object.__setattr__(self.spec, "std", std)

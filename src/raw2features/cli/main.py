@@ -84,8 +84,9 @@ def models() -> None:
     for name in sorted(registry):
         spec = registry[name]
         gate = "gated" if spec.gated else "open"
+        stability = " experimental" if spec.experimental else ""
         typer.echo(
-            f"{name:<10} dim={spec.embedding_dim:<5} {gate:<5} "
+            f"{name:<10} dim={spec.embedding_dim:<5} {gate:<5}{stability:<13} "
             f"family={spec.family:<11} {spec.source}"
         )
 

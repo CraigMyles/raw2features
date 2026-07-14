@@ -133,6 +133,11 @@ def _validate_grid(g, header: dict) -> list[str]:
     if "features" not in g:
         out.append("required group 'features' is missing")
     else:
+        from raw2features.embedders.fingerprint import (
+            output_fingerprints_equal,
+            valid_output_fingerprint,
+        )
+
         feats = g["features"]
         hdr_models = header.get("models")
         hdr_models = hdr_models if isinstance(hdr_models, dict) else {}
@@ -163,6 +168,25 @@ def _validate_grid(g, header: dict) -> list[str]:
                         f"features/{m} dim {a.shape[1]} != "
                         f"header.models.{m}.embedding_dim {dim}"
                     )
+                array_fp = dict(a.attrs).get("output_fingerprint")
+                header_fp = entry.get("output_fingerprint")
+                # Fingerprints are optional only as a pair so pre-PR3 stores remain
+                # readable/conformant. Once either side exists, both records must be
+                # valid and agree; resume separately requires them for completion.
+                if array_fp is not None or header_fp is not None:
+                    if not valid_output_fingerprint(array_fp):
+                        out.append(
+                            f"features/{m} has no valid output_fingerprint attr"
+                        )
+                    if not valid_output_fingerprint(header_fp):
+                        out.append(
+                            f"header.models.{m}.output_fingerprint is missing "
+                            "or invalid"
+                        )
+                    if not output_fingerprints_equal(array_fp, header_fp):
+                        out.append(
+                            f"features/{m} output_fingerprint != header.models.{m}"
+                        )
             else:
                 out.append(f"features/{m} has no header.models['{m}'] entry")
 
@@ -181,12 +205,38 @@ def _validate_grid(g, header: dict) -> list[str]:
         if dict(g["mask"].attrs).get("role") != "tissue_mask":
             out.append("mask must carry attr role='tissue_mask'")
     if "slide" in g:
+        from raw2features.embedders.fingerprint import (
+            output_fingerprints_equal,
+            valid_output_fingerprint,
+        )
+
+        slide_meta = header.get("slide_embeddings", {})
+        slide_meta = slide_meta if isinstance(slide_meta, dict) else {}
         for m in g["slide"].keys():
             s = g["slide"][m]
             if s.ndim != 2 or int(s.shape[0]) != 1:
                 out.append(f"slide/{m} must be (1, dim), got shape {tuple(s.shape)}")
             if dict(s.attrs).get("role") != "slide_embedding":
                 out.append(f"slide/{m} must carry attr role='slide_embedding'")
+            array_fp = dict(s.attrs).get("output_fingerprint")
+            mirrored = slide_meta.get(m, {})
+            header_fp = (
+                mirrored.get("output_fingerprint")
+                if isinstance(mirrored, dict)
+                else None
+            )
+            if array_fp is not None or header_fp is not None:
+                if not valid_output_fingerprint(array_fp):
+                    out.append(f"slide/{m} has no valid output_fingerprint attr")
+                if not valid_output_fingerprint(header_fp):
+                    out.append(
+                        f"header.slide_embeddings.{m}.output_fingerprint is "
+                        "missing or invalid"
+                    )
+                if not output_fingerprints_equal(array_fp, header_fp):
+                    out.append(
+                        f"slide/{m} output_fingerprint != header.slide_embeddings.{m}"
+                    )
 
     # Optional per-patch QC layer: ONE generic rule for every tool/class (values, not
     # schema), so a new scorer adds a qc/<tool>/ subgroup with no format change -- every

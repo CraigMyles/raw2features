@@ -191,7 +191,14 @@ def validate_store_source(output_uri: str, expected_source_uri: str) -> bool:
     )
 
 
-def validate_model(group, model: str, n_patches: int) -> bool:
+def validate_model(
+    group,
+    model: str,
+    n_patches: int,
+    *,
+    expected_dim: int | None = None,
+    expected_fingerprint: dict | None = None,
+) -> bool:
     """True iff ``features/<model>`` in an open zarr group holds complete data.
 
     Streams the array in row-blocks to bound memory: every row must be finite. A zarr
@@ -207,8 +214,31 @@ def validate_model(group, model: str, n_patches: int) -> bool:
         if "features" not in group or model not in group["features"]:
             return False
         arr = group["features"][model]
-        if arr.shape[0] != n_patches:
+        if arr.ndim != 2 or arr.shape[0] != n_patches:
             return False
+        if expected_dim is not None and arr.shape[1] != int(expected_dim):
+            return False
+        if expected_fingerprint is not None:
+            from raw2features.embedders.fingerprint import (
+                output_fingerprints_equal,
+            )
+
+            # The array record is the post-write commit marker.  The mirrored header
+            # is independently required so an old provenance block is never used to
+            # reconstruct/bless a legacy array whose actual loader contract is unknown.
+            array_fingerprint = dict(arr.attrs).get("output_fingerprint")
+            header = dict(group.attrs.get("raw2features", {}))
+            models = header.get("models", {})
+            model_meta = models.get(model, {}) if isinstance(models, dict) else {}
+            header_fingerprint = (
+                model_meta.get("output_fingerprint")
+                if isinstance(model_meta, dict)
+                else None
+            )
+            if not output_fingerprints_equal(array_fingerprint, expected_fingerprint):
+                return False
+            if not output_fingerprints_equal(header_fingerprint, expected_fingerprint):
+                return False
         block = 8192
         for s in range(0, n_patches, block):
             rows = np.asarray(arr[s : s + block]).astype(np.float32, copy=False)
@@ -221,39 +251,72 @@ def validate_model(group, model: str, n_patches: int) -> bool:
     return True
 
 
-def validate_output(output_uri: str, models: list[str], n_patches: int) -> bool:
+def validate_output(
+    output_uri: str,
+    models: list[str],
+    n_patches: int,
+    *,
+    expected_model_contracts: dict[str, dict] | None = None,
+) -> bool:
     """Open the output zarr and confirm it actually matches the receipt."""
+    import zarr
+
     from raw2features.core.store import open_grid
 
+    if expected_model_contracts is not None and not set(models) <= set(
+        expected_model_contracts
+    ):
+        return False
     path = output_uri.removeprefix("file://")
     if not os.path.exists(path):
         return False
     try:
-        g = open_grid(path)  # the sole grid this single-grid validator checks
+        root = zarr.open_group(path, mode="r", use_consolidated=False)
+        g = open_grid(root)  # the sole grid this single-grid validator checks
         if g["coords"].shape[0] != n_patches:
             return False
         for model in models:
-            if not validate_model(g, model, n_patches):
+            contract = (expected_model_contracts or {}).get(model, {})
+            if not validate_model(
+                g,
+                model,
+                n_patches,
+                expected_dim=contract.get("embedding_dim"),
+                expected_fingerprint=contract.get("output_fingerprint"),
+            ):
                 return False
     except Exception:  # noqa: BLE001 - any failure means "not valid"
         return False
     return True
 
 
-def validate_store_models(output_uri: str, models: list[str]) -> bool:
+def validate_store_models(
+    output_uri: str,
+    models: list[str],
+    *,
+    expected_model_contracts: dict[str, dict] | None = None,
+) -> bool:
     """True iff every model in *models* is present and fully written in some grid.
 
     Multi-grid generalisation of :func:`validate_output`: a store may hold several
     ``grids/<key>/`` (one per geometry), and a model is 'complete' if some
     ``grids/<key>/features/<model>`` is finite and free of all-zero fill rows.
     """
-    from raw2features.core.store import GRIDS, grid_keys, open_root
+    import zarr
 
+    from raw2features.core.store import GRIDS, grid_keys
+
+    if expected_model_contracts is not None and not set(models) <= set(
+        expected_model_contracts
+    ):
+        return False
     path = output_uri.removeprefix("file://")
     if not os.path.exists(path):
         return False
     try:
-        root = open_root(path)
+        # Never let a stale consolidated view bless a replacement that crashed before
+        # its live array fingerprint (the post-write commit marker) was restored.
+        root = zarr.open_group(path, mode="r", use_consolidated=False)
         keys = grid_keys(root)
         if not keys:
             return False
@@ -262,7 +325,14 @@ def validate_store_models(output_uri: str, models: list[str]) -> bool:
             for k in keys:
                 g = root[GRIDS][k]
                 if "features" in g and m in g["features"]:
-                    if validate_model(g, m, int(g["coords"].shape[0])):
+                    contract = (expected_model_contracts or {}).get(m, {})
+                    if validate_model(
+                        g,
+                        m,
+                        int(g["coords"].shape[0]),
+                        expected_dim=contract.get("embedding_dim"),
+                        expected_fingerprint=contract.get("output_fingerprint"),
+                    ):
                         found = True
                         break
             if not found:
@@ -279,6 +349,7 @@ def is_complete(
     *,
     expected_source_uri: str | None = None,
     expected_output_uri: str | None = None,
+    expected_model_contracts: dict[str, dict] | None = None,
 ) -> bool:
     """True iff a request-bound, output-validated ``complete`` receipt exists.
 
@@ -312,4 +383,15 @@ def is_complete(
             return False
     if not validate_store_source(recorded_output, expected_source):
         return False
-    return validate_store_models(recorded_output, rec.get("models", []))
+    models = rec.get("models", [])
+    if not isinstance(models, list) or not all(isinstance(m, str) for m in models):
+        return False
+    if expected_model_contracts is not None and set(models) != set(
+        expected_model_contracts
+    ):
+        return False
+    return validate_store_models(
+        recorded_output,
+        models,
+        expected_model_contracts=expected_model_contracts,
+    )

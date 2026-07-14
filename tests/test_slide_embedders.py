@@ -10,6 +10,8 @@ from typer.testing import CliRunner
 from conftest import MockEmbedder
 from raw2features.cli.main import app
 from raw2features.core.store import open_grid
+from raw2features.embedders.base import ModelSpec
+from raw2features.embedders.fingerprint import patch_output_fingerprint
 from raw2features.pipeline.runner import RunConfig, run_slide
 from raw2features.slide_embedders.model_registry import (
     build_slide_embedder,
@@ -45,6 +47,7 @@ def _write_slide_store(tmp_path, grids):
         group.attrs["raw2features"] = {
             "schema_version": "0.1",
             "patching": {"level0_patch": level0_patch},
+            "models": {},
         }
         n = next(iter(models.values())).shape[0]
         coords = np.column_stack(
@@ -57,6 +60,20 @@ def _write_slide_store(tmp_path, grids):
         feature_group = group.create_group("features")
         for model, values in models.items():
             values = np.asarray(values, dtype=np.float32)
+            spec = ModelSpec(
+                name=model,
+                family="test",
+                source=f"test://{model}",
+                embedding_dim=int(values.shape[1]),
+                input_size=64,
+                pooling="cls",
+                mean=(0.5, 0.5, 0.5),
+                std=(0.5, 0.5, 0.5),
+                transform_source_url="https://example.org/test",
+                license="MIT",
+                gated=False,
+            )
+            fingerprint = patch_output_fingerprint(spec, "fp32")
             array = feature_group.create_array(
                 model,
                 shape=values.shape,
@@ -64,6 +81,19 @@ def _write_slide_store(tmp_path, grids):
                 dtype="float32",
             )
             array[:] = values
+            array.attrs.update(
+                {
+                    "role": "features",
+                    "model": model,
+                    "output_fingerprint": fingerprint,
+                }
+            )
+            header = dict(group.attrs["raw2features"])
+            header["models"][model] = {
+                "embedding_dim": int(values.shape[1]),
+                "output_fingerprint": fingerprint,
+            }
+            group.attrs["raw2features"] = header
     return path
 
 
@@ -90,7 +120,11 @@ def recording_slide_embedder(monkeypatch):
                     "patch_size_lv0": patch_size_lv0,
                 }
             )
-            return np.asarray(features, dtype=np.float32).mean(axis=0) + self.ordinal
+            dim = int(self.spec.embedding_dim)
+            if dim <= 0:
+                dim = int(features.shape[1]) * (2 if self.spec.name == "meanmax" else 1)
+            value = float(np.asarray(features, dtype=np.float32).mean()) + self.ordinal
+            return np.full(dim, value, dtype=np.float32)
 
         def unload(self):
             return None
@@ -360,6 +394,166 @@ def test_cli_slide_embed_threads_patch_size_lv0(
     assert call["patch_size_lv0"] == 137
     assert call["coords"] is not None
     np.testing.assert_array_equal(call["coords"][:, 0], [0, 137, 274])
+
+
+def test_cli_slide_embed_rejects_legacy_unfingerprinted_patch_output(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (137, {"mock": np.ones((3, 4), dtype=np.float32)})},
+    )
+    group = open_grid(path, mode="r+")
+    del group["features"]["mock"].attrs["output_fingerprint"]
+    header = dict(group.attrs["raw2features"])
+    del header["models"]["mock"]["output_fingerprint"]
+    group.attrs["raw2features"] = header
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "rerun raw2features embed" in result.output
+    assert recording_slide_embedder["loads"] == 0
+
+
+def test_cli_slide_embed_rejects_patch_fingerprint_missing_from_header(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (137, {"mock": np.ones((3, 4), dtype=np.float32)})},
+    )
+    group = open_grid(path, mode="r+")
+    header = dict(group.attrs["raw2features"])
+    del header["models"]["mock"]["output_fingerprint"]
+    group.attrs["raw2features"] = header
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "rerun raw2features embed" in result.output
+    assert recording_slide_embedder["loads"] == 0
+
+
+def test_cli_slide_embed_rejects_incomplete_patch_output(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (137, {"mock": np.ones((3, 4), dtype=np.float32)})},
+    )
+    group = open_grid(path, mode="r+")
+    group["features"]["mock"][-1] = 0
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "incomplete or contains invalid data" in result.output
+    assert recording_slide_embedder["loads"] == 0
+
+
+def test_cli_slide_embed_rejects_one_dimensional_patch_output(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (137, {"mock": np.ones((3, 4), dtype=np.float32)})},
+    )
+    group = open_grid(path, mode="r+")
+    fingerprint = dict(group["features"]["mock"].attrs)["output_fingerprint"]
+    del group["features"]["mock"]
+    array = group["features"].create_array(
+        "mock", shape=(3,), chunks=(3,), dtype="float32"
+    )
+    array[:] = 1
+    array.attrs["output_fingerprint"] = fingerprint
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "two-dimensional feature array" in result.output
+    assert recording_slide_embedder["loads"] == 0
+
+
+def test_cli_slide_embed_rejects_three_column_coordinates(
+    tmp_path, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (137, {"mock": np.ones((3, 4), dtype=np.float32)})},
+    )
+    group = open_grid(path, mode="r+")
+    del group["coords"]
+    coords = group.create_array(
+        "coords", shape=(3, 3), chunks=(3, 3), dtype="int32"
+    )
+    coords[:] = 0
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "mean",
+            "--patch-model",
+            "mock",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "no valid coordinate array" in result.output
+    assert recording_slide_embedder["loads"] == 0
 
 
 def test_cli_slide_embed_selects_explicit_grid(

@@ -15,6 +15,7 @@ from raw2features.pipeline.receipt import (
     config_hash,
     is_complete,
     read_receipt,
+    validate_store_models,
     write_receipt,
 )
 from raw2features.sinks.zarr_sink import ZarrSink
@@ -118,6 +119,53 @@ def test_is_complete_false_when_output_missing_model(tmp_path):
     assert is_complete(
         rec_dir, "s", "h", expected_source_uri="file:///x"
     ) is False
+
+
+def test_expected_contract_mapping_must_cover_every_receipt_model(tmp_path):
+    out_dir = tmp_path / "out"
+    rec_dir = str(tmp_path / "rec")
+    coords = np.zeros((4, 2), "int32")
+    sink = ZarrSink()
+    sink.create(
+        str(out_dir),
+        "s",
+        grid="mpp1_px224",
+        n_patches=4,
+        coords=coords,
+        grid_index=coords,
+        grid_tissue=None,
+        model_dims={"a": 3, "b": 3},
+        header={"schema_version": "0.1", "source": {"uri": "file:///x"}},
+    )
+    sink.write_block("a", 0, np.ones((4, 3), "float32"))
+    sink.write_block("b", 0, np.ones((4, 3), "float32"))
+    sink.close()
+    write_receipt(
+        rec_dir,
+        Receipt(
+            slide_id="s",
+            status="complete",
+            source_uri="file:///x",
+            output_uri=sink.uri,
+            reader="omezarr",
+            models=["a", "b"],
+            config_hash="h",
+        ),
+    )
+    partial = {"a": {}}
+
+    assert not validate_store_models(
+        sink.uri,
+        ["a", "b"],
+        expected_model_contracts=partial,
+    )
+    assert not is_complete(
+        rec_dir,
+        "s",
+        "h",
+        expected_source_uri="file:///x",
+        expected_model_contracts=partial,
+    )
 
 
 def test_is_complete_binds_receipt_to_source_and_requested_output(tmp_path):

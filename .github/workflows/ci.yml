@@ -28,7 +28,7 @@ jobs:
       - name: Lint
         run: uv run ruff check .
       - name: Test (core)
-        run: uv run pytest -m "not slow" -q
+        run: uv run pytest -m "not slow and not network" -q
 
   test-full:
     # Full stack: torch/zarr/image/models present, so the embed + model +
@@ -47,4 +47,4 @@ jobs:
       - name: Install (full stack, CPU torch)
         run: uv sync --extra zarr --extra image --extra torch --extra models --extra stain
       - name: Test (with torch)
-        run: uv run pytest -m "not slow" -q
+        run: uv run pytest -m "not slow and not network" -q

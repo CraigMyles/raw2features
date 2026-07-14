@@ -45,11 +45,13 @@ store too.
 - **Modular implementation.** `Reader`, `segmenter`, `patcher`, `embedder` and `sink` are
   plugin seams exposed via Python entry-points: add a model or backend by
   shipping a package.
-- **FAIR & provenance-first.** Each model's weights are pinned to an **immutable HuggingFace
+- **FAIR & provenance-first.** Stable models' weights are pinned to an **immutable HuggingFace
   revision** (or a sha256-pinned URL), with preprocessing sourced from each
   model's card. Every output records that provenance plus a 1:1
   coords↔features mapping, so an embedding is reproducible and traceable to the exact
-  weights that made it.
+  weights that made it. SEAL is explicitly experimental in v0.1.1: its adapter is
+  pinned and verified, but its upstream factory still fetches the frozen base from a
+  mutable revision; see [`MODELS.md`](docs/MODELS.md).
 
 ## Install
 

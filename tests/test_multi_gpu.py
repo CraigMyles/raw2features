@@ -141,7 +141,8 @@ def test_device_list_default_is_single_device(monkeypatch):
     assert RunConfig(models=["m"], device="cpu", devices="").device_list() == ["cpu"]
 
 
-def test_device_list_parses_and_preserves_order_and_dups():
+def test_device_list_parses_and_preserves_order_and_dups(monkeypatch):
+    monkeypatch.setattr("raw2features.core.device._accelerators", lambda: (True, False))
     c = RunConfig(models=["m"], devices="cuda:0,cuda:1")
     assert c.device_list() == ["cuda:0", "cuda:1"]
     # whitespace tolerated; duplicates kept (used to test on one physical GPU)

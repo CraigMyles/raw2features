@@ -53,3 +53,13 @@ loaders such as CTransPath's modified Swin checkpoint.
   from your own package.
 - Add a contract test (shape/dim/normalisation). Real-weights tests are marked
   `slow` (downloads real weights + runs a forward; skipped in CI).
+
+The persisted model fingerprint is intentionally separate from `grid_hash`: geometry
+stays reusable while a changed loader contract recomputes only that model's output.
+When adding a bespoke loader, describe its effective checkpoint and every
+output-affecting constructor argument in `embedders/fingerprint.py`, and set
+`weights_filename` to the exact artifact identified by `weights_sha256`. If existing
+constructor semantics change, bump the patch or slide loader-contract version so old
+finite arrays cannot be mistaken for current outputs. Composite loaders must identify
+and verify every component they can; any deliberately unpinned component must be marked
+`experimental` in the registry and documented as outside the pinning guarantee.

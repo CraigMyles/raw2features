@@ -47,6 +47,8 @@ class SlideModelSpec:
     # sha256 + pinned HuggingFace commit of the weights (None for pooling baselines).
     weights_sha256: str | None = None
     weights_revision: str | None = None
+    # Exact artifact identified by ``weights_sha256``; None for weight-free pools.
+    weights_filename: str | None = None
 
 
 class SlideEmbedder(ABC):

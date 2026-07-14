@@ -132,6 +132,13 @@ class ModelSpec:
     # embedding is traceable to the exact weights that produced it.
     weights_sha256: str | None = None
     weights_revision: str | None = None
+    # Exact artifact whose bytes ``weights_sha256`` identifies (or a stable weight
+    # enum for torchvision). Kept explicit so provenance never has to guess which
+    # file a repo-level loader selected.
+    weights_filename: str | None = None
+    # Experimental models may have a deliberately narrower integrity guarantee than
+    # the stable registry contract.  The reason must be recorded in ``notes`` and docs.
+    experimental: bool = False
     notes: str = ""
     # Resolvable DOI for the model's paper (FAIR findability) - a journal DOI when one
     # exists, else the arXiv DataCite DOI (10.48550/arXiv.*); None only for open-weights

@@ -84,19 +84,26 @@ def test_verify_cli_hides_malformed_source_credentials(tmp_path):
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")
 def test_verify_cli_binds_receipt_to_expected_output_directory(tmp_path):
+    from raw2features.embedders.model_registry import get_spec
     from raw2features.pipeline.runner import RunConfig, embed_slide
 
     slide = build_ngff_v04(str(tmp_path / "S.zarr"))
     out = str(tmp_path / "out")
     receipts = str(tmp_path / "receipts")
     cfg = RunConfig(
-        models=["mock"],
+        models=["resnet50"],
         no_seg=True,
         target_mpp=0.5,
         patch_px=64,
         device="cpu",
         amp="fp32",
     )
+    embedder = MockEmbedder(
+        dim=get_spec("resnet50").embedding_dim,
+        input_size=get_spec("resnet50").input_size,
+        name="resnet50",
+    )
+    embedder.spec = get_spec("resnet50")
     embed_slide(
         slide,
         out,
@@ -104,7 +111,7 @@ def test_verify_cli_binds_receipt_to_expected_output_directory(tmp_path):
         receipts_dir=receipts,
         requested_mpp=0.5,
         requested_patch_px=64,
-        embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+        embedders=[embedder],
     )
     common = [
         "verify",
@@ -112,7 +119,7 @@ def test_verify_cli_binds_receipt_to_expected_output_directory(tmp_path):
         "--receipts-dir",
         receipts,
         "-f",
-        "mock",
+        "resnet50",
         "--no-seg",
         "--mpp",
         "0.5",
@@ -130,6 +137,85 @@ def test_verify_cli_binds_receipt_to_expected_output_directory(tmp_path):
 
     assert correct.exit_code == 0, correct.output
     assert wrong.exit_code == 1
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_verify_cli_fails_closed_for_unregistered_model(tmp_path):
+    from raw2features.pipeline.runner import RunConfig, embed_slide
+
+    slide = build_ngff_v04(str(tmp_path / "S.zarr"))
+    out = str(tmp_path / "out")
+    receipts = str(tmp_path / "receipts")
+    cfg = RunConfig(
+        models=["custom"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        device="cpu",
+        amp="fp32",
+    )
+    embed_slide(
+        slide,
+        out,
+        cfg,
+        receipts_dir=receipts,
+        requested_mpp=0.5,
+        requested_patch_px=64,
+        embedders=[MockEmbedder(dim=8, input_size=64, name="custom")],
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            slide,
+            "--receipts-dir",
+            receipts,
+            "--out-dir",
+            out,
+            "-f",
+            "custom",
+            "--no-seg",
+            "--mpp",
+            "0.5",
+            "--patch-size",
+            "64",
+            "--amp",
+            "fp32",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "current output contract for unregistered model(s) custom" in result.output
+
+
+def test_verify_cli_does_not_mask_internal_contract_keyerror(tmp_path, monkeypatch):
+    def fail_contract(_cfg):
+        raise KeyError("broken current contract")
+
+    monkeypatch.setattr(
+        "raw2features.cli.verify.expected_model_contracts", fail_contract
+    )
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            str(tmp_path / "S.zarr"),
+            "--receipts-dir",
+            str(tmp_path / "receipts"),
+            "-f",
+            "resnet50",
+            "--device",
+            "cpu",
+            "--quiet",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, KeyError)
+    assert result.exception.args == ("broken current contract",)
 
 
 # -- main() error wrapper (torch-free) -----------------------------------------

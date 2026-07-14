@@ -22,27 +22,122 @@ class SlideEncoding:
     provenance: dict
 
 
+def _validated_patch_fingerprint(group, patch_model: str) -> dict:
+    """Return a committed, complete patch-output fingerprint.
+
+    Slide outputs inherit the exact patch-output identity, so a self-consistent
+    metadata record is not enough: the patch array must still pass the same
+    shape/data completion checks used by resume before it can be consumed.
+    """
+
+    from raw2features.embedders.fingerprint import output_fingerprints_equal
+    from raw2features.pipeline.receipt import validate_model
+
+    array = group["features"][patch_model]
+    array_fingerprint = dict(array.attrs).get("output_fingerprint")
+    header = dict(group.attrs.get("raw2features", {}))
+    models = header.get("models", {})
+    metadata = models.get(patch_model, {}) if isinstance(models, dict) else {}
+    header_fingerprint = (
+        metadata.get("output_fingerprint") if isinstance(metadata, dict) else None
+    )
+    if not output_fingerprints_equal(array_fingerprint, header_fingerprint):
+        raise ValueError(
+            f"Patch model {patch_model!r} has no matching committed output "
+            "fingerprint in its array and grid header; rerun raw2features embed for "
+            "that patch model before slide encoding."
+        )
+    if array.ndim != 2:
+        raise ValueError(
+            f"Patch model {patch_model!r} does not have a two-dimensional feature "
+            "array; rerun raw2features embed before slide encoding."
+        )
+    payload = array_fingerprint.get("payload", {})
+    output = payload.get("output", {}) if isinstance(payload, dict) else {}
+    embedding_dim = output.get("embedding_dim") if isinstance(output, dict) else None
+    if (
+        payload.get("kind") != "patch_features"
+        or payload.get("model") != patch_model
+        or embedding_dim != int(array.shape[1])
+    ):
+        raise ValueError(
+            f"Patch model {patch_model!r} has a fingerprint that does not match its "
+            "array name/dimension; rerun raw2features embed before slide encoding."
+        )
+    if (
+        "coords" not in group
+        or group["coords"].ndim != 2
+        or int(group["coords"].shape[1]) != 2
+    ):
+        raise ValueError(
+            "The selected grid has no valid coordinate array; rerun raw2features "
+            "embed before slide encoding."
+        )
+    if not validate_model(
+        group,
+        patch_model,
+        int(group["coords"].shape[0]),
+        expected_dim=int(embedding_dim),
+        expected_fingerprint=array_fingerprint,
+    ):
+        raise ValueError(
+            f"Patch model {patch_model!r} is incomplete or contains invalid data; "
+            "rerun raw2features embed before slide encoding."
+        )
+    return array_fingerprint
+
+
 def slide_embedding_is_complete(
     group,
     slide_model: str,
     *,
     patch_model: str | None = None,
+    device: str = "cpu",
 ) -> bool:
     """Return whether ``slide/<model>`` is valid for the requested patch model."""
     if "slide" not in group or slide_model not in group["slide"]:
         return False
     array = group["slide"][slide_model]
-    shape = tuple(int(size) for size in array.shape)
-    if len(shape) != 2 or shape[0] != 1 or shape[1] <= 0:
-        return False
-    if np.dtype(array.dtype) != np.dtype(np.float32):
-        return False
-
     attrs = dict(array.attrs)
     stored_patch_model = attrs.get("patch_encoder")
     if attrs.get("role") != "slide_embedding" or not stored_patch_model:
         return False
     if patch_model is not None and stored_patch_model != patch_model:
+        return False
+    if "features" not in group or stored_patch_model not in group["features"]:
+        return False
+
+    from raw2features.embedders.fingerprint import (
+        output_fingerprints_equal,
+        resolved_slide_amp,
+        slide_output_dim,
+        slide_output_fingerprint,
+    )
+    from raw2features.slide_embedders.model_registry import get_slide_spec
+
+    patch_array = group["features"][stored_patch_model]
+    try:
+        patch_fingerprint = _validated_patch_fingerprint(group, stored_patch_model)
+        spec = get_slide_spec(slide_model)
+        expected_dim = slide_output_dim(spec, int(patch_array.shape[1]))
+        expected_fingerprint = slide_output_fingerprint(
+            spec,
+            patch_model=stored_patch_model,
+            patch_output_fingerprint=patch_fingerprint,
+            patch_dim=int(patch_array.shape[1]),
+            resolved_amp=resolved_slide_amp(spec, device),
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+    shape = tuple(int(size) for size in array.shape)
+    if shape != (1, expected_dim):
+        return False
+    if np.dtype(array.dtype) != np.dtype(np.float32):
+        return False
+    if not output_fingerprints_equal(
+        attrs.get("output_fingerprint"), expected_fingerprint
+    ):
         return False
     try:
         if int(attrs.get("embedding_dim", -1)) != shape[1]:
@@ -55,6 +150,10 @@ def slide_embedding_is_complete(
     if not isinstance(mirrored, dict):
         return False
     if mirrored.get("patch_encoder") != stored_patch_model:
+        return False
+    if not output_fingerprints_equal(
+        mirrored.get("output_fingerprint"), expected_fingerprint
+    ):
         return False
     try:
         if int(mirrored.get("embedding_dim", -1)) != shape[1]:
@@ -123,6 +222,12 @@ def encode_slide_embedding(
     """
     from raw2features import __version__
     from raw2features.core.provenance import now_utc_iso
+    from raw2features.embedders.fingerprint import (
+        fingerprint_digest,
+        resolved_slide_amp,
+        slide_output_dim,
+        slide_output_fingerprint,
+    )
     from raw2features.slide_embedders.model_registry import build_slide_embedder
 
     feature_group = group.get("features")
@@ -142,7 +247,20 @@ def encode_slide_embedding(
         )
         return None
 
-    slide_embedder = build_slide_embedder(slide_model).load(device=device)
+    # Refuse to mint current-looking slide provenance over a legacy/unknown patch
+    # array. The patch model must first be recomputed under the current contract.
+    slide_embedder = build_slide_embedder(slide_model)
+    patch_fingerprint = _validated_patch_fingerprint(group, selected_patch_model)
+    output_fingerprint = slide_output_fingerprint(
+        slide_embedder.spec,
+        patch_model=selected_patch_model,
+        patch_output_fingerprint=patch_fingerprint,
+        patch_dim=int(patch_array.shape[1]),
+        resolved_amp=resolved_slide_amp(slide_embedder.spec, device),
+    )
+    expected_dim = slide_output_dim(slide_embedder.spec, int(patch_array.shape[1]))
+
+    slide_embedder.load(device=device)
     try:
         patch_features = np.asarray(patch_array[:], dtype=np.float32)
         coords = np.asarray(group["coords"][:]) if "coords" in group else None
@@ -152,6 +270,11 @@ def encode_slide_embedding(
             slide_embedder.encode(patch_features, coords, patch_size_lv0),
             dtype=np.float32,
         ).reshape(-1)
+        if int(vector.size) != expected_dim:
+            raise ValueError(
+                f"slide encoder {slide_model!r} returned {vector.size} values; "
+                f"its current output contract requires {expected_dim}."
+            )
         provenance = {
             "patch_encoder": selected_patch_model,
             "source": slide_embedder.spec.source,
@@ -161,6 +284,10 @@ def encode_slide_embedding(
             "doi": slide_embedder.spec.doi,
             "weights_sha256": slide_embedder.spec.weights_sha256,
             "weights_revision": slide_embedder.spec.weights_revision,
+            "weights_filename": slide_embedder.spec.weights_filename,
+            "patch_output_fingerprint": fingerprint_digest(patch_fingerprint),
+            "resolved_amp": resolved_slide_amp(slide_embedder.spec, device),
+            "output_fingerprint": output_fingerprint,
             "computed_utc": now_utc_iso(),
             "raw2features_version": __version__,
         }

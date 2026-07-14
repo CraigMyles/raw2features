@@ -270,6 +270,7 @@ def run_slide(
     embedder_factory=None,
     force: bool = False,
     profiler=None,
+    allow_hashless_legacy: bool = True,
 ) -> dict:
     """Embed one slide. Returns a summary dict.
 
@@ -318,6 +319,7 @@ def run_slide(
             "Source URI is malformed and no safe output ID can be derived."
         ) from None
     content_hash = cfg.content_hash()
+    grid_hash = cfg.grid_hash()
     out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
     expected_output = f"file://{os.path.abspath(out_path)}"
     store_exists = os.path.exists(out_path) and not force
@@ -340,6 +342,7 @@ def run_slide(
     if (
         not force
         and receipts_dir
+        and not _runtime_aux_requested(cfg)
         and is_complete(
             receipts_dir,
             slide_id,
@@ -347,11 +350,11 @@ def run_slide(
             expected_source_uri=expected_source,
             expected_output_uri=expected_output,
             expected_model_contracts=model_contracts,
+            expected_grid_models={grid_hash: list(cfg.models)},
+            compatible_grid_hashes={grid_hash: cfg.compatible_legacy_grid_hashes()},
         )
     ):
         return {"slide_id": slide_id, "status": "skipped", "reason": "already complete"}
-
-    grid_hash = cfg.grid_hash()
 
     present_valid: list[str] = []
     grid_key_existing: str | None = None
@@ -362,6 +365,7 @@ def run_slide(
             cfg.models,
             expected_model_contracts=model_contracts,
             compatible_grid_hashes=cfg.compatible_legacy_grid_hashes(),
+            allow_hashless_legacy=allow_hashless_legacy,
         )
     # append: a grid of THIS geometry already exists -> add the missing models to it.
     # Otherwise we create a fresh store (no store yet) or ADD a new grid to an existing
@@ -369,23 +373,75 @@ def run_slide(
     append = grid_key_existing is not None
     if append:
         models_to_do = [m for m in cfg.models if m not in present_valid]
-        if not models_to_do and not cfg.slide_encoders:
-            return {
-                "slide_id": slide_id,
-                "status": "skipped",
-                "reason": "all requested models already present",
-                "models_present": present_valid,
-            }
     else:
         models_to_do = list(cfg.models)
+
+    qc_to_do = list(cfg.qc)
+    thumbnail_to_do = bool(cfg.emit_thumbnail)
+    thumb_meta = None
+    thumbnail_settings = None
+    thumbnail_overwrite = not store_exists
+    primary_grid_key = _primary_grid_key(out_path) if store_exists else None
+    geojson_to_do = bool(cfg.emit_geojson)
+    geojson_path = None
+    if append:
+        qc_to_do = _missing_qc_tools(out_path, grid_key_existing, list(cfg.qc))
+        if cfg.emit_thumbnail:
+            stored_thumbnail = _stored_thumbnail_metadata(out_path, grid_key_existing)
+            if _thumbnail_files_complete(
+                stored_thumbnail,
+                out_dir,
+                require_overlay=_grid_has_patches(out_path, grid_key_existing),
+                expected_overlay=_grid_thumbnail_overlay_name(
+                    slide_id,
+                    grid_key_existing,
+                    primary_grid_key or grid_key_existing,
+                ),
+            ):
+                thumb_meta = stored_thumbnail
+                thumbnail_to_do = False
+            else:
+                root_thumbnail = _stored_thumbnail_metadata(out_path)
+                thumbnail_settings = stored_thumbnail or root_thumbnail
+                thumbnail_overwrite = not _thumbnail_settings(thumbnail_settings)
+        if cfg.emit_geojson:
+            geojson_path = _grid_geojson_path(
+                out_dir,
+                slide_id,
+                grid_key_existing,
+                primary_grid_key or grid_key_existing,
+            )
+            geojson_to_do = not os.path.isfile(geojson_path)
+    elif store_exists and cfg.emit_thumbnail:
+        # The plain preview is slide-level, but the overlay is grid-specific. A new
+        # grid reuses the primary preview's render settings and writes its own overlay.
+        thumbnail_settings = _stored_thumbnail_metadata(out_path)
+        thumbnail_overwrite = not _thumbnail_settings(thumbnail_settings)
+
+    if (
+        append
+        and not models_to_do
+        and not cfg.slide_encoders
+        and not qc_to_do
+        and not thumbnail_to_do
+        and not geojson_to_do
+    ):
+        return {
+            "slide_id": slide_id,
+            "status": "skipped",
+            "reason": "all requested models and auxiliary outputs already present",
+            "models_present": present_valid,
+            "grid": grid_key_existing,
+            "geojson": geojson_path,
+            "thumbnail": thumb_meta,
+        }
 
     started = time.time()
     prof = profiler or null_profiler()
     prov = provenance.capture(cli)
     slide_results: dict[str, str] = {}
-    geojson_path = None
-    thumb_meta = None
     sink = ZarrSink(output_zarr_format=cfg.output_zarr_format)
+    actual_grid_key = grid_key_existing
 
     # Per-device model-copy factory for the patch-parallel path (only built when
     # >1 device). Defaults to building from the registry on each device; a test may
@@ -447,9 +503,14 @@ def run_slide(
                     for e in run_embedders:
                         panel_meta[e.name] = e.set_panel(reader.channel_names)
                 if append:
-                    n, coords, read_level, read_px, patch_px = _store_geometry(
-                        out_path, grid_key_existing
-                    )
+                    (
+                        n,
+                        coords,
+                        read_level,
+                        read_px,
+                        patch_px,
+                        level0_patch,
+                    ) = _store_geometry(out_path, grid_key_existing)
                     sink.open_append(
                         out_dir,
                         slide_id,
@@ -482,20 +543,7 @@ def run_slide(
                         grid.read_px,
                         grid.patch_px,
                     )
-                    if cfg.emit_thumbnail:
-                        from raw2features.viz import write_thumbnails
-
-                        thumb_meta = write_thumbnails(
-                            reader,
-                            out_dir,
-                            slide_id,
-                            mpp=cfg.thumbnail_mpp,
-                            max_px=cfg.thumbnail_max_px,
-                            tissue=tissue,
-                            coords=coords,
-                            level0_patch=grid.level0_patch,
-                            overlay=True,
-                        )
+                    level0_patch = grid.level0_patch
                     header = _build_header(
                         reader,
                         grid,
@@ -503,13 +551,13 @@ def run_slide(
                         run_embedders,
                         slide_id,
                         n,
-                        thumb_meta,
+                        None,
                         grid_hash,
                         prov,
                         panel_meta,
                         run_contracts,
                     )
-                    sink.create(
+                    actual_grid_key = sink.create(
                         out_dir,
                         slide_id,
                         grid=grid_key(grid.target_mpp, grid.patch_px),
@@ -522,10 +570,58 @@ def run_slide(
                         header=header,
                         features_dtype=cfg.features_dtype,
                     )
-                    if cfg.emit_geojson:
-                        geojson_path = write_patches_geojson(
-                            out_dir, slide_id, coords, grid.level0_patch
+                    if thumbnail_to_do:
+                        with prof.stage("thumbnail"):
+                            thumb_meta = _write_grid_thumbnail(
+                                reader,
+                                sink,
+                                out_dir,
+                                slide_id,
+                                actual_grid_key,
+                                primary_grid_key or actual_grid_key,
+                                cfg,
+                                tissue,
+                                coords,
+                                level0_patch,
+                                settings=thumbnail_settings,
+                                overwrite=thumbnail_overwrite,
+                            )
+                if append and thumbnail_to_do:
+                    with prof.stage("thumbnail"):
+                        thumbnail_tissue, _ = _segment(
+                            reader,
+                            cfg,
+                            _stored_grid_segmenter(out_path, grid_key_existing),
                         )
+                        thumb_meta = _write_grid_thumbnail(
+                            reader,
+                            sink,
+                            out_dir,
+                            slide_id,
+                            actual_grid_key,
+                            primary_grid_key or actual_grid_key,
+                            cfg,
+                            thumbnail_tissue,
+                            coords,
+                            level0_patch,
+                            settings=thumbnail_settings,
+                            overwrite=thumbnail_overwrite,
+                        )
+                if geojson_to_do:
+                    if not append:
+                        geojson_path = _grid_geojson_path(
+                            out_dir,
+                            slide_id,
+                            actual_grid_key,
+                            primary_grid_key or actual_grid_key,
+                        )
+                    geojson_path = write_patches_geojson(
+                        out_dir,
+                        slide_id,
+                        coords,
+                        level0_patch,
+                        filename=os.path.basename(geojson_path),
+                    )
                 # Stain-norm (--stain-norm): fit the slide's stain once from a
                 # thumbnail, then normalize patches (brightfield). Content-affecting.
                 normalizer = None
@@ -586,18 +682,90 @@ def run_slide(
                 # Optional per-patch QC (--qc): the producer needs the open reader,
                 # so it runs here on a freshly-built grid (its coords + level0_patch). A
                 # later model added to an existing grid keeps that grid's qc layer.
-                if cfg.qc and not append:
+                if qc_to_do:
                     with prof.stage("qc"):
                         _run_qc(
-                            cfg.qc, reader, sink, coords, grid.level0_patch, cfg.device,
-                            cfg.qc_stain_norm, cfg.qc_artifact_mpp,
+                            qc_to_do,
+                            reader,
+                            sink,
+                            coords,
+                            level0_patch,
+                            cfg.device,
+                            cfg.qc_stain_norm,
+                            cfg.qc_artifact_mpp,
                         )
         else:
-            # Append, slide-encoders only: nothing to decode, so no WSI read.
+            # Existing complete patch arrays: open the grid for slide encoders and/or
+            # produce-if-missing runtime outputs without loading patch embedders.
             n = sink.open_append(
-                out_dir, slide_id, key=grid_key_existing,
-                new_model_dims={}, new_model_meta={},
+                out_dir,
+                slide_id,
+                key=grid_key_existing,
+                new_model_dims={},
+                new_model_meta={},
             )
+            actual_grid_key = grid_key_existing
+            if qc_to_do or thumbnail_to_do or geojson_to_do:
+                (
+                    n,
+                    coords,
+                    _read_level,
+                    _read_px,
+                    _patch_px,
+                    level0_patch,
+                ) = _store_geometry(out_path, grid_key_existing)
+                if qc_to_do or thumbnail_to_do:
+                    reader_cls = plugins.get("readers", cfg.reader)
+                    with reader_cls(slide_path) as reader:
+                        if (
+                            reader.mpp is None
+                            and cfg.source_mpp is not None
+                            and hasattr(reader, "apply_source_mpp")
+                        ):
+                            reader.apply_source_mpp(cfg.source_mpp)
+                        if thumbnail_to_do:
+                            with prof.stage("thumbnail"):
+                                thumbnail_tissue, _ = _segment(
+                                    reader,
+                                    cfg,
+                                    _stored_grid_segmenter(
+                                        out_path, grid_key_existing
+                                    ),
+                                )
+                                thumb_meta = _write_grid_thumbnail(
+                                    reader,
+                                    sink,
+                                    out_dir,
+                                    slide_id,
+                                    actual_grid_key,
+                                    primary_grid_key or actual_grid_key,
+                                    cfg,
+                                    thumbnail_tissue,
+                                    coords,
+                                    level0_patch,
+                                    settings=thumbnail_settings,
+                                    overwrite=thumbnail_overwrite,
+                                )
+                        if qc_to_do:
+                            with prof.stage("qc"):
+                                _run_qc(
+                                    qc_to_do,
+                                    reader,
+                                    sink,
+                                    coords,
+                                    level0_patch,
+                                    cfg.device,
+                                    cfg.qc_stain_norm,
+                                    cfg.qc_artifact_mpp,
+                                )
+                if geojson_to_do:
+                    geojson_path = write_patches_geojson(
+                        out_dir,
+                        slide_id,
+                        coords,
+                        level0_patch,
+                        filename=os.path.basename(geojson_path),
+                    )
 
         # Slide-level encoding (inline, -s flag): reads patch features from the
         # store (existing + just-written), so no WSI re-read needed.
@@ -646,6 +814,7 @@ def run_slide(
             "models": sorted(final_dims),
             "models_added": models_to_do,
             "models_skipped": present_valid,
+            "grid": actual_grid_key,
             "slide_embeddings": slide_results,
             "output_uri": sink.uri,
             "geojson": geojson_path,
@@ -680,6 +849,12 @@ def _run_content_hash(group_cfgs: list[RunConfig]) -> str:
             "schema_version": SCHEMA_VERSION,
         }
     )
+
+
+def _runtime_aux_requested(cfg: RunConfig) -> bool:
+    """Whether completion must inspect produce-if-missing runtime outputs."""
+
+    return bool(cfg.qc or cfg.emit_thumbnail or cfg.emit_geojson or cfg.slide_encoders)
 
 
 def _record_root_attr(out_path: str, key: str, value) -> None:
@@ -783,6 +958,13 @@ def embed_slide(
         embedder_factory,
         devices=devices,
     )
+    expected_grid_models = {
+        group_cfg.grid_hash(): list(group_cfg.models) for group_cfg in group_cfgs
+    }
+    compatible_grid_hashes = {
+        group_cfg.grid_hash(): group_cfg.compatible_legacy_grid_hashes()
+        for group_cfg in group_cfgs
+    }
 
     if os.path.exists(out_path) and not force:
         _assert_store_source(out_path, expected_source)
@@ -790,6 +972,7 @@ def embed_slide(
     if (
         not force
         and receipts_dir
+        and not _runtime_aux_requested(cfg)
         and is_complete(
             receipts_dir,
             slide_id,
@@ -797,8 +980,11 @@ def embed_slide(
             expected_source_uri=expected_source,
             expected_output_uri=expected_output,
             expected_model_contracts=model_contracts,
+            expected_grid_models=expected_grid_models,
+            compatible_grid_hashes=compatible_grid_hashes,
         )
     ):
+        grids = _stored_grid_summary(out_path, group_cfgs) or grids
         return {
             "slide_id": slide_id,
             "status": "skipped",
@@ -820,9 +1006,17 @@ def embed_slide(
                 embedder_factory=embedder_factory,
                 force=(force and i == 0),  # force wipes once; later groups add grids
                 profiler=profiler,
+                # A lone hashless legacy grid is backward-compatible for one
+                # requested geometry, but cannot identify which of several grids it
+                # represents. A multi-grid request therefore leaves it untouched.
+                allow_hashless_legacy=(len(group_cfgs) == 1),
             )
         )
     elapsed = round(time.time() - started, 2)
+    grids = {
+        (result.get("grid") or grid_key(group.mpp, group.patch_px)): list(group.models)
+        for group, result in zip(groups, results, strict=True)
+    }
     status = "skipped" if all(r["status"] == "skipped" for r in results) else "complete"
 
     # Coverage: each requested slide encoder must have run on some grid (the one holding
@@ -1622,14 +1816,16 @@ def _inspect_store(
     *,
     expected_model_contracts: dict[str, dict] | None = None,
     compatible_grid_hashes: tuple[str, ...] = (),
+    allow_hashless_legacy: bool = True,
 ):
     """Find the grid matching ``expected_grid_hash``: ``(key | None, n, valid_models)``.
 
     Returns the key of the grid whose geometry matches (so the caller appends missing
     models to it), or ``None`` when no grid matches (the caller adds a NEW grid). A grid
-    with no recorded ``grid_hash`` (a legacy/hand-built store) is trusted as a match.
-    ``valid_models`` is the subset of *requested_models* already present + output-valid
-    in that grid, so the caller embeds only the rest.
+    with no recorded ``grid_hash`` (a legacy/hand-built store) is trusted only when it
+    is the store's sole grid; several hashless grids are not geometrically
+    distinguishable. ``valid_models`` is the subset of *requested_models* already
+    present + output-valid in that grid, so the caller embeds only the rest.
     """
     import zarr
 
@@ -1670,7 +1866,8 @@ def _inspect_store(
             stored = dict(root[GRIDS][k].attrs.get("raw2features", {})).get("grid_hash")
             if stored == candidate and (result := _result_for(k)) is not None:
                 return result
-    for k in keys:
+    if allow_hashless_legacy and len(keys) == 1:
+        k = keys[0]
         stored = dict(root[GRIDS][k].attrs.get("raw2features", {})).get("grid_hash")
         if stored is None and (result := _result_for(k)) is not None:
             return result
@@ -1726,10 +1923,12 @@ def _assert_store_source(out_path: str, expected_source_uri: str) -> None:
 def _store_geometry(out_path: str, key: str | None = None):
     """Read coords + read-geometry of an existing grid (for an additive append)."""
     import numpy as np
+    import zarr
 
     from raw2features.core.store import open_grid
 
-    g = open_grid(out_path, key)  # the grid being appended to (sole if key is None)
+    root = zarr.open_group(out_path, mode="r", use_consolidated=False)
+    g = open_grid(root, key)  # the grid being appended to (sole if key is None)
     p = dict(g.attrs.get("raw2features", {}))["patching"]
     coords = np.asarray(g["coords"][:])
     return (
@@ -1738,7 +1937,294 @@ def _store_geometry(out_path: str, key: str | None = None):
         int(p["read_level"]),
         int(p["read_px"]),
         int(p["patch_px"]),
+        int(p["level0_patch"]),
     )
+
+
+def _missing_qc_tools(
+    out_path: str, key: str | None, requested: list[str]
+) -> list[str]:
+    """Requested QC producers whose active-grid layer is absent or incomplete."""
+
+    if not requested:
+        return []
+    try:
+        import zarr
+
+        from raw2features.core.store import open_grid
+
+        root = zarr.open_group(out_path, mode="r", use_consolidated=False)
+        group = open_grid(root, key)
+        n_patches = int(group["coords"].shape[0])
+        present = {
+            tool
+            for tool in requested
+            if _qc_tool_complete(group, tool, n_patches)
+        }
+    except Exception:  # noqa: BLE001 - unreadable auxiliary state is missing
+        return list(requested)
+    return [tool for tool in requested if tool not in present]
+
+
+def _qc_tool_complete(group, tool: str, n_patches: int) -> bool:
+    """Whether a QC producer left its complete generic per-patch array contract."""
+
+    try:
+        if "qc" not in group or tool not in group["qc"]:
+            return False
+        tool_group = group["qc"][tool]
+        if dict(tool_group.attrs).get("complete") is not True:
+            return False
+        if "scores" not in tool_group:
+            return False
+        scores = tool_group["scores"]
+        classes = dict(scores.attrs).get("classes")
+        if (
+            scores.ndim != 2
+            or int(scores.shape[0]) != n_patches
+            or dict(scores.attrs).get("role") != "qc"
+            or not isinstance(classes, (list, tuple))
+            or len(classes) != int(scores.shape[1])
+        ):
+            return False
+        for name in tool_group.keys():
+            array = tool_group[name]
+            if not hasattr(array, "shape"):  # a nested group, not a QC array
+                continue
+            if (
+                array.ndim < 1
+                or int(array.shape[0]) != n_patches
+                or dict(array.attrs).get("role") != "qc"
+            ):
+                return False
+        return True
+    except Exception:  # noqa: BLE001 - an unreadable layer is incomplete
+        return False
+
+
+def _thumbnail_files_complete(
+    metadata: object,
+    out_dir: str,
+    *,
+    require_overlay: bool,
+    expected_overlay: str | None = None,
+) -> bool:
+    if not isinstance(metadata, dict):
+        return False
+    plain = metadata.get("plain")
+    overlay = metadata.get("overlay")
+    if (
+        not isinstance(plain, str)
+        or os.path.basename(plain) != plain
+        or not os.path.isfile(os.path.join(out_dir, plain))
+    ):
+        return False
+    if require_overlay and not isinstance(overlay, str):
+        return False
+    if isinstance(overlay, str) and os.path.basename(overlay) != overlay:
+        return False
+    if require_overlay and expected_overlay is not None and overlay != expected_overlay:
+        return False
+    return not isinstance(overlay, str) or os.path.isfile(
+        os.path.join(out_dir, overlay)
+    )
+
+
+def _stored_thumbnail_metadata(
+    out_path: str, key: str | None = None
+) -> dict | None:
+    """Read live root or per-grid thumbnail metadata, even when an asset is missing."""
+
+    try:
+        import zarr
+
+        from raw2features.core.store import open_grid
+
+        root = zarr.open_group(out_path, mode="r", use_consolidated=False)
+        owner = root if key is None else open_grid(root, key)
+        metadata = dict(owner.attrs.get("raw2features", {})).get("thumbnail")
+        if isinstance(metadata, dict):
+            return dict(metadata)
+    except Exception:  # noqa: BLE001 - unreadable metadata is absent
+        pass
+    return None
+
+
+def _thumbnail_settings(metadata: object) -> tuple[float | None, int | None] | None:
+    """Recover one coherent render setting from stored thumbnail metadata."""
+
+    try:
+        if not isinstance(metadata, dict):
+            return None
+        max_px = metadata.get("max_px")
+        if max_px is not None:
+            max_px = int(max_px)
+            return (None, max_px) if max_px > 0 else None
+        mpp = float(metadata.get("mpp"))
+        return (mpp, None) if mpp > 0 else None
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _primary_grid_key(out_path: str) -> str | None:
+    """The first-created grid, which owns backward-compatible root sidecars."""
+
+    try:
+        import zarr
+
+        from raw2features.core.store import grid_keys
+
+        root = zarr.open_group(out_path, mode="r", use_consolidated=False)
+        indexed = dict(root.attrs.get("raw2features", {})).get("grids")
+        if isinstance(indexed, dict) and indexed:
+            return next(iter(indexed))
+        keys = grid_keys(root)
+        return keys[0] if keys else None
+    except Exception:  # noqa: BLE001 - unreadable store has no primary grid
+        return None
+
+
+def _grid_has_patches(out_path: str, key: str | None) -> bool:
+    try:
+        import zarr
+
+        from raw2features.core.store import open_grid
+
+        root = zarr.open_group(out_path, mode="r", use_consolidated=False)
+        return int(open_grid(root, key)["coords"].shape[0]) > 0
+    except Exception:  # noqa: BLE001 - fail closed and require the overlay
+        return True
+
+
+def _stored_grid_segmenter(out_path: str, key: str | None) -> str | None:
+    """The effective segmenter recorded by the grid (not merely the CLI default)."""
+
+    try:
+        import zarr
+
+        from raw2features.core.store import open_grid
+
+        root = zarr.open_group(out_path, mode="r", use_consolidated=False)
+        header = dict(open_grid(root, key).attrs.get("raw2features", {}))
+        name = (header.get("segmentation") or {}).get("segmenter")
+        return name if isinstance(name, str) and name != "none" else None
+    except Exception:  # noqa: BLE001 - the request's segmenter remains the fallback
+        return None
+
+
+def _grid_geojson_path(
+    out_dir: str, slide_id: str, key: str, primary_key: str
+) -> str:
+    """Backward-compatible primary path; namespaced path for every other grid."""
+
+    filename = (
+        f"{slide_id}.patches.geojson"
+        if key == primary_key
+        else f"{slide_id}.{key}.patches.geojson"
+    )
+    return os.path.join(out_dir, filename)
+
+
+def _grid_thumbnail_overlay_name(
+    slide_id: str, key: str, primary_key: str
+) -> str:
+    return (
+        f"{slide_id}.thumbnail.overlay.png"
+        if key == primary_key
+        else f"{slide_id}.{key}.thumbnail.overlay.png"
+    )
+
+
+def _write_grid_thumbnail(
+    reader,
+    sink,
+    out_dir: str,
+    slide_id: str,
+    key: str,
+    primary_key: str,
+    cfg: RunConfig,
+    tissue,
+    coords,
+    level0_patch: int,
+    *,
+    settings: dict | None,
+    overwrite: bool,
+) -> dict:
+    """Write a coherent preview plus this grid's own overlay and bind metadata."""
+
+    from raw2features.viz import write_thumbnails
+
+    stored = _thumbnail_settings(settings)
+    mpp = cfg.thumbnail_mpp if stored is None or stored[0] is None else stored[0]
+    max_px = cfg.thumbnail_max_px if stored is None else stored[1]
+    overlay_name = _grid_thumbnail_overlay_name(slide_id, key, primary_key)
+    metadata = write_thumbnails(
+        reader,
+        out_dir,
+        slide_id,
+        mpp=mpp,
+        max_px=max_px,
+        tissue=tissue,
+        coords=coords,
+        level0_patch=level0_patch,
+        overlay=True,
+        overwrite=overwrite,
+        overlay_name=overlay_name,
+    )
+    metadata["grid"] = key
+    sink.update_thumbnail(metadata, update_root=(key == primary_key))
+    return metadata
+
+
+def _stored_grid_summary(
+    out_path: str, group_cfgs: list[RunConfig]
+) -> dict[str, list[str]]:
+    """Resolve requested grid hashes to their actual (possibly suffixed) labels."""
+
+    try:
+        import zarr
+
+        from raw2features.core.store import GRIDS, grid_keys
+
+        root = zarr.open_group(out_path, mode="r", use_consolidated=False)
+        keys = grid_keys(root)
+        stored = {
+            key: dict(root[GRIDS][key].attrs.get("raw2features", {})).get(
+                "grid_hash"
+            )
+            for key in keys
+        }
+        result: dict[str, list[str]] = {}
+        used: set[str] = set()
+        for cfg in group_cfgs:
+            candidates = (cfg.grid_hash(), *cfg.compatible_legacy_grid_hashes())
+            match = None
+            for candidate in dict.fromkeys(candidates):
+                hits = [
+                    key
+                    for key in keys
+                    if key not in used and stored[key] == candidate
+                ]
+                if len(hits) == 1:
+                    match = hits[0]
+                    break
+                if len(hits) > 1:
+                    return {}
+            if (
+                match is None
+                and len(group_cfgs) == 1
+                and len(keys) == 1
+                and stored[keys[0]] is None
+            ):
+                match = keys[0]
+            if match is None:
+                return {}
+            used.add(match)
+            result[match] = list(cfg.models)
+        return result
+    except Exception:  # noqa: BLE001 - summaries fall back to their planned labels
+        return {}
 
 
 def _slide_encoders_for(names: list[str], available: list[str]) -> list[str]:

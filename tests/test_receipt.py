@@ -168,6 +168,110 @@ def test_expected_contract_mapping_must_cover_every_receipt_model(tmp_path):
     )
 
 
+def test_per_grid_requirements_do_not_union_same_model_across_grids(tmp_path):
+    out_dir = tmp_path / "out"
+    coords = np.zeros((4, 2), "int32")
+    requested = ZarrSink()
+    requested.create(
+        str(out_dir),
+        "s",
+        grid="mpp1_px224",
+        n_patches=4,
+        coords=coords,
+        grid_index=coords,
+        grid_tissue=None,
+        model_dims={"m": 3},
+        header={
+            "schema_version": "0.1",
+            "grid_hash": "requested-hash",
+            "source": {"uri": "file:///x"},
+        },
+    )
+    requested.write_block("m", 0, np.ones((4, 3), "float32"))
+    requested.close()
+
+    other = ZarrSink()
+    other.create(
+        str(out_dir),
+        "s",
+        grid="mpp2_px224",
+        fresh=False,
+        n_patches=4,
+        coords=coords,
+        grid_index=coords,
+        grid_tissue=None,
+        model_dims={"m": 3},
+        header={
+            "schema_version": "0.1",
+            "grid_hash": "other-hash",
+            "source": {"uri": "file:///x"},
+        },
+    )
+    other.write_block("m", 0, np.ones((4, 3), "float32"))
+    other.close()
+
+    # A current and compatible legacy grid may coexist after a rebuild. Prefer the
+    # exact current hash instead of treating both candidates as ambiguous.
+    assert validate_store_models(
+        other.uri,
+        ["m"],
+        expected_grid_models={"requested-hash": ["m"]},
+        compatible_grid_hashes={"requested-hash": ("other-hash",)},
+    )
+    assert validate_store_models(
+        other.uri,
+        ["m"],
+        expected_grid_models={
+            "requested-hash": ["m"],
+            "other-hash": ["m"],
+        },
+    )
+
+    import zarr
+
+    root = zarr.open_group(
+        other.uri.removeprefix("file://"), mode="r+", use_consolidated=False
+    )
+    root["grids"]["mpp1_px224"]["features"]["m"][-1] = 0
+
+    assert not validate_store_models(
+        other.uri,
+        ["m"],
+        expected_grid_models={"requested-hash": ["m"]},
+    )
+    # Once the exact grid exists, corruption there must not fall back to a valid
+    # legacy candidate and bless the wrong output.
+    assert not validate_store_models(
+        other.uri,
+        ["m"],
+        expected_grid_models={"requested-hash": ["m"]},
+        compatible_grid_hashes={"requested-hash": ("other-hash",)},
+    )
+    assert validate_store_models(
+        other.uri,
+        ["m"],
+        expected_grid_models={"other-hash": ["m"]},
+    )
+    assert not validate_store_models(
+        other.uri,
+        ["m"],
+        expected_grid_models={
+            "requested-hash": ["m"],
+            "other-hash": ["m"],
+        },
+    )
+
+
+def test_per_grid_requirements_allow_unambiguous_legacy_hashless_store(tmp_path):
+    uri = _make_output(tmp_path / "out")
+
+    assert validate_store_models(
+        uri,
+        ["m"],
+        expected_grid_models={"current-hash": ["m"]},
+    )
+
+
 def test_is_complete_binds_receipt_to_source_and_requested_output(tmp_path):
     rec_dir = str(tmp_path / "rec")
     uri = _make_output(tmp_path / "out")

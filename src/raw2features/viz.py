@@ -11,6 +11,8 @@ across slides -- the tool derives the level from MPP, as everywhere else).
 from __future__ import annotations
 
 import os
+import secrets
+import stat
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -173,8 +175,51 @@ def render_overlay(
 def save_png(image: np.ndarray, path: str) -> str:
     from PIL import Image
 
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    Image.fromarray(image).save(path)
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    temporary: str | None = None
+    fd: int | None = None
+    try:
+        try:
+            existing_mode = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:
+            existing_mode = None
+        for _ in range(100):
+            temporary = os.path.join(
+                directory,
+                f".r2f-sidecar.{secrets.token_hex(8)}.tmp",
+            )
+            try:
+                # Honour the process umask/default ACL, matching a normal output
+                # file rather than mkstemp's fixed 0600 permissions.
+                fd = os.open(
+                    temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666
+                )
+                break
+            except FileExistsError:
+                temporary = None
+        else:  # pragma: no cover - 100 cryptographic-name collisions is infeasible
+            raise FileExistsError("could not allocate a temporary PNG path")
+        if existing_mode is not None:
+            os.chmod(temporary, existing_mode)
+        with os.fdopen(fd, mode="wb") as fh:
+            fd = None  # ownership transferred to ``fh``
+            Image.fromarray(image).save(fh, format="PNG")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+    except BaseException:  # noqa: BLE001 - cleanup on interrupts as well as failures
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        raise
     return path
 
 
@@ -189,22 +234,33 @@ def write_thumbnails(
     coords: np.ndarray | None = None,
     level0_patch: int | None = None,
     overlay: bool = False,
+    overwrite: bool = True,
+    overlay_name: str | None = None,
 ) -> dict:
     """Render + save the plain thumbnail (and the QC overlay if requested).
 
+    ``overwrite=False`` repairs only missing assets, preserving an existing plain
+    thumbnail while (for example) recreating a deleted overlay. ``overlay_name``
+    gives a non-primary grid its own namespaced overlay (a basename, not a path).
     Returns provenance metadata (basenames + the read geometry) for ``.zattrs``.
     """
     thumb = render_thumbnail(reader, mpp=mpp, max_px=max_px)
     plain_path = os.path.join(out_dir, f"{slide_id}.thumbnail.png")
-    save_png(thumb.image, plain_path)
+    if overwrite or not os.path.exists(plain_path):
+        save_png(thumb.image, plain_path)
 
     overlay_path = None
     if overlay and (tissue is not None or (coords is not None and len(coords))):
         composed = render_overlay(
             thumb, tissue=tissue, coords=coords, level0_patch=level0_patch
         )
-        overlay_path = os.path.join(out_dir, f"{slide_id}.thumbnail.overlay.png")
-        save_png(composed, overlay_path)
+        if overlay_name is not None and os.path.basename(overlay_name) != overlay_name:
+            raise ValueError("overlay_name must be a basename, not a path")
+        overlay_path = os.path.join(
+            out_dir, overlay_name or f"{slide_id}.thumbnail.overlay.png"
+        )
+        if overwrite or not os.path.exists(overlay_path):
+            save_png(composed, overlay_path)
 
     return {
         "plain": os.path.basename(plain_path),

@@ -19,6 +19,7 @@ table below lists each model's weights licence.
 | `dinov2` | Apache-2.0 | no |
 | `gigapath` | Apache-2.0 | yes (login) |
 | `h_optimus_0` | Apache-2.0 | yes (login) |
+| `h0_mini` | CC-BY-NC-ND-4.0 | yes (approval) |
 | `gpfm` | MIT (HF metadata) / CC-BY-NC-ND-4.0 (repo `LICENSE`) - conflict, verify | no |
 | `midnight` | MIT | no |
 | `hibou_l` | Apache-2.0 | yes |

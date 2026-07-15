@@ -29,6 +29,7 @@ read and decide on. raw2features makes no commercial-use determination.
 | `conch` | conch | 512 | 448 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/CONCH) · [GH](https://github.com/mahmoodlab/CONCH) · [paper](https://doi.org/10.1038/s41591-024-02856-4) |
 | `conch_v1_5` | conch_v1_5 | 768 | 448⁵ | 0.5 | mag→ | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/conchv1_5) · [GH](https://github.com/mahmoodlab/TITAN) · [paper](https://arxiv.org/abs/2411.19666) |
 | `h_optimus_0` | timm | 1536 | 224 | 0.5 | stated | Apache-2.0 | yes | [HF](https://huggingface.co/bioptimus/H-optimus-0) · [GH](https://github.com/bioptimus/releases) |
+| `h0_mini` | timm | 768 | 224 | 0.5 | mag→ | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/bioptimus/H0-mini) · [paper](https://doi.org/10.1007/978-3-032-04981-0_16) |
 | `h_optimus_1` | timm | 1536 | 224 | 0.5 | stated | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/bioptimus/H-optimus-1) |
 | `gpfm` | timm | 1024 | 224 | 0.5⁶ | mag→ | MIT / CC-BY-NC-ND-4.0 ⁷ | no | [HF](https://huggingface.co/majiabo/GPFM) · [GH](https://github.com/birkhoffkiki/GPFM) · [paper](https://doi.org/10.1038/s41551-025-01488-4) |
 | `midnight` | transformers | 3072 | 224 | 0.5² | stated | MIT | no | [HF](https://huggingface.co/kaiko-ai/midnight) · [GH](https://github.com/kaiko-ai/Midnight) · [paper](https://arxiv.org/abs/2504.05186) |

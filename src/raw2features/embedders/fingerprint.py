@@ -85,6 +85,58 @@ MADELEINE_PACKAGE_REVISION = "419287dc60a57296d959840b893481019c4f0d21"
 BIOMEDCLIP_TEXT_REPO = "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract"
 BIOMEDCLIP_TEXT_REVISION = "d673b8835373c6fa116d6d8006b33d48734e305d"
 
+# Shared by the OpenMidnight/OpenPath loader and output fingerprints. Both author
+# checkpoints are DINOv2 ViT-g/14 with four register tokens and produce the
+# normalized 1536-d CLS token. The loader consumes this exact object too, so changing
+# construction or checkpoint conversion invalidates existing output arrays.
+DINO_TEACHER_CONSTRUCTOR_CONTRACT: dict[str, Any] = {
+    "entrypoint": "timm.create_model",
+    "architecture": "vit_giant_patch14_reg4_dinov2",
+    "input_size": 224,
+    "patch_size": [14, 14],
+    "embedding_dim": 1536,
+    "depth": 40,
+    "num_heads": 24,
+    "register_tokens": 4,
+    # timm exposes SwiGLUPacked as a functools.partial that constructs GluMlp.
+    # Record the concrete module and its observable semantics rather than the
+    # partial's conceptual name: SiLU(first half) * second half, followed by a
+    # 4096-wide projection with no norm or dropout.
+    "ffn": {
+        "implementation": "timm.layers.mlp.GluMlp",
+        "activation": "torch.nn.modules.activation.SiLU",
+        "gate_last": False,
+        "chunk_dim": -1,
+        "fc1": {
+            "implementation": "torch.nn.modules.linear.Linear",
+            "in_features": 1536,
+            "out_features": 8192,
+            "bias": True,
+        },
+        "norm": "torch.nn.modules.linear.Identity",
+        "fc2": {
+            "implementation": "torch.nn.modules.linear.Linear",
+            "in_features": 4096,
+            "out_features": 1536,
+            "bias": True,
+        },
+        "drop1": {
+            "implementation": "torch.nn.modules.dropout.Dropout",
+            "p": 0.0,
+        },
+        "drop2": {
+            "implementation": "torch.nn.modules.dropout.Dropout",
+            "p": 0.0,
+        },
+    },
+    "no_embed_class": True,
+    "global_pool": "token",
+    "pretrained": False,
+    "checkpoint_conversion": "official_dinov2_to_timm_v1",
+    "strict_state_dict": True,
+    "remote_code": False,
+}
+
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(
@@ -321,6 +373,7 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
         },
         "open_clip": {"entrypoint": "open_clip.create_model_from_pretrained"},
         "keep": deepcopy(KEEP_CONSTRUCTOR_CONTRACT),
+        "dino_teacher": deepcopy(DINO_TEACHER_CONSTRUCTOR_CONTRACT),
         "seal": {
             "entrypoint": "seal.models.load_model.ModelMixin.get_img_model",
             "parameters": deepcopy(SEAL_CONSTRUCTOR_CONTRACT),

@@ -33,6 +33,8 @@ read and decide on. raw2features makes no commercial-use determination.
 | `h_optimus_1` | timm | 1536 | 224 | 0.5 | stated | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/bioptimus/H-optimus-1) |
 | `gpfm` | timm | 1024 | 224 | 0.5⁶ | mag→ | MIT / CC-BY-NC-ND-4.0 ⁷ | no | [HF](https://huggingface.co/majiabo/GPFM) · [GH](https://github.com/birkhoffkiki/GPFM) · [paper](https://doi.org/10.1038/s41551-025-01488-4) |
 | `midnight` | transformers | 3072 | 224 | 0.5² | stated | MIT | no | [HF](https://huggingface.co/kaiko-ai/midnight) · [GH](https://github.com/kaiko-ai/Midnight) · [paper](https://arxiv.org/abs/2504.05186) |
+| `openmidnight` | dino_teacher | 1536 | 224 | - | n/a | Apache-2.0 | yes | [HF](https://huggingface.co/SophontAI/OpenMidnight) · [GH](https://github.com/MedARC-AI/OpenMidnight) |
+| `openpath` | dino_teacher | 1536 | 224 | 0.5 | stated | Apache-2.0 | no | [HF](https://huggingface.co/taejoon89/openpath) · [GH](https://github.com/taejoon89/openpath) |
 | `phikon` | transformers | 768 | 224 | 0.5 | stated | Owkin NC ⁸ | no | [HF](https://huggingface.co/owkin/phikon) · [GH](https://github.com/owkin/HistoSSLscaling) · [paper](https://doi.org/10.1101/2023.07.21.23292757) |
 | `phikon_v2` | transformers | 1024 | 224 | 0.5 | stated | Owkin NC ⁸ | no | [HF](https://huggingface.co/owkin/phikon-v2) · [GH](https://github.com/owkin/HistoSSLscaling) · [paper](https://arxiv.org/abs/2409.09173) |
 | `lunit_dino` | timm | 384 | 224 | 0.5² | stated | Lunit NC ⁹ | no | [HF](https://huggingface.co/1aurent/vit_small_patch16_224.lunit_dino) · [GH](https://github.com/lunit-io/benchmark-ssl-pathology) · [paper](https://arxiv.org/abs/2212.04690) |

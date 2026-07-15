@@ -454,6 +454,72 @@ midnight:
     representation (no register tokens). mean/std 0.5 at 224 px. MIT + not gated -> its
     embeddings are unrestricted.
 
+openmidnight:
+  family: dino_teacher
+  source: "hf-hub:SophontAI/OpenMidnight"
+  # No recommended_mpp: the authors document 224 px patches but no physical scale.
+  embedding_dim: 1536
+  input_size: 224
+  pooling: cls
+  reg_tokens: 4
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://huggingface.co/SophontAI/OpenMidnight"
+  weights_sha256: "b57121fc10e2b04c9e85514fa5e4c23b75329301e05bfc756c3bca57312505be"
+  weights_filename: "teacher_checkpoint_load.pt"
+  weights_revision: "87189e6674d397a14a5cd342c97b1a1615a185aa"
+  license: "Apache-2.0 (OpenMidnight, SophontAI)"
+  gated: true
+  inference_amp: fp32
+  checkpoint:
+    repo: "SophontAI/OpenMidnight"
+    filename: "teacher_checkpoint_load.pt"
+  notes: >-
+    SophontAI OpenMidnight, an open DINOv2 ViT-g/14-reg4 pathology teacher trained
+    on TCGA. The official inference checkpoint is a direct backbone state_dict;
+    raw2features downloads it at the immutable HF revision, verifies its SHA-256
+    before deserialisation, converts the documented DINOv2 names to the equivalent
+    local timm architecture, and loads strictly. Output is the normalized 1536-d CLS
+    token at 224 px with ImageNet normalization. The authors do not state a physical
+    patch scale, so raw2features deliberately records no recommended_mpp. Apache-2.0
+    weights; HF access currently requires accepting the repository terms.
+
+openpath:
+  family: dino_teacher
+  source: "hf-hub:taejoon89/openpath"
+  recommended_mpp: 0.5
+  embedding_dim: 1536
+  input_size: 224
+  pooling: cls
+  reg_tokens: 4
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://huggingface.co/taejoon89/openpath"
+  weights_sha256: "1b389360b4867b5159ce7534ff231f51e87d3cf140daa4b37483d0a178af3da3"
+  weights_filename: "teacher_checkpoint.pth"
+  weights_revision: "22b339237195931eb56ea6c86653362edd2dd155"
+  license: "Apache-2.0 (OpenPath, Tae Joon Jun)"
+  gated: false
+  inference_amp: fp32
+  checkpoint:
+    repo: "taejoon89/openpath"
+    filename: "teacher_checkpoint.pth"
+    state_dict_key: "teacher"
+    state_dict_prefix: "backbone."
+    flatten_block_chunks: true
+  notes: >-
+    OpenPath, a public-data DINOv2 ViT-g/14-reg4 pathology encoder with gram
+    anchoring. The released training_316250 teacher checkpoint is selected by the
+    authors' leakage-controlled AMC-HCC-ST evaluation. Its nested teacher backbone
+    uses four BlockChunks; raw2features extracts only backbone.*, deterministically
+    flattens the global block indices, verifies the pinned checkpoint SHA-256 before
+    deserialisation, and loads the equivalent local timm architecture strictly.
+    Output is the normalized 1536-d CLS token for 224 px H&E tiles at the author's
+    stated native ~40x / 0.5 um-per-pixel regime, with ImageNet normalization.
+    Apache-2.0 and ungated.
+
 phikon:
   family: transformers
   source: "owkin/phikon"

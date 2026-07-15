@@ -22,6 +22,8 @@ table below lists each model's weights licence.
 | `h0_mini` | CC-BY-NC-ND-4.0 | yes (approval) |
 | `gpfm` | MIT (HF metadata) / CC-BY-NC-ND-4.0 (repo `LICENSE`) - conflict, verify | no |
 | `midnight` | MIT | no |
+| `openmidnight` | Apache-2.0 | yes (terms acceptance) |
+| `openpath` | Apache-2.0 | no |
 | `hibou_l` | Apache-2.0 | yes |
 | `hibou_b` | Apache-2.0 | yes |
 | `ctranspath` | GPL-3.0 | no |

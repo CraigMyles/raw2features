@@ -30,9 +30,10 @@ class Sink(ABC):
         model_dims: dict[str, int],
         header: dict,
         features_dtype: str = "float16",
-    ) -> None:
+    ) -> str:
         """Create the output store, write coords/grid_index/mask + header, and
-        allocate one ``features/<model>`` array per model."""
+        allocate one ``features/<model>`` array per model. Return its stored grid
+        label (which may be collision-suffixed)."""
 
     @abstractmethod
     def write_block(self, model: str, start: int, feats: np.ndarray) -> None:

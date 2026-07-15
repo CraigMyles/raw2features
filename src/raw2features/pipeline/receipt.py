@@ -295,12 +295,19 @@ def validate_store_models(
     models: list[str],
     *,
     expected_model_contracts: dict[str, dict] | None = None,
+    expected_grid_models: dict[str, list[str]] | None = None,
+    compatible_grid_hashes: dict[str, tuple[str, ...]] | None = None,
 ) -> bool:
-    """True iff every model in *models* is present and fully written in some grid.
+    """True iff the requested model outputs are complete in their requested grids.
 
-    Multi-grid generalisation of :func:`validate_output`: a store may hold several
-    ``grids/<key>/`` (one per geometry), and a model is 'complete' if some
-    ``grids/<key>/features/<model>`` is finite and free of all-zero fill rows.
+    ``expected_grid_models`` binds each requested model set to its authoritative full
+    ``grid_hash``.  A valid same-named model in another grid must not satisfy that
+    requirement.  ``compatible_grid_hashes`` retains the explicitly-supported legacy
+    AMP hashes.  A hashless store is accepted only for the unambiguous case of one
+    requested grid and one stored grid.
+
+    When no per-grid mapping is supplied, the historical cross-grid union behaviour is
+    retained for API compatibility.  Production resume/verify callers supply the map.
     """
     import zarr
 
@@ -320,6 +327,69 @@ def validate_store_models(
         keys = grid_keys(root)
         if not keys:
             return False
+        if expected_grid_models is not None:
+            required_models = {
+                model
+                for requested in expected_grid_models.values()
+                for model in requested
+            }
+            if set(models) != required_models:
+                return False
+
+            stored_hashes = {
+                key: dict(root[GRIDS][key].attrs.get("raw2features", {})).get(
+                    "grid_hash"
+                )
+                for key in keys
+            }
+            sole_hashless = (
+                len(expected_grid_models) == 1
+                and len(keys) == 1
+                and stored_hashes[keys[0]] is None
+            )
+            used: set[str] = set()
+            for expected_hash, requested in expected_grid_models.items():
+                candidates = tuple(
+                    dict.fromkeys(
+                        (
+                            expected_hash,
+                            *(compatible_grid_hashes or {}).get(expected_hash, ()),
+                        )
+                    )
+                )
+                matches: list[str] = []
+                # Prefer the current hash, then each explicitly-supported legacy
+                # candidate. A store can legitimately contain an old and a rebuilt
+                # current grid; the current one must win instead of making the
+                # receipt permanently ambiguous.
+                for candidate in candidates:
+                    matches = [
+                        key
+                        for key in keys
+                        if key not in used and stored_hashes[key] == candidate
+                    ]
+                    if matches:
+                        break
+                if not matches and sole_hashless:
+                    matches = [keys[0]]
+                if len(matches) != 1:
+                    return False
+                key = matches[0]
+                used.add(key)
+                group = root[GRIDS][key]
+                n_patches = int(group["coords"].shape[0])
+                for model in requested:
+                    contract = (expected_model_contracts or {}).get(model, {})
+                    if not validate_model(
+                        group,
+                        model,
+                        n_patches,
+                        expected_dim=contract.get("embedding_dim"),
+                        expected_fingerprint=contract.get("output_fingerprint"),
+                    ):
+                        return False
+            return True
+
         for m in models:
             found = False
             for k in keys:
@@ -350,6 +420,8 @@ def is_complete(
     expected_source_uri: str | None = None,
     expected_output_uri: str | None = None,
     expected_model_contracts: dict[str, dict] | None = None,
+    expected_grid_models: dict[str, list[str]] | None = None,
+    compatible_grid_hashes: dict[str, tuple[str, ...]] | None = None,
 ) -> bool:
     """True iff a request-bound, output-validated ``complete`` receipt exists.
 
@@ -394,4 +466,6 @@ def is_complete(
         recorded_output,
         models,
         expected_model_contracts=expected_model_contracts,
+        expected_grid_models=expected_grid_models,
+        compatible_grid_hashes=compatible_grid_hashes,
     )

@@ -91,7 +91,7 @@ def verify(
         device=resolve_device(device),
     )
     # Hash exactly as embed_slide does, so verify matches the embed that wrote it.
-    _, _, run_hash = resolve_run(cfg, mpp, patch_size, geometry_config)
+    _, group_cfgs, run_hash = resolve_run(cfg, mpp, patch_size, geometry_config)
     expected_source = canonical_source_uri(slide)
     if expected_source is None:
         if not quiet:
@@ -126,6 +126,13 @@ def verify(
             )
         raise typer.Exit(code=1)
     contracts = expected_model_contracts(cfg)
+    expected_grid_models = {
+        group_cfg.grid_hash(): list(group_cfg.models) for group_cfg in group_cfgs
+    }
+    compatible_grid_hashes = {
+        group_cfg.grid_hash(): group_cfg.compatible_legacy_grid_hashes()
+        for group_cfg in group_cfgs
+    }
     complete = is_complete(
         receipts_dir,
         slide_id,
@@ -133,6 +140,8 @@ def verify(
         expected_source_uri=expected_source,
         expected_output_uri=expected_output,
         expected_model_contracts=contracts,
+        expected_grid_models=expected_grid_models,
+        compatible_grid_hashes=compatible_grid_hashes,
     )
     if not quiet:
         typer.echo(f"{slide_id}: {'complete' if complete else 'incomplete'}")

@@ -129,9 +129,135 @@ def test_inspect_store_legacy_without_grid_hash_is_compatible(tmp_path):
     assert valid == ["a"]
 
 
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_same_label_different_grid_hash_uses_deterministic_suffix(
+    synthetic_ngff, tmp_path
+):
+    out = str(tmp_path / "out")
+    common = dict(
+        models=["mock"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        device="cpu",
+        amp="fp32",
+    )
+    base_cfg = RunConfig(**common)
+    first = run_slide(
+        synthetic_ngff,
+        out,
+        base_cfg,
+        embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+    )
+    path = first["output_uri"].removeprefix("file://")
+    root = zarr.open_group(path, mode="r", use_consolidated=False)
+    original = np.asarray(open_grid(root, "mpp0.5_px64")["features"]["mock"][:])
+
+    overlapping_cfg = RunConfig(**common, step_px=32)
+    second = run_slide(
+        synthetic_ngff,
+        out,
+        overlapping_cfg,
+        embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+    )
+    assert second["status"] == "complete"
+    root = zarr.open_group(path, mode="r", use_consolidated=False)
+    keys = list(root[GRIDS].keys())
+    suffixed = f"mpp0.5_px64_{overlapping_cfg.grid_hash()[:8]}"
+    assert second["grid"] == suffixed
+    assert set(keys) == {"mpp0.5_px64", suffixed}
+    assert np.array_equal(
+        np.asarray(open_grid(root, "mpp0.5_px64")["features"]["mock"][:]),
+        original,
+    )
+    root_index = dict(root.attrs["raw2features"])["grids"]
+    assert root_index[suffixed]["grid_hash"] == overlapping_cfg.grid_hash()
+
+    again = run_slide(
+        synthetic_ngff,
+        out,
+        overlapping_cfg,
+        embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+    )
+    assert again["status"] == "skipped"
+    root = zarr.open_group(path, mode="r", use_consolidated=False)
+    assert set(root[GRIDS].keys()) == {"mpp0.5_px64", suffixed}
+
+
 def test_inspect_store_absent_is_not_appendable(tmp_path):
     key, n, valid = _inspect_store(str(tmp_path / "missing.zarr"), "GH", ["a"])
     assert key is None and n == 0 and valid == []
+
+
+def test_inspect_store_rejects_ambiguous_hashless_multigrid(tmp_path):
+    path = _make_store(str(tmp_path / "out"), grid_hash=None)
+    root = zarr.open_group(path, mode="r+")
+    other = root[GRIDS].create_group("mpp2_px64")
+    coords = other.create_array("coords", shape=(2, 2), dtype="int32")
+    coords[:] = 0
+    features = other.create_group("features")
+    values = features.create_array("a", shape=(2, 4), dtype="float16")
+    values[:] = 1
+    other.attrs["raw2features"] = {
+        "source": {"uri": "file:///source/s.zarr"},
+        "patching": {"read_level": 0, "read_px": 64, "patch_px": 64},
+    }
+
+    assert _inspect_store(path, "unknown-geometry", ["a"]) == (None, 0, [])
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_multigrid_request_does_not_reuse_one_hashless_legacy_grid(
+    synthetic_ngff, tmp_path
+):
+    out = str(tmp_path / "out")
+    common = dict(no_seg=True, device="cpu", amp="fp32")
+    legacy = run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["legacy"], target_mpp=0.5, patch_px=64, **common),
+        embedders=[MockEmbedder(dim=4, input_size=64, name="legacy")],
+    )
+    path = legacy["output_uri"].removeprefix("file://")
+    root = zarr.open_group(path, mode="r+", use_consolidated=False)
+    legacy_grid = open_grid(root, "mpp0.5_px64")
+    legacy_header = dict(legacy_grid.attrs["raw2features"])
+    legacy_header.pop("grid_hash")
+    legacy_grid.attrs["raw2features"] = legacy_header
+    root_header = dict(root.attrs["raw2features"])
+    root_grids = dict(root_header["grids"])
+    root_entry = dict(root_grids["mpp0.5_px64"])
+    root_entry.pop("grid_hash")
+    root_grids["mpp0.5_px64"] = root_entry
+    root_header["grids"] = root_grids
+    root.attrs["raw2features"] = root_header
+
+    geometry = [
+        {"model": "mockA", "mpp": 0.5, "patch_px": 64},
+        {"model": "mockB", "mpp": 1.0, "patch_px": 64},
+    ]
+    summary = embed_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["mockA", "mockB"], **common),
+        geometry_config=geometry,
+        embedders=[
+            MockEmbedder(dim=8, input_size=64, name="mockA"),
+            MockEmbedder(dim=5, input_size=64, name="mockB"),
+        ],
+    )
+
+    root = zarr.open_group(path, mode="r", use_consolidated=False)
+    assert len(root[GRIDS]) == 3
+    assert set(open_grid(root, "mpp0.5_px64")["features"].keys()) == {"legacy"}
+    feature_sets = [
+        set(open_grid(root, key)["features"].keys())
+        for key in root[GRIDS].keys()
+        if key != "mpp0.5_px64"
+    ]
+    assert {"mockA"} in feature_sets and {"mockB"} in feature_sets
+    assert len(summary["grids"]) == 2
+    assert "mpp0.5_px64" not in summary["grids"]
 
 
 def test_store_source_binding_checks_root_and_every_grid(tmp_path):
@@ -230,8 +356,7 @@ def test_embed_then_add_model_is_additive(synthetic_ngff, tmp_path):
     common = dict(no_seg=True, target_mpp=0.5, patch_px=64, device="cpu", amp="fp32")
 
     sa = run_slide(
-        synthetic_ngff,
-        out,
+        synthetic_ngff, out,
         RunConfig(models=["mockA"], **common),
         embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
     )
@@ -243,8 +368,7 @@ def test_embed_then_add_model_is_additive(synthetic_ngff, tmp_path):
     assert a_before.shape[1] == 8
 
     sb = run_slide(
-        synthetic_ngff,
-        out,
+        synthetic_ngff, out,
         RunConfig(models=["mockB"], **common),
         embedders=[MockEmbedder(dim=5, name="mockB", bias=2.0)],
     )
@@ -440,12 +564,14 @@ def test_embed_different_geometry_adds_a_second_grid(synthetic_ngff, tmp_path):
     out = str(tmp_path / "out")
     common = dict(no_seg=True, patch_px=64, device="cpu", amp="fp32")
     run_slide(
-        synthetic_ngff, out,
+        synthetic_ngff,
+        out,
         RunConfig(models=["mockA"], target_mpp=0.5, **common),
         embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
     )
     sb = run_slide(
-        synthetic_ngff, out,
+        synthetic_ngff,
+        out,
         RunConfig(models=["mockB"], target_mpp=1.0, **common),  # different MPP
         embedders=[MockEmbedder(dim=5, name="mockB", bias=2.0)],
     )
@@ -487,6 +613,59 @@ def test_embed_slide_writes_multiple_grids_in_one_run(synthetic_ngff, tmp_path):
         embedders=embedders, receipts_dir=rec,
     )
     assert again["status"] == "skipped"
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_missing_geojson_is_produced_after_complete_receipt_once(
+    synthetic_ngff, tmp_path, monkeypatch
+):
+    import raw2features.pipeline.runner as rn
+
+    out = str(tmp_path / "out")
+    receipts = str(tmp_path / "receipts")
+    common = dict(
+        models=["mock"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        device="cpu",
+        amp="fp32",
+    )
+    run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(**common),
+        embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+        receipts_dir=receipts,
+    )
+    monkeypatch.setattr(
+        rn,
+        "_embed_patches",
+        lambda *args, **kwargs: pytest.fail("GeoJSON run re-embedded patches"),
+    )
+    produced = run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(**common, emit_geojson=True),
+        embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+        receipts_dir=receipts,
+    )
+    path = os.path.join(out, "synthetic.patches.geojson")
+    assert produced["status"] == "complete"
+    assert produced["geojson"] == path
+    with open(path, "rb") as fh:
+        original = fh.read()
+
+    again = run_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(**common, emit_geojson=True),
+        embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+        receipts_dir=receipts,
+    )
+    assert again["status"] == "skipped"
+    with open(path, "rb") as fh:
+        assert fh.read() == original
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")

@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
+import stat
 
 import numpy as np
 
@@ -56,6 +58,38 @@ def _root_header(grid: str, header: dict, model_dims: dict, n: int) -> dict:
     return root
 
 
+def _select_grid_label(root, base: str, grid_hash: str | None) -> str:
+    """Choose a deterministic unused label without treating it as grid identity."""
+
+    if GRIDS not in root or base not in root[GRIDS]:
+        return base
+    if not grid_hash:
+        raise ValueError(
+            f"grid label {base!r} is occupied and the new grid has no grid_hash"
+        )
+
+    def stored_hash(key: str):
+        return dict(root[GRIDS][key].attrs.get("raw2features", {})).get("grid_hash")
+
+    if stored_hash(base) == grid_hash:
+        raise ValueError(
+            f"grid {base!r} already records this grid_hash; reopen it for append"
+        )
+    lengths = list(range(8, len(grid_hash), 4)) + [len(grid_hash)]
+    for length in dict.fromkeys(lengths):
+        candidate = f"{base}_{grid_hash[:length]}"
+        if candidate not in root[GRIDS]:
+            return candidate
+        if stored_hash(candidate) == grid_hash:
+            raise ValueError(
+                f"grid {candidate!r} already records this grid_hash; "
+                "reopen it for append"
+            )
+    raise ValueError(
+        f"cannot derive a collision-free label for grid_hash {grid_hash!r}"
+    )
+
+
 @register("sinks", "zarr")
 class ZarrSink(Sink):
     """One ``grids/<key>/`` per geometry: coords + grid_index + mask + features."""
@@ -67,6 +101,7 @@ class ZarrSink(Sink):
         self._root = None
         self._group = None  # the active grid group
         self._uri = ""
+        self._active_key: str | None = None
 
     def create(
         self,
@@ -82,7 +117,7 @@ class ZarrSink(Sink):
         model_dims: dict[str, int],
         header: dict,
         features_dtype: str = "float16",
-    ) -> None:
+    ) -> str:
         """Write the ``grids/<grid>/`` grid.
 
         ``fresh=True`` writes a brand-new store (wiping any existing). ``fresh=False``
@@ -96,22 +131,24 @@ class ZarrSink(Sink):
         self._uri = f"file://{os.path.abspath(path)}"
         if fresh:
             root = zarr.open_group(path, mode="w", zarr_format=self._fmt)
+            actual_grid = grid
             root.attrs["raw2features"] = _root_header(
-                grid, header, model_dims, n_patches
+                actual_grid, header, model_dims, n_patches
             )
         else:
             # use_consolidated=False: read live metadata (a prior run consolidated it).
             root = zarr.open_group(path, mode="r+", use_consolidated=False)
+            actual_grid = _select_grid_label(root, grid, header.get("grid_hash"))
             rh = dict(root.attrs.get("raw2features", {}))
             rh.setdefault("schema_version", header.get("schema_version"))
             for k in ("source", "provenance", "segmentation", "thumbnail"):
                 if k not in rh and k in header:
                     rh[k] = header[k]
             grids = dict(rh.get("grids", {}))
-            grids[grid] = _grids_index_entry(header, model_dims, n_patches)
+            grids[actual_grid] = _grids_index_entry(header, model_dims, n_patches)
             rh["grids"] = grids
             root.attrs["raw2features"] = rh
-        g = root.require_group(GRIDS).require_group(grid)
+        g = root.require_group(GRIDS).require_group(actual_grid)
         g.attrs["raw2features"] = header
 
         coords = np.asarray(coords, dtype=np.int32).reshape(-1, 2)
@@ -158,6 +195,8 @@ class ZarrSink(Sink):
             a.attrs["model"] = model
         self._root = root
         self._group = g
+        self._active_key = actual_grid
+        return actual_grid
 
     def open_append(
         self,
@@ -225,6 +264,7 @@ class ZarrSink(Sink):
             self._update_root_models(root, actual_key, list(feats.keys()))
         self._root = root
         self._group = g
+        self._active_key = actual_key
         return n
 
     @staticmethod
@@ -353,7 +393,13 @@ class ZarrSink(Sink):
             raise RuntimeError("sink not created; call create() first")
         scores = np.asarray(scores, dtype=np.float16).reshape(-1, len(classes))
         n = scores.shape[0]
-        qc = self._group.require_group("qc").require_group(tool)
+        qc_root = self._group.require_group("qc")
+        # The runner calls this writer only for an absent or structurally incomplete
+        # producer. Replace an interrupted partial group as one unit so a crash that
+        # left (for example) a wrong-length ``scores`` array is repairable on resume.
+        if tool in qc_root:
+            del qc_root[tool]
+        qc = qc_root.create_group(tool)
 
         a = qc.create_array(
             "scores",
@@ -384,6 +430,22 @@ class ZarrSink(Sink):
             gh = dict(self._group.attrs.get("raw2features", {}))
             gh.setdefault("qc", {})[tool] = provenance
             self._group.attrs["raw2features"] = gh
+        # Final commit marker: a crash before arrays, attrs and any header mirror are
+        # complete leaves this absent, so the next produce-if-missing run repairs it.
+        qc.attrs["complete"] = True
+
+    def update_thumbnail(self, metadata: dict, *, update_root: bool = True) -> None:
+        """Record a grid thumbnail, mirroring the primary grid at the store root."""
+
+        if self._root is None or self._group is None:
+            raise RuntimeError("sink not created; call create() or open_append() first")
+        grid_header = dict(self._group.attrs.get("raw2features", {}))
+        grid_header["thumbnail"] = metadata
+        self._group.attrs["raw2features"] = grid_header
+        if update_root:
+            root_header = dict(self._root.attrs.get("raw2features", {}))
+            root_header["thumbnail"] = metadata
+            self._root.attrs["raw2features"] = root_header
 
     def close(self) -> None:
         if self._root is None:
@@ -401,7 +463,12 @@ class ZarrSink(Sink):
 
 
 def write_patches_geojson(
-    out_dir: str, slide_id: str, coords: np.ndarray, level0_patch: int
+    out_dir: str,
+    slide_id: str,
+    coords: np.ndarray,
+    level0_patch: int,
+    *,
+    filename: str | None = None,
 ) -> str:
     """Write per-patch square polygons in level-0 pixel coords (QuPath-importable)."""
     features = []
@@ -420,7 +487,50 @@ def write_patches_geojson(
             }
         )
     fc = {"type": "FeatureCollection", "features": features}
-    path = os.path.join(out_dir, f"{slide_id}.patches.geojson")
-    with open(path, "w") as fh:
-        json.dump(fc, fh)
+    if filename is not None and os.path.basename(filename) != filename:
+        raise ValueError("filename must be a basename, not a path")
+    path = os.path.join(out_dir, filename or f"{slide_id}.patches.geojson")
+    temporary: str | None = None
+    fd: int | None = None
+    try:
+        try:
+            existing_mode = stat.S_IMODE(os.stat(path).st_mode)
+        except FileNotFoundError:
+            existing_mode = None
+        for _ in range(100):
+            temporary = os.path.join(
+                out_dir,
+                f".r2f-sidecar.{secrets.token_hex(8)}.tmp",
+            )
+            try:
+                # Honour the process umask/default ACL, matching a normal output
+                # file rather than mkstemp's fixed 0600 permissions.
+                fd = os.open(
+                    temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666
+                )
+                break
+            except FileExistsError:
+                temporary = None
+        else:  # pragma: no cover - 100 cryptographic-name collisions is infeasible
+            raise FileExistsError("could not allocate a temporary GeoJSON path")
+        if existing_mode is not None:
+            os.chmod(temporary, existing_mode)
+        with os.fdopen(fd, mode="w", encoding="utf-8") as fh:
+            fd = None  # ownership transferred to ``fh``
+            json.dump(fc, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(temporary, path)
+    except BaseException:  # noqa: BLE001 - cleanup on interrupts as well as failures
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
+        raise
     return path

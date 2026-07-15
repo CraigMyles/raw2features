@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import stat
+
 import numpy as np
 import zarr
 
@@ -95,3 +98,43 @@ def test_geojson_polygons(tmp_path):
     assert len(fc["features"]) == 2
     poly = fc["features"][0]["geometry"]["coordinates"][0]
     assert poly[0] == [0, 0] and poly[2] == [64, 64]
+
+
+def test_geojson_new_file_honours_umask(tmp_path):
+    old_umask = os.umask(0o022)
+    try:
+        path = write_patches_geojson(
+            str(tmp_path), "new", np.empty((0, 2), dtype="int32"), level0_patch=64
+        )
+    finally:
+        os.umask(old_umask)
+    assert stat.S_IMODE(os.stat(path).st_mode) == 0o644
+
+
+def test_geojson_replacement_preserves_mode(tmp_path):
+    path = tmp_path / "existing.patches.geojson"
+    path.write_text("old")
+    path.chmod(0o664)
+    replaced = write_patches_geojson(
+        str(tmp_path),
+        "unused",
+        np.empty((0, 2), dtype="int32"),
+        level0_patch=64,
+        filename=path.name,
+    )
+    assert replaced == str(path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o664
+
+
+def test_geojson_accepts_near_name_max_destination(tmp_path):
+    suffix = ".geojson"
+    name_max = os.pathconf(tmp_path, "PC_NAME_MAX")
+    filename = "g" * (name_max - len(suffix) - 5) + suffix
+    path = write_patches_geojson(
+        str(tmp_path),
+        "unused",
+        np.empty((0, 2), dtype="int32"),
+        level0_patch=64,
+        filename=filename,
+    )
+    assert os.path.isfile(path)

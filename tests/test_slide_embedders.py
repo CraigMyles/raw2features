@@ -327,6 +327,62 @@ def test_embed_with_inline_slide_encoder(synthetic_ngff, tmp_path):
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_inline_slide_encoder_is_produced_after_complete_receipt(
+    synthetic_ngff, tmp_path, monkeypatch, recording_slide_embedder
+):
+    """An explicit ``-s`` is a produce-if-missing request, not a receipt no-op."""
+    import raw2features.pipeline.runner as rn
+    from raw2features.pipeline.runner import embed_slide
+
+    out = str(tmp_path / "out")
+    receipts = str(tmp_path / "receipts")
+    geometry = [{"model": "mock", "mpp": 0.5, "patch_px": 64}]
+    common = dict(models=["mock"], no_seg=True, device="cpu", amp="fp32")
+    embedder = MockEmbedder(dim=8, input_size=64, name="mock")
+
+    first = embed_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(**common),
+        geometry_config=geometry,
+        embedders=[embedder],
+        receipts_dir=receipts,
+    )
+    monkeypatch.setattr(
+        rn,
+        "_embed_patches",
+        lambda *args, **kwargs: pytest.fail("slide-only run re-embedded patches"),
+    )
+
+    requested = RunConfig(**common, slide_encoders=["mean"])
+    produced = embed_slide(
+        synthetic_ngff,
+        out,
+        requested,
+        geometry_config=geometry,
+        embedders=[embedder],
+        receipts_dir=receipts,
+    )
+    group = open_grid(first["output_uri"])
+    assert produced["status"] == "complete"
+    assert "mean" in group["slide"]
+    assert recording_slide_embedder["loads"] == 1
+
+    # The runtime request still bypasses the receipt, but concrete slide-output
+    # completion prevents a second encoder load/write.
+    again = embed_slide(
+        synthetic_ngff,
+        out,
+        requested,
+        geometry_config=geometry,
+        embedders=[embedder],
+        receipts_dir=receipts,
+    )
+    assert again["status"] == "complete"
+    assert recording_slide_embedder["loads"] == 1
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
 def test_runner_threads_patch_size_lv0(synthetic_ngff, tmp_path, monkeypatch):
     """Position-aware encoders (TITAN) need patch_size_lv0; the runner must pass the
     store's level0_patch. A recording encoder captures what it actually receives."""

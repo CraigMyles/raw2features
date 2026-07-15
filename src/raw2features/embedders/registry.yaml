@@ -1073,12 +1073,35 @@ seal_univ2:
     load path as seal_conch (frozen UNI2-h base + LoRA merge); needs the [seal] extra + accepted
     MahmoodLab/SEAL + MahmoodLab/UNI2-h gates. v0.0.1.
 
-# KEEP (Astaxanthin/KEEP) is not currently supported: its trust_remote_code modeling_keep.py
-# subclasses timm's LayerScale as `RenameLayerScale` with a fixed __init__ signature, but current
-# timm passes device/dtype kwargs to it -> `TypeError: ... unexpected keyword argument 'device'`.
-# It was written against an older timm, and pinning timm older would break uni2_h/virchow2. It can
-# be enabled once KEEP's remote code is updated (the `clip_hf` family already supports its
-# encode_image path).
+keep:
+  family: keep
+  source: "hf-hub:Astaxanthin/KEEP"
+  # The authors publish neither microns-per-pixel nor magnification for the image
+  # encoder. Leave scale unspecified rather than inventing a 0.5 µm/px convention.
+  embedding_dim: 768
+  input_size: 224
+  pooling: pooled          # local wrapper returns the projected, L2-normalised vector
+  mean: [0.485, 0.456, 0.406]   # official model-card inference transform
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/Astaxanthin/KEEP/tree/28a25d95cc6ba27a7e6fab3f144e13dbafd8b21e"
+  weights_sha256: "82f610d5359aca67b5fd5d841009f26db430ae78d0693743589c0a727b0a146d"   # model.safetensors
+  weights_filename: "model.safetensors"
+  weights_revision: "28a25d95cc6ba27a7e6fab3f144e13dbafd8b21e"
+  doi: "10.1016/j.ccell.2026.01.019"
+  license: "MIT (KEEP, MAGIC-AI4Med)"
+  gated: false
+  inference_amp: fp32
+  notes: >-
+    KEEP (Zhou et al., Cancer Cell 2026) -- ViT-L/16 vision-language pathology model;
+    raw2features exposes the official 768-d projected, L2-normalised image embedding.
+    The pinned upstream wrapper globally monkey-patches timm and is incompatible with
+    current timm, so the `keep` family locally reconstructs only its documented visual
+    tower + projection head, gives LayerScale the checkpoint's `weight` key without a
+    process-wide patch, and strictly loads only visual.* / visual_head.* tensors from the
+    SHA-256-verified safetensors artifact. No trust_remote_code and no pickle. ImageNet
+    normalisation @ 224 px comes from the pinned model card; no MPP is claimed by the
+    authors, so callers should choose --mpp for their protocol.
 
 # ---------------------------------------------------------------------------
 # Slide-level encoders

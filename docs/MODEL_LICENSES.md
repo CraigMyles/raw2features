@@ -46,6 +46,7 @@ table below lists each model's weights licence.
 | `quiltnet` | MIT | no |
 | `biomedclip` | MIT | no |
 | `plip` | MIT (project `setup.py`; no LICENSE file) | no |
+| `keep` | MIT | no |
 | `kronos` | CC-BY-NC-ND-4.0 (KRONOS, MahmoodLab; multiplex, non-commercial) | yes |
 
 ## Slide encoders

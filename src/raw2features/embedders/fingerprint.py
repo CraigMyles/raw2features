@@ -53,6 +53,29 @@ SEAL_CONSTRUCTOR_CONTRACT: dict[str, Any] = {
     "n_train_genes": 2000,
 }
 
+# KEEP's published HF wrapper is small but uses mutable remote code and globally
+# monkey-patches timm's LayerScale. The local loader consumes this frozen contract
+# directly and the output fingerprint records it, so a constructor change cannot be
+# mistaken for the same model output.
+KEEP_CONSTRUCTOR_CONTRACT: dict[str, Any] = {
+    "entrypoint": "raw2features.embedders.keep_embedder.KEEPEmbedder",
+    "architecture": "vit_large_patch16_224",
+    "create_model": {
+        "pretrained": False,
+        "img_size": 224,
+        "patch_size": 16,
+        "init_values": 1e-5,
+        "num_classes": 0,
+    },
+    "vision_width": 1024,
+    "projection_dim": 768,
+    "projection": "Linear(1024,768)-GELU-Linear(768,768)",
+    "normalization": "torch.nn.functional.normalize(dim=-1)",
+    "layer_scale_parameter": "weight",
+    "checkpoint_format": "safetensors_image_keys_only",
+    "trust_remote_code": False,
+}
+
 SEAL_FORK_REVISION = "5334490645e8410e7d8ef6978cebc4fd98f9cf9a"
 CONCH_PACKAGE_REVISION = "141cc09c7d4ff33d8eda562bd75169b457f71a62"
 KRONOS_PACKAGE_REVISION = "48979362386c8440c934954be3d88ccfa74d6f36"
@@ -181,6 +204,7 @@ def _effective_patch_checkpoint(spec: ModelSpec) -> dict[str, Any]:
         "kronos": (repo, "pinned_local_file"),
         "musk": (repo, "pinned_local_file"),
         "open_clip": (repo, "pinned_local_snapshot"),
+        "keep": (repo, "pinned_safetensors_local_image_wrapper"),
         "seal": (
             "MahmoodLab/SEAL",
             "pinned_adapter_file",
@@ -296,6 +320,7 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
             "construction_package_revision": MUSK_PACKAGE_REVISION,
         },
         "open_clip": {"entrypoint": "open_clip.create_model_from_pretrained"},
+        "keep": deepcopy(KEEP_CONSTRUCTOR_CONTRACT),
         "seal": {
             "entrypoint": "seal.models.load_model.ModelMixin.get_img_model",
             "parameters": deepcopy(SEAL_CONSTRUCTOR_CONTRACT),

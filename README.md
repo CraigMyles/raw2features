@@ -12,7 +12,7 @@ independently swappable.
 from cloud storage, and each embedding carries the metadata needed to interpret and reuse it.
 
 By analogy to `bioformats2raw` and `raw2ometiff`, but for features: point it at a raw OME-Zarr WSI,
-choose from 30+ feature extractors (UNI/UNI2, Virchow/Virchow2, CONCH,
+choose from 30+ feature extractors (UNI/UNI2, Virchow/Virchow2, CONCH, KEEP,
 GigaPath, H-optimus, Phikon, CTransPath, …; full list in [MODELS.md](docs/MODELS.md)),
 and get back a compact, self-describing `*.embeddings.zarr` with per-patch
 coordinates such that every embedding is relocatable to the slide.

@@ -75,6 +75,7 @@ kronos = "raw2features.embedders.kronos_embedder:KronosEmbedder"
 musk = "raw2features.embedders.musk_embedder:MuskEmbedder"
 open_clip = "raw2features.embedders.open_clip_embedder:OpenClipEmbedder"
 clip_hf = "raw2features.embedders.clip_hf_embedder:ClipHFEmbedder"
+keep = "raw2features.embedders.keep_embedder:KEEPEmbedder"
 seal = "raw2features.embedders.seal_embedder:SealEmbedder"
 
 [project.entry-points."raw2features.sinks"]
@@ -108,6 +109,9 @@ stain = ["scikit-learn>=1.3"]
 # Foundation-model inference.
 torch = ["torch>=2.2", "torchvision>=0.17"]
 models = ["timm>=1.0", "huggingface-hub>=0.24", "einops>=0.7", "transformers>=4.40",
+    # KEEP is loaded image-only from its verified safe artifact; declare the reader
+    # directly instead of relying on transformers' transitive dependency.
+    "safetensors>=0.4",
     # einops-exts: required by the gated TITAN repo's trust_remote_code modeling, which
     # backs conch_v1_5 (return_conch) and the titan slide encoder - without it they raise
     # ImportError at load. Tiny + pure-python; verified needed by the real-weights forward.

@@ -52,6 +52,7 @@ read and decide on. raw2features makes no commercial-use determination.
 | `quiltnet` | open_clip | 512 | 224 | 0.5 | conv. | MIT | no | [HF](https://huggingface.co/wisdomik/QuiltNet-B-32) · [GH](https://github.com/wisdomikezogwo/quilt1m) · [paper](https://arxiv.org/abs/2306.11207) |
 | `biomedclip` | open_clip | 512 | 224 | 0.5 | conv. | MIT ¹⁴ | no | [HF](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) · [paper](https://arxiv.org/abs/2303.00915) |
 | `plip` | clip_hf | 512 | 224 | 0.5 | conv. | MIT ¹⁵ | no | [HF](https://huggingface.co/vinid/plip) · [GH](https://github.com/PathologyFoundation/plip) · [paper](https://doi.org/10.1038/s41591-023-02504-3) |
+| `keep` | keep | 768 | 224 | - | unspec. ¹⁶ | MIT | no | [HF](https://huggingface.co/Astaxanthin/KEEP) · [GH](https://github.com/MAGIC-AI4Med/KEEP) · [paper](https://doi.org/10.1016/j.ccell.2026.01.019) |
 | `seal_conch` ⚠ | seal | 512 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
 | `seal_univ2` ⚠ | seal | 1536 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
 | `kronos` | kronos | 384 | 224 | -¹² | n/a | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/KRONOS) · [GH](https://github.com/mahmoodlab/KRONOS) · [paper](https://arxiv.org/abs/2506.03373) |
@@ -118,14 +119,18 @@ your torch/ABI.
 
 - **dim** - embedding dimension. **px** - the input tile size after our transform
   (`input_size`); field of view = `px × µm/px`.
-- **µm/px** - the physical scale raw2features extracts at by default when you omit
-  `--mpp` (it resamples every slide to this). `-` = scale-agnostic, no default.
+- **µm/px** - the model-specific physical scale raw2features extracts at when you omit
+  `--mpp` (it resamples every slide to this). `-` = no author-sourced model default;
+  raw2features uses its 1.0 µm/px fallback unless another requested model or `--mpp`
+  supplies the scale.
 - **basis** - how that default is grounded, so you can see assumption vs. certainty:
   - **stated** - a primary source (card, repo config, or paper) prints a µm/px figure.
   - **mag→** - only a *magnification* is stated; `0.5` is the conventional 20×→µm/px
     conversion, not a printed µm/px value.
   - **conv.** - neither µm/px nor magnification is stated for the model; pure field
     convention.
+  - **unspec.** - the pathology model's primary sources state no scale; unlike
+    **conv.**, raw2features does not assign a pathology-field convention.
   - **n/a** - scale-agnostic baseline, or multiplex (no single µm/px).
 - **license** - the model's exact *weights* licence (SPDX id or precise name). Read its
   terms to decide what your use permits; we make no such call. Footnoted rows are where the
@@ -175,6 +180,10 @@ your torch/ABI.
 15. `plip` - its MIT licence is declared only in the project `setup.py` (no `LICENSE` file or
     HF YAML `license` field); confirm before relying on it. Loads via transformers
     `CLIPModel.get_image_features` (the `clip_hf` family), distinct from the `open_clip` pair.
+16. `keep` - the authors specify ViT-L/16, 224 px, bicubic interpolation, and ImageNet
+    normalisation, but neither µm/px nor magnification. The registry therefore leaves
+    `recommended_mpp` unset; choose `--mpp` explicitly for a pathology protocol. The
+    output is the official 768-d projected, L2-normalised image feature.
 
 ## Scale: the µm/px default
 
@@ -196,9 +205,11 @@ disagree stops the run and asks you to pick one.
 > the default and extracts at exactly that**, resampling every slide to one comparable
 > physical scale regardless of what its "20×" happens to mean.
 
-`resnet50` and `dinov2` are ImageNet baselines and scale-agnostic (no default, no warning):
-they fall back to **1.0 µm/px** unless run alongside a foundation model (then they share its
-scale) or given an explicit `--mpp`.
+`resnet50` and `dinov2` are ImageNet baselines and scale-agnostic. `keep` is different:
+it is pathology-specific, but its authors publish no physical scale. All three have no
+model-specific MPP in the registry and therefore fall back to **1.0 µm/px** unless run
+alongside a model that supplies one or given an explicit `--mpp`; for KEEP, explicitly
+choosing the protocol's MPP is recommended.
 
 > **Adding a model - preprocessing caveat.** Source mean/std from the authors' actual usage
 > code, not a model's timm `pretrained_cfg` field: that field can be an un-overridden
@@ -220,6 +231,9 @@ scale) or given an explicit `--mpp`.
   models' remote code imports the removed `transformers.onnx`. Validated under that extra;
   available but not validated on transformers 5.
 - `musk` - needs the `[musk]` extra; run at `--patch-size 384`.
+- `keep` - included in `[models]`. Its local image-only wrapper reads the pinned,
+  SHA-256-verified safetensors file and does not execute the repository's remote code or
+  construct its unused BERT text tower.
 - `kronos` - needs the `[kronos]` extra; multiplex only (see `MODALITIES.md`).
 - `ctranspath` - custom `ConvStem` patch-embed (`embedders/convstem.py`), loaded via the
   1aurent modern-timm mirror (no pinned timm fork needed).

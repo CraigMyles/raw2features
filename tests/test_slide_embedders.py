@@ -155,7 +155,8 @@ def test_patch_registry_ignores_slide_encoders_section():
         "ctranspath", "hibou_l", "hibou_b", "kronos", "phikon", "phikon_v2",
         "lunit_dino", "lunit_dino8", "lunit_bt", "lunit_mocov2", "lunit_swav",
         "sp22m", "retccl", "hipt", "h_optimus_1", "virchow", "musk", "mstar",
-        "kaiko_vitl", "quiltnet", "biomedclip", "plip", "seal_conch", "seal_univ2",
+        "kaiko_vitl", "quiltnet", "biomedclip", "plip", "keep",
+        "seal_conch", "seal_univ2",
     }
 
 

@@ -33,7 +33,7 @@ read and decide on. raw2features makes no commercial-use determination.
 | `h_optimus_1` | timm | 1536 | 224 | 0.5 | stated | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/bioptimus/H-optimus-1) |
 | `gpfm` | timm | 1024 | 224 | 0.5⁶ | mag→ | MIT / CC-BY-NC-ND-4.0 ⁷ | no | [HF](https://huggingface.co/majiabo/GPFM) · [GH](https://github.com/birkhoffkiki/GPFM) · [paper](https://doi.org/10.1038/s41551-025-01488-4) |
 | `midnight` | transformers | 3072 | 224 | 0.5² | stated | MIT | no | [HF](https://huggingface.co/kaiko-ai/midnight) · [GH](https://github.com/kaiko-ai/Midnight) · [paper](https://arxiv.org/abs/2504.05186) |
-| `openmidnight` | dino_teacher | 1536 | 224 | - | n/a | Apache-2.0 | yes | [HF](https://huggingface.co/SophontAI/OpenMidnight) · [GH](https://github.com/MedARC-AI/OpenMidnight) |
+| `openmidnight` | dino_teacher | 1536 | 224 | - | unspec. | Apache-2.0 | yes | [HF](https://huggingface.co/SophontAI/OpenMidnight) · [GH](https://github.com/MedARC-AI/OpenMidnight) |
 | `openpath` | dino_teacher | 1536 | 224 | 0.5 | stated | Apache-2.0 | no | [HF](https://huggingface.co/taejoon89/openpath) · [GH](https://github.com/taejoon89/openpath) |
 | `phikon` | transformers | 768 | 224 | 0.5 | stated | Owkin NC ⁸ | no | [HF](https://huggingface.co/owkin/phikon) · [GH](https://github.com/owkin/HistoSSLscaling) · [paper](https://doi.org/10.1101/2023.07.21.23292757) |
 | `phikon_v2` | transformers | 1024 | 224 | 0.5 | stated | Owkin NC ⁸ | no | [HF](https://huggingface.co/owkin/phikon-v2) · [GH](https://github.com/owkin/HistoSSLscaling) · [paper](https://arxiv.org/abs/2409.09173) |
@@ -207,11 +207,11 @@ disagree stops the run and asks you to pick one.
 > the default and extracts at exactly that**, resampling every slide to one comparable
 > physical scale regardless of what its "20×" happens to mean.
 
-`resnet50` and `dinov2` are ImageNet baselines and scale-agnostic. `keep` is different:
-it is pathology-specific, but its authors publish no physical scale. All three have no
-model-specific MPP in the registry and therefore fall back to **1.0 µm/px** unless run
-alongside a model that supplies one or given an explicit `--mpp`; for KEEP, explicitly
-choosing the protocol's MPP is recommended.
+`resnet50` and `dinov2` are ImageNet baselines and scale-agnostic. `keep` and
+`openmidnight` are different: they are pathology-specific, but their authors publish no
+physical scale. All four have no model-specific MPP in the registry and therefore fall
+back to **1.0 µm/px** unless run alongside a model that supplies one or given an explicit
+`--mpp`; for KEEP and OpenMidnight, explicitly choosing the protocol's MPP is recommended.
 
 > **Adding a model - preprocessing caveat.** Source mean/std from the authors' actual usage
 > code, not a model's timm `pretrained_cfg` field: that field can be an un-overridden

@@ -19,8 +19,11 @@ table below lists each model's weights licence.
 | `dinov2` | Apache-2.0 | no |
 | `gigapath` | Apache-2.0 | yes (login) |
 | `h_optimus_0` | Apache-2.0 | yes (login) |
+| `h0_mini` | CC-BY-NC-ND-4.0 | yes (approval) |
 | `gpfm` | MIT (HF metadata) / CC-BY-NC-ND-4.0 (repo `LICENSE`) - conflict, verify | no |
 | `midnight` | MIT | no |
+| `openmidnight` | Apache-2.0 | yes (terms acceptance) |
+| `openpath` | Apache-2.0 | no |
 | `hibou_l` | Apache-2.0 | yes |
 | `hibou_b` | Apache-2.0 | yes |
 | `ctranspath` | GPL-3.0 | no |
@@ -45,6 +48,7 @@ table below lists each model's weights licence.
 | `quiltnet` | MIT | no |
 | `biomedclip` | MIT | no |
 | `plip` | MIT (project `setup.py`; no LICENSE file) | no |
+| `keep` | MIT | no |
 | `kronos` | CC-BY-NC-ND-4.0 (KRONOS, MahmoodLab; multiplex, non-commercial) | yes |
 
 ## Slide encoders

@@ -10,9 +10,9 @@ duck-types on which the loaded model provides:
 
 ``transformers`` is already in the ``[models]`` extra; the import is still deferred to
 :meth:`load` so the entry-point loader skips cleanly when it is absent.
-``trust_remote_code`` is enabled so a model with custom modeling code loads (a no-op for
-PLIP's vanilla CLIP config). (KEEP fits the ``encode_image`` path but is currently
-blocked by a timm-version clash in its remote code - see registry.yaml.)
+``trust_remote_code`` is enabled so a model with custom modeling code can load (a no-op
+for PLIP's vanilla CLIP config). KEEP deliberately does not use this family: its
+image-only path has a separate pinned, local, no-remote-code loader.
 """
 
 from __future__ import annotations
@@ -31,8 +31,7 @@ if TYPE_CHECKING:  # pragma: no cover
 class ClipHFEmbedder(Embedder):
     """A transformers CLIP-style image tower; ``-> (B, embedding_dim)``.
 
-    ``spec.source`` is the Hugging Face repo id (e.g. ``vinid/plip``,
-    ``Astaxanthin/KEEP``).
+    ``spec.source`` is the Hugging Face repo id (e.g. ``vinid/plip``).
     """
 
     def load(
@@ -47,7 +46,7 @@ class ClipHFEmbedder(Embedder):
             from transformers import AutoModel
         except ImportError as exc:  # pragma: no cover - only without the extra
             raise ImportError(
-                'clip_hf models (plip, keep) need transformers: '
+                "clip_hf models (for example plip) need transformers: "
                 'pip install "raw2features[models]"'
             ) from exc
 
@@ -69,7 +68,7 @@ class ClipHFEmbedder(Embedder):
         model = self._model
         x = batch.to(self._device)
         with _forward_ctx(self._device, self._dtype):
-            if hasattr(model, "encode_image"):  # KEEP (L2-normalised projection)
+            if hasattr(model, "encode_image"):
                 out = model.encode_image(x)
             else:  # transformers CLIPModel (PLIP)
                 out = model.get_image_features(pixel_values=x)

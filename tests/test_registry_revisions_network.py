@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import re
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import pytest
@@ -28,6 +29,7 @@ from raw2features.embedders.seal_embedder import _SEAL_REPO
 from raw2features.slide_embedders.model_registry import load_slide_registry
 
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,15 @@ class _HubPin:
     repo: str
     revision: str
     entries: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _HubArtifactPin:
+    name: str
+    repo: str
+    revision: str
+    filename: str
+    sha256: str
 
 
 def _hf_repo(spec) -> str | None:
@@ -98,6 +109,33 @@ _HF_PINS = _registry_hf_pins()
 assert _HF_PINS, "expected at least one Hugging Face registry pin"
 
 
+def _new_model_artifact_pins() -> list[_HubArtifactPin]:
+    registry = load_registry()
+    pins: list[_HubArtifactPin] = []
+    for name in ("h0_mini", "keep", "openmidnight", "openpath"):
+        spec = registry[name]
+        repo = _hf_repo(spec)
+        assert repo is not None, (
+            f"patch:{name} must resolve to a Hugging Face repository"
+        )
+        assert spec.weights_revision is not None
+        assert spec.weights_filename is not None
+        assert spec.weights_sha256 is not None
+        pins.append(
+            _HubArtifactPin(
+                name=name,
+                repo=repo,
+                revision=str(spec.weights_revision),
+                filename=str(spec.weights_filename),
+                sha256=str(spec.weights_sha256),
+            )
+        )
+    return pins
+
+
+_NEW_MODEL_ARTIFACT_PINS = _new_model_artifact_pins()
+
+
 @pytest.mark.network
 @pytest.mark.parametrize(
     "pin",
@@ -121,6 +159,63 @@ def test_huggingface_registry_revision_resolves(pin: _HubPin):
     )
     assert info.sha == pin.revision, (
         f"{label}: {pin.repo}@{pin.revision} resolved to {info.sha!r}"
+    )
+
+
+@pytest.mark.network
+@pytest.mark.parametrize(
+    "pin",
+    _NEW_MODEL_ARTIFACT_PINS,
+    ids=lambda pin: pin.name,
+)
+def test_new_model_artifact_checksum_matches_huggingface_metadata(pin: _HubArtifactPin):
+    """The new multi-GB checkpoints match their recorded Hub LFS digests."""
+
+    assert _FULL_COMMIT.fullmatch(pin.revision), (
+        f"patch:{pin.name}: weights_revision must be a full commit"
+    )
+    assert _SHA256.fullmatch(pin.sha256), (
+        f"patch:{pin.name}: weights_sha256 must be a lowercase SHA-256 digest"
+    )
+    huggingface_hub = pytest.importorskip(
+        "huggingface_hub", reason="install raw2features[models] for live pin validation"
+    )
+    info = huggingface_hub.HfApi().model_info(
+        repo_id=pin.repo,
+        revision=pin.revision,
+        timeout=15,
+        files_metadata=True,
+        token=os.environ.get("HF_TOKEN") or False,
+    )
+    matches = [
+        sibling
+        for sibling in (info.siblings or ())
+        if sibling.rfilename == pin.filename
+    ]
+    assert matches, (
+        f"patch:{pin.name}: {pin.filename!r} is missing from "
+        f"{pin.repo}@{pin.revision}"
+    )
+    assert len(matches) == 1, (
+        f"patch:{pin.name}: expected one metadata entry for {pin.filename!r}, "
+        f"found {len(matches)}"
+    )
+
+    lfs = matches[0].lfs
+    assert lfs is not None, (
+        f"patch:{pin.name}: {pin.filename!r} has no Git LFS metadata; "
+        "cannot validate its SHA-256 without downloading the checkpoint"
+    )
+    metadata_sha256 = (
+        lfs.get("sha256") if isinstance(lfs, Mapping) else getattr(lfs, "sha256", None)
+    )
+    assert isinstance(metadata_sha256, str) and _SHA256.fullmatch(metadata_sha256), (
+        f"patch:{pin.name}: {pin.filename!r} has invalid or missing SHA-256 "
+        f"in its Git LFS metadata: {metadata_sha256!r}"
+    )
+    assert metadata_sha256 == pin.sha256, (
+        f"patch:{pin.name}: registry SHA-256 {pin.sha256} does not match "
+        f"{pin.repo}@{pin.revision}/{pin.filename} metadata {metadata_sha256}"
     )
 
 

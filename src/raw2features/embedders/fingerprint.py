@@ -53,6 +53,29 @@ SEAL_CONSTRUCTOR_CONTRACT: dict[str, Any] = {
     "n_train_genes": 2000,
 }
 
+# KEEP's published HF wrapper is small but uses mutable remote code and globally
+# monkey-patches timm's LayerScale. The local loader consumes this frozen contract
+# directly and the output fingerprint records it, so a constructor change cannot be
+# mistaken for the same model output.
+KEEP_CONSTRUCTOR_CONTRACT: dict[str, Any] = {
+    "entrypoint": "raw2features.embedders.keep_embedder.KEEPEmbedder",
+    "architecture": "vit_large_patch16_224",
+    "create_model": {
+        "pretrained": False,
+        "img_size": 224,
+        "patch_size": 16,
+        "init_values": 1e-5,
+        "num_classes": 0,
+    },
+    "vision_width": 1024,
+    "projection_dim": 768,
+    "projection": "Linear(1024,768)-GELU-Linear(768,768)",
+    "normalization": "torch.nn.functional.normalize(dim=-1)",
+    "layer_scale_parameter": "weight",
+    "checkpoint_format": "safetensors_image_keys_only",
+    "trust_remote_code": False,
+}
+
 SEAL_FORK_REVISION = "5334490645e8410e7d8ef6978cebc4fd98f9cf9a"
 CONCH_PACKAGE_REVISION = "141cc09c7d4ff33d8eda562bd75169b457f71a62"
 KRONOS_PACKAGE_REVISION = "48979362386c8440c934954be3d88ccfa74d6f36"
@@ -61,6 +84,58 @@ GIGAPATH_PACKAGE_REVISION = "3505f87e197d167522be491bb3f18fb5a08ca584"
 MADELEINE_PACKAGE_REVISION = "419287dc60a57296d959840b893481019c4f0d21"
 BIOMEDCLIP_TEXT_REPO = "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract"
 BIOMEDCLIP_TEXT_REVISION = "d673b8835373c6fa116d6d8006b33d48734e305d"
+
+# Shared by the OpenMidnight/OpenPath loader and output fingerprints. Both author
+# checkpoints are DINOv2 ViT-g/14 with four register tokens and produce the
+# normalized 1536-d CLS token. The loader consumes this exact object too, so changing
+# construction or checkpoint conversion invalidates existing output arrays.
+DINO_TEACHER_CONSTRUCTOR_CONTRACT: dict[str, Any] = {
+    "entrypoint": "timm.create_model",
+    "architecture": "vit_giant_patch14_reg4_dinov2",
+    "input_size": 224,
+    "patch_size": [14, 14],
+    "embedding_dim": 1536,
+    "depth": 40,
+    "num_heads": 24,
+    "register_tokens": 4,
+    # timm exposes SwiGLUPacked as a functools.partial that constructs GluMlp.
+    # Record the concrete module and its observable semantics rather than the
+    # partial's conceptual name: SiLU(first half) * second half, followed by a
+    # 4096-wide projection with no norm or dropout.
+    "ffn": {
+        "implementation": "timm.layers.mlp.GluMlp",
+        "activation": "torch.nn.modules.activation.SiLU",
+        "gate_last": False,
+        "chunk_dim": -1,
+        "fc1": {
+            "implementation": "torch.nn.modules.linear.Linear",
+            "in_features": 1536,
+            "out_features": 8192,
+            "bias": True,
+        },
+        "norm": "torch.nn.modules.linear.Identity",
+        "fc2": {
+            "implementation": "torch.nn.modules.linear.Linear",
+            "in_features": 4096,
+            "out_features": 1536,
+            "bias": True,
+        },
+        "drop1": {
+            "implementation": "torch.nn.modules.dropout.Dropout",
+            "p": 0.0,
+        },
+        "drop2": {
+            "implementation": "torch.nn.modules.dropout.Dropout",
+            "p": 0.0,
+        },
+    },
+    "no_embed_class": True,
+    "global_pool": "token",
+    "pretrained": False,
+    "checkpoint_conversion": "official_dinov2_to_timm_v1",
+    "strict_state_dict": True,
+    "remote_code": False,
+}
 
 
 def _canonical_json(value: Any) -> str:
@@ -181,6 +256,7 @@ def _effective_patch_checkpoint(spec: ModelSpec) -> dict[str, Any]:
         "kronos": (repo, "pinned_local_file"),
         "musk": (repo, "pinned_local_file"),
         "open_clip": (repo, "pinned_local_snapshot"),
+        "keep": (repo, "pinned_safetensors_local_image_wrapper"),
         "seal": (
             "MahmoodLab/SEAL",
             "pinned_adapter_file",
@@ -296,6 +372,8 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
             "construction_package_revision": MUSK_PACKAGE_REVISION,
         },
         "open_clip": {"entrypoint": "open_clip.create_model_from_pretrained"},
+        "keep": deepcopy(KEEP_CONSTRUCTOR_CONTRACT),
+        "dino_teacher": deepcopy(DINO_TEACHER_CONSTRUCTOR_CONTRACT),
         "seal": {
             "entrypoint": "seal.models.load_model.ModelMixin.get_img_model",
             "parameters": deepcopy(SEAL_CONSTRUCTOR_CONTRACT),

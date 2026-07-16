@@ -322,6 +322,46 @@ h_optimus_0:
     ImageNet) and resolved from pretrained_cfg at load. Apache-2.0 weights -> its
     embeddings are unrestricted.
 
+h0_mini:
+  family: timm
+  source: "hf-hub:bioptimus/H0-mini"
+  recommended_mpp: 0.5   # paper trains on 224px tiles at 20x; 0.5 is the magnification-to-MPP convention
+  embedding_dim: 768
+  input_size: 224
+  pooling: cls             # card recommends output[:, 0] -> [B,768]
+  reg_tokens: 4            # pinned config: vit_base_patch14_reg4_dinov2
+  # The pinned config supplies these model-specific statistics through
+  # pretrained_cfg; assert the registry copy against the loaded artifact.
+  transform_source: pretrained_cfg
+  mean: [0.707223, 0.578729, 0.703617]
+  std: [0.211883, 0.230117, 0.177517]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/bioptimus/H0-mini"
+  weights_sha256: "5e4de45a6527a8160f7c21fe3105c987757efe30ce581e1f2cf5809476069ade"
+  weights_filename: "model.safetensors"
+  weights_revision: "5b5cc0505d19ae558270045eb0df8c34df4d9609"
+  doi: "10.1007/978-3-032-04981-0_16"
+  license: "CC-BY-NC-ND-4.0 (H0-mini, Bioptimus/Owkin; non-commercial academic research)"
+  gated: true
+  inference_amp: fp16      # card uses torch.autocast(dtype=torch.float16)
+  # Effective model_args copied from the pinned config so the output fingerprint
+  # binds the complete timm constructor, not only the two card-supplied callables.
+  timm_kwargs:
+    img_size: 224
+    init_values: 1.0e-5
+    num_classes: 0
+    reg_tokens: 4
+    mlp_ratio: 5.33334
+    global_pool: ""
+    dynamic_img_size: true
+    mlp_layer: "timm.layers.SwiGLUPacked"
+    act_layer: "torch.nn.SiLU"
+  notes: >-
+    Bioptimus/Owkin H0-mini, an 86M-parameter ViT-B/14 distilled from H-optimus-0.
+    The card's forward returns [B,261,768] (CLS + 4 registers + 256 patch tokens) and
+    recommends the 768-d CLS token for downstream tasks. The optional 1536-d
+    CLS+mean-patch representation is deliberately not used. Gated, non-commercial.
+
 h_optimus_1:
   family: timm
   source: "hf-hub:bioptimus/H-optimus-1"
@@ -413,6 +453,72 @@ midnight:
     concat(CLS, mean of patch tokens) = 3072-d, the card's recommended classification
     representation (no register tokens). mean/std 0.5 at 224 px. MIT + not gated -> its
     embeddings are unrestricted.
+
+openmidnight:
+  family: dino_teacher
+  source: "hf-hub:SophontAI/OpenMidnight"
+  # No recommended_mpp: the authors document 224 px patches but no physical scale.
+  embedding_dim: 1536
+  input_size: 224
+  pooling: cls
+  reg_tokens: 4
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://huggingface.co/SophontAI/OpenMidnight"
+  weights_sha256: "b57121fc10e2b04c9e85514fa5e4c23b75329301e05bfc756c3bca57312505be"
+  weights_filename: "teacher_checkpoint_load.pt"
+  weights_revision: "87189e6674d397a14a5cd342c97b1a1615a185aa"
+  license: "Apache-2.0 (OpenMidnight, SophontAI)"
+  gated: true
+  inference_amp: fp32
+  checkpoint:
+    repo: "SophontAI/OpenMidnight"
+    filename: "teacher_checkpoint_load.pt"
+  notes: >-
+    SophontAI OpenMidnight, an open DINOv2 ViT-g/14-reg4 pathology teacher trained
+    on TCGA. The official inference checkpoint is a direct backbone state_dict;
+    raw2features downloads it at the immutable HF revision, verifies its SHA-256
+    before deserialisation, converts the documented DINOv2 names to the equivalent
+    local timm architecture, and loads strictly. Output is the normalized 1536-d CLS
+    token at 224 px with ImageNet normalization. The authors do not state a physical
+    patch scale, so raw2features deliberately records no recommended_mpp. Apache-2.0
+    weights; HF access currently requires accepting the repository terms.
+
+openpath:
+  family: dino_teacher
+  source: "hf-hub:taejoon89/openpath"
+  recommended_mpp: 0.5
+  embedding_dim: 1536
+  input_size: 224
+  pooling: cls
+  reg_tokens: 4
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bilinear
+  transform_source_url: "https://huggingface.co/taejoon89/openpath"
+  weights_sha256: "1b389360b4867b5159ce7534ff231f51e87d3cf140daa4b37483d0a178af3da3"
+  weights_filename: "teacher_checkpoint.pth"
+  weights_revision: "22b339237195931eb56ea6c86653362edd2dd155"
+  license: "Apache-2.0 (OpenPath, Tae Joon Jun)"
+  gated: false
+  inference_amp: fp32
+  checkpoint:
+    repo: "taejoon89/openpath"
+    filename: "teacher_checkpoint.pth"
+    state_dict_key: "teacher"
+    state_dict_prefix: "backbone."
+    flatten_block_chunks: true
+  notes: >-
+    OpenPath, a public-data DINOv2 ViT-g/14-reg4 pathology encoder with gram
+    anchoring. The released training_316250 teacher checkpoint is selected by the
+    authors' leakage-controlled AMC-HCC-ST evaluation. Its nested teacher backbone
+    uses four BlockChunks; raw2features extracts only backbone.*, deterministically
+    flattens the global block indices, verifies the pinned checkpoint SHA-256 before
+    deserialisation, and loads the equivalent local timm architecture strictly.
+    Output is the normalized 1536-d CLS token for 224 px H&E tiles at the author's
+    stated native ~40x / 0.5 um-per-pixel regime, with ImageNet normalization.
+    Apache-2.0 and ungated.
 
 phikon:
   family: transformers
@@ -1033,12 +1139,35 @@ seal_univ2:
     load path as seal_conch (frozen UNI2-h base + LoRA merge); needs the [seal] extra + accepted
     MahmoodLab/SEAL + MahmoodLab/UNI2-h gates. v0.0.1.
 
-# KEEP (Astaxanthin/KEEP) is not currently supported: its trust_remote_code modeling_keep.py
-# subclasses timm's LayerScale as `RenameLayerScale` with a fixed __init__ signature, but current
-# timm passes device/dtype kwargs to it -> `TypeError: ... unexpected keyword argument 'device'`.
-# It was written against an older timm, and pinning timm older would break uni2_h/virchow2. It can
-# be enabled once KEEP's remote code is updated (the `clip_hf` family already supports its
-# encode_image path).
+keep:
+  family: keep
+  source: "hf-hub:Astaxanthin/KEEP"
+  # The authors publish neither microns-per-pixel nor magnification for the image
+  # encoder. Leave scale unspecified rather than inventing a 0.5 µm/px convention.
+  embedding_dim: 768
+  input_size: 224
+  pooling: pooled          # local wrapper returns the projected, L2-normalised vector
+  mean: [0.485, 0.456, 0.406]   # official model-card inference transform
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/Astaxanthin/KEEP/tree/28a25d95cc6ba27a7e6fab3f144e13dbafd8b21e"
+  weights_sha256: "82f610d5359aca67b5fd5d841009f26db430ae78d0693743589c0a727b0a146d"   # model.safetensors
+  weights_filename: "model.safetensors"
+  weights_revision: "28a25d95cc6ba27a7e6fab3f144e13dbafd8b21e"
+  doi: "10.1016/j.ccell.2026.01.019"
+  license: "MIT (KEEP, MAGIC-AI4Med)"
+  gated: false
+  inference_amp: fp32
+  notes: >-
+    KEEP (Zhou et al., Cancer Cell 2026) -- ViT-L/16 vision-language pathology model;
+    raw2features exposes the official 768-d projected, L2-normalised image embedding.
+    The pinned upstream wrapper globally monkey-patches timm and is incompatible with
+    current timm, so the `keep` family locally reconstructs only its documented visual
+    tower + projection head, gives LayerScale the checkpoint's `weight` key without a
+    process-wide patch, and strictly loads only visual.* / visual_head.* tensors from the
+    SHA-256-verified safetensors artifact. No trust_remote_code and no pickle. ImageNet
+    normalisation @ 224 px comes from the pinned model card; no MPP is claimed by the
+    authors, so callers should choose --mpp for their protocol.
 
 # ---------------------------------------------------------------------------
 # Slide-level encoders

@@ -79,6 +79,7 @@ def test_amp_auto_is_default_and_resolves_per_model():
     # (exercises the non-trivial per-model branch, not just the fp32 default).
     assert _resolve_amp(cfg, get_spec("virchow2")) == "fp16"
     assert _resolve_amp(cfg, get_spec("h_optimus_0")) == "fp16"
+    assert _resolve_amp(cfg, get_spec("h0_mini")) == "fp16"
     # an explicit --amp overrides the per-model card precision
     assert (
         _resolve_amp(RunConfig(models=["uni"], amp="bf16"), get_spec("uni")) == "bf16"

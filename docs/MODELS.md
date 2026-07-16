@@ -29,9 +29,12 @@ read and decide on. raw2features makes no commercial-use determination.
 | `conch` | conch | 512 | 448 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/CONCH) · [GH](https://github.com/mahmoodlab/CONCH) · [paper](https://doi.org/10.1038/s41591-024-02856-4) |
 | `conch_v1_5` | conch_v1_5 | 768 | 448⁵ | 0.5 | mag→ | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/conchv1_5) · [GH](https://github.com/mahmoodlab/TITAN) · [paper](https://arxiv.org/abs/2411.19666) |
 | `h_optimus_0` | timm | 1536 | 224 | 0.5 | stated | Apache-2.0 | yes | [HF](https://huggingface.co/bioptimus/H-optimus-0) · [GH](https://github.com/bioptimus/releases) |
+| `h0_mini` | timm | 768 | 224 | 0.5 | mag→ | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/bioptimus/H0-mini) · [paper](https://doi.org/10.1007/978-3-032-04981-0_16) |
 | `h_optimus_1` | timm | 1536 | 224 | 0.5 | stated | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/bioptimus/H-optimus-1) |
 | `gpfm` | timm | 1024 | 224 | 0.5⁶ | mag→ | MIT / CC-BY-NC-ND-4.0 ⁷ | no | [HF](https://huggingface.co/majiabo/GPFM) · [GH](https://github.com/birkhoffkiki/GPFM) · [paper](https://doi.org/10.1038/s41551-025-01488-4) |
 | `midnight` | transformers | 3072 | 224 | 0.5² | stated | MIT | no | [HF](https://huggingface.co/kaiko-ai/midnight) · [GH](https://github.com/kaiko-ai/Midnight) · [paper](https://arxiv.org/abs/2504.05186) |
+| `openmidnight` | dino_teacher | 1536 | 224 | - | unspec. | Apache-2.0 | yes | [HF](https://huggingface.co/SophontAI/OpenMidnight) · [GH](https://github.com/MedARC-AI/OpenMidnight) |
+| `openpath` | dino_teacher | 1536 | 224 | 0.5 | stated | Apache-2.0 | no | [HF](https://huggingface.co/taejoon89/openpath) · [GH](https://github.com/taejoon89/openpath) |
 | `phikon` | transformers | 768 | 224 | 0.5 | stated | Owkin NC ⁸ | no | [HF](https://huggingface.co/owkin/phikon) · [GH](https://github.com/owkin/HistoSSLscaling) · [paper](https://doi.org/10.1101/2023.07.21.23292757) |
 | `phikon_v2` | transformers | 1024 | 224 | 0.5 | stated | Owkin NC ⁸ | no | [HF](https://huggingface.co/owkin/phikon-v2) · [GH](https://github.com/owkin/HistoSSLscaling) · [paper](https://arxiv.org/abs/2409.09173) |
 | `lunit_dino` | timm | 384 | 224 | 0.5² | stated | Lunit NC ⁹ | no | [HF](https://huggingface.co/1aurent/vit_small_patch16_224.lunit_dino) · [GH](https://github.com/lunit-io/benchmark-ssl-pathology) · [paper](https://arxiv.org/abs/2212.04690) |
@@ -51,6 +54,7 @@ read and decide on. raw2features makes no commercial-use determination.
 | `quiltnet` | open_clip | 512 | 224 | 0.5 | conv. | MIT | no | [HF](https://huggingface.co/wisdomik/QuiltNet-B-32) · [GH](https://github.com/wisdomikezogwo/quilt1m) · [paper](https://arxiv.org/abs/2306.11207) |
 | `biomedclip` | open_clip | 512 | 224 | 0.5 | conv. | MIT ¹⁴ | no | [HF](https://huggingface.co/microsoft/BiomedCLIP-PubMedBERT_256-vit_base_patch16_224) · [paper](https://arxiv.org/abs/2303.00915) |
 | `plip` | clip_hf | 512 | 224 | 0.5 | conv. | MIT ¹⁵ | no | [HF](https://huggingface.co/vinid/plip) · [GH](https://github.com/PathologyFoundation/plip) · [paper](https://doi.org/10.1038/s41591-023-02504-3) |
+| `keep` | keep | 768 | 224 | - | unspec. ¹⁶ | MIT | no | [HF](https://huggingface.co/Astaxanthin/KEEP) · [GH](https://github.com/MAGIC-AI4Med/KEEP) · [paper](https://doi.org/10.1016/j.ccell.2026.01.019) |
 | `seal_conch` ⚠ | seal | 512 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
 | `seal_univ2` ⚠ | seal | 1536 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
 | `kronos` | kronos | 384 | 224 | -¹² | n/a | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/KRONOS) · [GH](https://github.com/mahmoodlab/KRONOS) · [paper](https://arxiv.org/abs/2506.03373) |
@@ -117,14 +121,18 @@ your torch/ABI.
 
 - **dim** - embedding dimension. **px** - the input tile size after our transform
   (`input_size`); field of view = `px × µm/px`.
-- **µm/px** - the physical scale raw2features extracts at by default when you omit
-  `--mpp` (it resamples every slide to this). `-` = scale-agnostic, no default.
+- **µm/px** - the model-specific physical scale raw2features extracts at when you omit
+  `--mpp` (it resamples every slide to this). `-` = no author-sourced model default;
+  raw2features uses its 1.0 µm/px fallback unless another requested model or `--mpp`
+  supplies the scale.
 - **basis** - how that default is grounded, so you can see assumption vs. certainty:
   - **stated** - a primary source (card, repo config, or paper) prints a µm/px figure.
   - **mag→** - only a *magnification* is stated; `0.5` is the conventional 20×→µm/px
     conversion, not a printed µm/px value.
   - **conv.** - neither µm/px nor magnification is stated for the model; pure field
     convention.
+  - **unspec.** - the pathology model's primary sources state no scale; unlike
+    **conv.**, raw2features does not assign a pathology-field convention.
   - **n/a** - scale-agnostic baseline, or multiplex (no single µm/px).
 - **license** - the model's exact *weights* licence (SPDX id or precise name). Read its
   terms to decide what your use permits; we make no such call. Footnoted rows are where the
@@ -174,6 +182,10 @@ your torch/ABI.
 15. `plip` - its MIT licence is declared only in the project `setup.py` (no `LICENSE` file or
     HF YAML `license` field); confirm before relying on it. Loads via transformers
     `CLIPModel.get_image_features` (the `clip_hf` family), distinct from the `open_clip` pair.
+16. `keep` - the authors specify ViT-L/16, 224 px, bicubic interpolation, and ImageNet
+    normalisation, but neither µm/px nor magnification. The registry therefore leaves
+    `recommended_mpp` unset; choose `--mpp` explicitly for a pathology protocol. The
+    output is the official 768-d projected, L2-normalised image feature.
 
 ## Scale: the µm/px default
 
@@ -195,9 +207,11 @@ disagree stops the run and asks you to pick one.
 > the default and extracts at exactly that**, resampling every slide to one comparable
 > physical scale regardless of what its "20×" happens to mean.
 
-`resnet50` and `dinov2` are ImageNet baselines and scale-agnostic (no default, no warning):
-they fall back to **1.0 µm/px** unless run alongside a foundation model (then they share its
-scale) or given an explicit `--mpp`.
+`resnet50` and `dinov2` are ImageNet baselines and scale-agnostic. `keep` and
+`openmidnight` are different: they are pathology-specific, but their authors publish no
+physical scale. All four have no model-specific MPP in the registry and therefore fall
+back to **1.0 µm/px** unless run alongside a model that supplies one or given an explicit
+`--mpp`; for KEEP and OpenMidnight, explicitly choosing the protocol's MPP is recommended.
 
 > **Adding a model - preprocessing caveat.** Source mean/std from the authors' actual usage
 > code, not a model's timm `pretrained_cfg` field: that field can be an un-overridden
@@ -219,6 +233,9 @@ scale) or given an explicit `--mpp`.
   models' remote code imports the removed `transformers.onnx`. Validated under that extra;
   available but not validated on transformers 5.
 - `musk` - needs the `[musk]` extra; run at `--patch-size 384`.
+- `keep` - included in `[models]`. Its local image-only wrapper reads the pinned,
+  SHA-256-verified safetensors file and does not execute the repository's remote code or
+  construct its unused BERT text tower.
 - `kronos` - needs the `[kronos]` extra; multiplex only (see `MODALITIES.md`).
 - `ctranspath` - custom `ConvStem` patch-embed (`embedders/convstem.py`), loaded via the
   1aurent modern-timm mirror (no pinned timm fork needed).

@@ -90,6 +90,104 @@ def _select_grid_label(root, base: str, grid_hash: str | None) -> str:
     )
 
 
+def _grid_scaffold_is_usable(
+    group,
+    *,
+    expected_n: int | None = None,
+    require_mask: bool = False,
+    expected_mask_shape: tuple[int, ...] | None = None,
+) -> bool:
+    """Whether a grid has the structural scaffold needed for safe model append.
+
+    Missing model arrays are deliberately allowed: adding those arrays is the normal
+    resume path.  A malformed coordinate scaffold or an existing feature column with a
+    different row count cannot be repaired model-by-model because it breaks the grid's
+    1:1 row identity, so the matching grid must instead be rebuilt as a unit.
+    """
+
+    try:
+        if "coords" not in group:
+            return False
+        coords = group["coords"]
+        if (
+            getattr(coords, "ndim", None) != 2
+            or tuple(coords.shape[1:]) != (2,)
+            or not np.issubdtype(coords.dtype, np.integer)
+        ):
+            return False
+        n = int(coords.shape[0])
+        if expected_n is not None and n != int(expected_n):
+            return False
+
+        # grid_index is optional in the public format, but when present it must retain
+        # the same row identity as coords.
+        if "grid_index" in group:
+            grid_index = group["grid_index"]
+            if (
+                getattr(grid_index, "ndim", None) != 2
+                or tuple(grid_index.shape) != (n, 2)
+                or not np.issubdtype(grid_index.dtype, np.integer)
+            ):
+                return False
+
+        if "features" not in group or not hasattr(group["features"], "keys"):
+            return False
+        features = group["features"]
+        for model in features.keys():
+            array = features[model]
+            if getattr(array, "ndim", None) != 2 or int(array.shape[0]) != n:
+                return False
+
+        # A mask is required only for a segmented extraction.  Unsegmented and legacy
+        # stores may validly omit it.
+        if require_mask:
+            if "mask" not in group:
+                return False
+            mask = group["mask"]
+            if getattr(mask, "ndim", None) != 2:
+                return False
+            if expected_mask_shape is not None and tuple(mask.shape) != tuple(
+                expected_mask_shape
+            ):
+                return False
+    except Exception:  # noqa: BLE001 - an unreadable scaffold is not appendable
+        return False
+    return True
+
+
+def _unappendable_grid_to_rebuild(
+    root,
+    base: str,
+    grid_hash: str | None,
+    *,
+    expected_n: int,
+    required_mask_shape: tuple[int, ...] | None,
+) -> str | None:
+    """Return the matching target when its grid scaffold cannot be appended safely.
+
+    A same-hash grid is authoritative even when a label collision gave it a suffix.
+    The sole hashless legacy grid remains the one explicitly-supported compatibility
+    case. Other hashless/mismatched grids are unrelated and must be preserved.
+    """
+
+    if GRIDS not in root:
+        return None
+    keys = list(root[GRIDS].keys())
+    for key in keys:
+        g = root[GRIDS][key]
+        stored_hash = dict(g.attrs.get("raw2features", {})).get("grid_hash")
+        is_target = stored_hash == grid_hash and grid_hash is not None
+        is_sole_legacy_target = len(keys) == 1 and key == base and stored_hash is None
+        if (is_target or is_sole_legacy_target) and not _grid_scaffold_is_usable(
+            g,
+            expected_n=expected_n,
+            require_mask=required_mask_shape is not None,
+            expected_mask_shape=required_mask_shape,
+        ):
+            return key
+    return None
+
+
 @register("sinks", "zarr")
 class ZarrSink(Sink):
     """One ``grids/<key>/`` per geometry: coords + grid_index + mask + features."""
@@ -138,7 +236,24 @@ class ZarrSink(Sink):
         else:
             # use_consolidated=False: read live metadata (a prior run consolidated it).
             root = zarr.open_group(path, mode="r+", use_consolidated=False)
-            actual_grid = _select_grid_label(root, grid, header.get("grid_hash"))
+            rebuild = _unappendable_grid_to_rebuild(
+                root,
+                grid,
+                header.get("grid_hash"),
+                expected_n=n_patches,
+                required_mask_shape=(
+                    tuple(np.asarray(grid_tissue).shape)
+                    if grid_tissue is not None
+                    else None
+                ),
+            )
+            if rebuild is not None:
+                # Delete only the unusable target. The complete replacement inputs
+                # are already in hand, and all unrelated grids remain untouched.
+                del root[GRIDS][rebuild]
+                actual_grid = rebuild
+            else:
+                actual_grid = _select_grid_label(root, grid, header.get("grid_hash"))
             rh = dict(root.attrs.get("raw2features", {}))
             rh.setdefault("schema_version", header.get("schema_version"))
             for k in ("source", "provenance", "segmentation", "thumbnail"):
@@ -505,9 +620,7 @@ def write_patches_geojson(
             try:
                 # Honour the process umask/default ACL, matching a normal output
                 # file rather than mkstemp's fixed 0600 permissions.
-                fd = os.open(
-                    temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666
-                )
+                fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
                 break
             except FileExistsError:
                 temporary = None

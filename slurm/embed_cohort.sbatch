@@ -31,16 +31,18 @@ set -euo pipefail
 
 : "${SLIDE_DIR:?set SLIDE_DIR to the directory holding the slide stores}"
 : "${OUT_DIR:?set OUT_DIR for the *.embeddings.zarr outputs}"
-: "${NUM_SHARDS:?set NUM_SHARDS = the array size (0-$((NUM_SHARDS-1)))}"
+: "${NUM_SHARDS:?set NUM_SHARDS to the submitted array size}"
 : "${GLOB:=*.zarr}"
 : "${RECEIPTS_DIR:=$OUT_DIR/receipts}"
 : "${REPO_DIR:=$HOME/raw2features}"
 : "${VENV:=$REPO_DIR/.venv}"
 : "${MODELS:=uni resnet50}"
 : "${MPP:=}"                    # empty => auto (each model's recommended MPP)
-: "${PATCH:=224}"
+: "${SOURCE_MPP:=}"             # level-0 MPP override for uncalibrated sources
+: "${PATCH:=}"                  # empty => each model's recommended patch size
+: "${STEP:=}"                   # empty => no overlap (step == patch)
 : "${TISSUE_THRESHOLD:=0.1}"
-: "${AMP:=auto}"               # auto = each model's card precision (fp32 for current models)
+: "${AMP:=auto}"               # each model's declared inference precision
 : "${READ_WORKERS:=16}"        # 16 suits a latency-bound shared FS; 8 on local NVMe
 : "${READ_BLOCK:=8}"           # read patches in NxN blocks (1=off); 16 helps on a latency-bound shared FS, costs host RAM
 : "${BATCH_SIZE:=256}"
@@ -53,24 +55,25 @@ source "$VENV/bin/activate"
 set -u
 
 MODEL_FLAGS=()
-for m in $MODELS; do MODEL_FLAGS+=(-f "$m"); done
-
-# Only pin --mpp when MPP is set; empty => auto-resolve each model's recommended MPP.
-MPP_FLAG=()
-[ -n "$MPP" ] && MPP_FLAG=(--mpp "$MPP")
+for m in $MODELS; do MODEL_FLAGS+=(-m "$m"); done
 
 echo "[$(date -u +%FT%TZ)] shard ${SLURM_ARRAY_TASK_ID:-0}/${NUM_SHARDS} on $(hostname)"
-srun raw2features embed-many "$SLIDE_DIR" "$OUT_DIR" \
-  --glob "$GLOB" \
-  "${MODEL_FLAGS[@]}" \
-  "${MPP_FLAG[@]}" \
-  --patch-size "$PATCH" \
-  --tissue-threshold "$TISSUE_THRESHOLD" \
-  --amp "$AMP" \
-  --read-workers "$READ_WORKERS" \
-  --read-block "$READ_BLOCK" \
-  --batch-size "$BATCH_SIZE" \
-  --receipts-dir "$RECEIPTS_DIR" \
-  --shard-index "${SLURM_ARRAY_TASK_ID:-0}" \
+CMD=(
+  raw2features embed-many "$SLIDE_DIR" "$OUT_DIR"
+  --glob "$GLOB"
+  "${MODEL_FLAGS[@]}"
+  --tissue-threshold "$TISSUE_THRESHOLD"
+  --amp "$AMP"
+  --read-workers "$READ_WORKERS"
+  --read-block "$READ_BLOCK"
+  --batch-size "$BATCH_SIZE"
+  --receipts-dir "$RECEIPTS_DIR"
+  --shard-index "${SLURM_ARRAY_TASK_ID:-0}"
   --num-shards "$NUM_SHARDS"
+)
+[[ -n "$MPP" ]] && CMD+=(--mpp "$MPP")
+[[ -n "$SOURCE_MPP" ]] && CMD+=(--source-mpp "$SOURCE_MPP")
+[[ -n "$PATCH" ]] && CMD+=(--patch-size "$PATCH")
+[[ -n "$STEP" ]] && CMD+=(--step "$STEP")
+srun "${CMD[@]}"
 echo "[$(date -u +%FT%TZ)] shard ${SLURM_ARRAY_TASK_ID:-0} finished"

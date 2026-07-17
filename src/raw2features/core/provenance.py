@@ -7,15 +7,16 @@ re-traceable months later.
 
 from __future__ import annotations
 
-import os
 import platform
 import re
 import shlex
 import subprocess
 import sys
+import tomllib
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from importlib.metadata import PackageNotFoundError, version
+from pathlib import Path
 
 from raw2features.core.uris import (
     is_qualified_uri,
@@ -44,16 +45,51 @@ _SECRET_OPTIONS = {
 }
 
 
+def _is_raw2features_checkout(root: Path, module_file: Path) -> bool:
+    """True only when *root* is the repository containing this source package.
+
+    ``git`` walks through parent directories. Without this boundary, a wheel in a
+    virtual environment nested under an unrelated checkout inherits that checkout's
+    commit. A real raw2features source checkout has both its own project metadata and
+    this module under the repository's ``src/raw2features`` (or a supported flat
+    ``raw2features`` package layout).
+    """
+
+    package_roots = (root / "src" / "raw2features", root / "raw2features")
+    if not any(module_file.is_relative_to(path) for path in package_roots):
+        return False
+    try:
+        with (root / "pyproject.toml").open("rb") as fh:
+            project_name = tomllib.load(fh).get("project", {}).get("name")
+    except (OSError, tomllib.TOMLDecodeError):
+        return False
+    normalized = str(project_name or "").lower().replace("_", "-")
+    return normalized == "raw2features"
+
+
 def _git_sha() -> str | None:
     try:
-        out = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+        module_file = Path(__file__).resolve()
+        common = {
+            "capture_output": True,
+            "text": True,
+            "timeout": 5,
+            "cwd": str(module_file.parent),
+        }
+        top = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            **common,
         )
-        return out.stdout.strip() or None if out.returncode == 0 else None
+        if top.returncode != 0 or not top.stdout.strip():
+            return None
+        root = Path(top.stdout.strip()).resolve()
+        if not _is_raw2features_checkout(root, module_file):
+            return None
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            **common,
+        )
+        return head.stdout.strip() or None if head.returncode == 0 else None
     except Exception:  # noqa: BLE001
         return None
 
@@ -91,9 +127,7 @@ def sanitize_cli(cli: str) -> str:
     """Redact secret option values and credentials embedded in source URIs."""
 
     redacted = _SECRET_OPTION_RE.sub(
-        lambda match: (
-            f"{match.group('flag')}{match.group('separator')}<redacted>"
-        ),
+        lambda match: f"{match.group('flag')}{match.group('separator')}<redacted>",
         str(cli),
     )
     return redact_uri_credentials(redacted)

@@ -18,9 +18,16 @@ from importlib.resources import files
 SPEC_VERSION = "0.1"
 
 _INT_DTYPES = (
-    "int8", "int16", "int32", "int64",
-    "uint8", "uint16", "uint32", "uint64",
+    "int8",
+    "int16",
+    "int32",
+    "int64",
+    "uint8",
+    "uint16",
+    "uint32",
+    "uint64",
 )
+
 
 def _load_header_schema(version: str | None) -> dict | None:
     """Load the packaged JSON Schema for a store's ``schema_version`` (or ``None``)."""
@@ -87,7 +94,11 @@ def validate_store(path: str) -> list[str]:
     from raw2features.core.store import GRIDS, grid_keys
 
     try:
-        root = zarr.open_group(path, mode="r")
+        # Validation is a correctness decision, so inspect the authoritative live
+        # hierarchy.  Consolidated metadata is only a rebuildable listing cache and
+        # can describe arrays that a crashed replacement has since removed (or omit
+        # arrays added after the last consolidation).
+        root = zarr.open_group(path, mode="r", use_consolidated=False)
     except Exception as exc:  # noqa: BLE001 - any open failure is one clear violation
         return [f"cannot open {path!r} as a zarr group: {exc}"]
 
@@ -130,8 +141,19 @@ def _validate_grid(g, header: dict) -> list[str]:
             out.append("coords must carry attr units='level0_px'")
         n = int(c.shape[0])
 
+    patching = header.get("patching")
+    patching = patching if isinstance(patching, dict) else {}
+    declared_n = patching.get("n_patches")
+    if n is not None and isinstance(declared_n, int) and declared_n != n:
+        out.append(f"header.patching.n_patches {declared_n} != coords length {n}")
+
+    hdr_models = header.get("models")
+    hdr_models = hdr_models if isinstance(hdr_models, dict) else {}
+
     if "features" not in g:
         out.append("required group 'features' is missing")
+        for m in hdr_models:
+            out.append(f"header.models.{m} has no features/{m} array")
     else:
         from raw2features.embedders.fingerprint import (
             output_fingerprints_equal,
@@ -139,11 +161,12 @@ def _validate_grid(g, header: dict) -> list[str]:
         )
 
         feats = g["features"]
-        hdr_models = header.get("models")
-        hdr_models = hdr_models if isinstance(hdr_models, dict) else {}
         models = list(feats.keys())
         if not models:
             out.append("'features' group has no model arrays")
+        for m in hdr_models:
+            if m not in feats:
+                out.append(f"header.models.{m} has no features/{m} array")
         for m in models:
             a = feats[m]
             if a.ndim != 2:
@@ -175,9 +198,7 @@ def _validate_grid(g, header: dict) -> list[str]:
                 # valid and agree; resume separately requires them for completion.
                 if array_fp is not None or header_fp is not None:
                     if not valid_output_fingerprint(array_fp):
-                        out.append(
-                            f"features/{m} has no valid output_fingerprint attr"
-                        )
+                        out.append(f"features/{m} has no valid output_fingerprint attr")
                     if not valid_output_fingerprint(header_fp):
                         out.append(
                             f"header.models.{m}.output_fingerprint is missing "

@@ -69,7 +69,7 @@ def _make_store(
     g.attrs["raw2features"] = header
     root.attrs["raw2features"] = {
         "source": {"uri": source},
-        "grids": {key: {"models": [m for m, _ in models], "grid_hash": grid_hash}}
+        "grids": {key: {"models": [m for m, _ in models], "grid_hash": grid_hash}},
     }
     return path
 
@@ -189,6 +189,36 @@ def test_inspect_store_absent_is_not_appendable(tmp_path):
     assert key is None and n == 0 and valid == []
 
 
+def test_inspect_store_missing_features_group_is_not_appendable(tmp_path):
+    path = _make_store(str(tmp_path / "out"), grid_hash="GH")
+    del open_grid(path, mode="r+")["features"]
+
+    assert _inspect_store(path, "GH", ["a"]) == (None, 0, [])
+
+
+@pytest.mark.parametrize("damage", ["header_only", "grid_index", "feature_rows"])
+def test_inspect_store_rejects_structurally_incomplete_grid(tmp_path, damage):
+    path = _make_store(str(tmp_path / "out"), grid_hash="GH")
+    g = open_grid(path, mode="r+")
+    if damage == "header_only":
+        del g["coords"]
+        del g["features"]
+    elif damage == "grid_index":
+        g.create_array("grid_index", shape=(3, 2), dtype="int32")
+    else:
+        del g["features"]["a"]
+        g["features"].create_array("a", shape=(3, 4), dtype="float16")
+
+    assert _inspect_store(path, "GH", ["a"]) == (None, 0, [])
+
+
+def test_inspect_store_requires_mask_only_for_segmented_config(tmp_path):
+    path = _make_store(str(tmp_path / "out"), grid_hash="GH")
+
+    assert _inspect_store(path, "GH", ["a"])[0] == "mpp1_px64"
+    assert _inspect_store(path, "GH", ["a"], require_mask=True) == (None, 0, [])
+
+
 def test_inspect_store_rejects_ambiguous_hashless_multigrid(tmp_path):
     path = _make_store(str(tmp_path / "out"), grid_hash=None)
     root = zarr.open_group(path, mode="r+")
@@ -266,9 +296,7 @@ def test_store_source_binding_checks_root_and_every_grid(tmp_path):
 
     root = zarr.open_group(p, mode="r+")
     other = root[GRIDS].require_group("mpp2_px64")
-    other.attrs["raw2features"] = {
-        "source": {"uri": "file:///source/B.zarr"}
-    }
+    other.attrs["raw2features"] = {"source": {"uri": "file:///source/B.zarr"}}
 
     with pytest.raises(ValueError, match="Refusing to reuse existing store"):
         _assert_store_source(p, "file:///source/A.zarr")
@@ -347,6 +375,72 @@ def test_open_append_never_clobbers_present_model(tmp_path):
     assert (np.asarray(g["features"]["a"][:]) == 5.0).all()
 
 
+@pytest.mark.parametrize(
+    "damage",
+    [
+        "missing_features",
+        "header_only",
+        "grid_index",
+        "feature_rows",
+        "missing_required_mask",
+    ],
+)
+def test_create_rebuilds_unappendable_target_and_preserves_other_grids(
+    tmp_path, damage
+):
+    out = str(tmp_path / "out")
+    path = _make_store(out, "s", n=4, models=(("a", 4),), grid_hash="GH")
+    root = zarr.open_group(path, mode="r+", use_consolidated=False)
+    target = open_grid(root, "mpp1_px64")
+    if damage in {"missing_features", "header_only"}:
+        del target["features"]
+    if damage == "header_only":
+        del target["coords"]
+    if damage == "grid_index":
+        target.create_array("grid_index", shape=(3, 2), dtype="int32")
+    if damage == "feature_rows":
+        del target["features"]["a"]
+        target["features"].create_array("a", shape=(3, 4), dtype="float16")
+    other = root[GRIDS].create_group("unrelated")
+    sentinel = other.create_array("sentinel", shape=(1,), dtype="int8")
+    sentinel[:] = 7
+    other.attrs["raw2features"] = {"grid_hash": "OTHER"}
+
+    coords = np.arange(8, dtype="int32").reshape(4, 2)
+    header = {
+        "grid_hash": "GH",
+        "source": {"uri": "file:///source/s.zarr"},
+        "patching": {"target_mpp": 1.0, "patch_px": 64, "n_patches": 4},
+    }
+    sink = ZarrSink()
+    key = sink.create(
+        out,
+        "s",
+        grid="mpp1_px64",
+        fresh=False,
+        n_patches=4,
+        coords=coords,
+        grid_index=coords,
+        grid_tissue=(
+            np.ones((2, 2), dtype="float32")
+            if damage == "missing_required_mask"
+            else None
+        ),
+        model_dims={"a": 4},
+        header=header,
+    )
+    sink.write_block("a", 0, np.ones((4, 4), dtype="float16"))
+    sink.close()
+
+    root = zarr.open_group(path, mode="r", use_consolidated=False)
+    assert key == "mpp1_px64"
+    assert set(root[GRIDS].keys()) == {"mpp1_px64", "unrelated"}
+    np.testing.assert_array_equal(root[GRIDS]["unrelated"]["sentinel"][:], [7])
+    assert np.isfinite(open_grid(root, "mpp1_px64")["features"]["a"][:]).all()
+    if damage == "missing_required_mask":
+        assert open_grid(root, "mpp1_px64")["mask"].shape == (2, 2)
+
+
 # -- end-to-end (needs torch) --------------------------------------------------
 
 
@@ -356,7 +450,8 @@ def test_embed_then_add_model_is_additive(synthetic_ngff, tmp_path):
     common = dict(no_seg=True, target_mpp=0.5, patch_px=64, device="cpu", amp="fp32")
 
     sa = run_slide(
-        synthetic_ngff, out,
+        synthetic_ngff,
+        out,
         RunConfig(models=["mockA"], **common),
         embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
     )
@@ -368,7 +463,8 @@ def test_embed_then_add_model_is_additive(synthetic_ngff, tmp_path):
     assert a_before.shape[1] == 8
 
     sb = run_slide(
-        synthetic_ngff, out,
+        synthetic_ngff,
+        out,
         RunConfig(models=["mockB"], **common),
         embedders=[MockEmbedder(dim=5, name="mockB", bias=2.0)],
     )
@@ -382,6 +478,47 @@ def test_embed_then_add_model_is_additive(synthetic_ngff, tmp_path):
     b = np.asarray(g2["features"]["mockB"][:])
     assert b.shape == (a_before.shape[0], 5)
     assert np.isfinite(b).all()
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_missing_features_group_rebuilds_only_the_target_grid(synthetic_ngff, tmp_path):
+    out = str(tmp_path / "out")
+    common = dict(no_seg=True, patch_px=64, device="cpu", amp="fp32")
+    target_cfg = RunConfig(models=["mockA"], target_mpp=0.5, **common)
+    other_cfg = RunConfig(models=["mockB"], target_mpp=1.0, **common)
+    first = run_slide(
+        synthetic_ngff,
+        out,
+        target_cfg,
+        embedders=[MockEmbedder(dim=8, name="mockA", bias=1.0)],
+    )
+    run_slide(
+        synthetic_ngff,
+        out,
+        other_cfg,
+        embedders=[MockEmbedder(dim=5, name="mockB", bias=2.0)],
+    )
+    path = first["output_uri"].removeprefix("file://")
+    root = zarr.open_group(path, mode="r+", use_consolidated=False)
+    other_before = np.asarray(open_grid(root, "mpp1_px64")["features"]["mockB"][:])
+    del open_grid(root, "mpp0.5_px64")["features"]
+
+    rebuilt = run_slide(
+        synthetic_ngff,
+        out,
+        target_cfg,
+        embedders=[MockEmbedder(dim=8, name="mockA", bias=3.0)],
+    )
+
+    assert rebuilt["status"] == "complete"
+    root = zarr.open_group(path, mode="r", use_consolidated=False)
+    assert set(root[GRIDS].keys()) == {"mpp0.5_px64", "mpp1_px64"}
+    assert np.isfinite(
+        np.asarray(open_grid(root, "mpp0.5_px64")["features"]["mockA"][:])
+    ).all()
+    np.testing.assert_array_equal(
+        open_grid(root, "mpp1_px64")["features"]["mockB"][:], other_before
+    )
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")
@@ -597,8 +734,12 @@ def test_embed_slide_writes_multiple_grids_in_one_run(synthetic_ngff, tmp_path):
     ]
     embedders = [MockEmbedder(dim=8, name="mockA"), MockEmbedder(dim=5, name="mockB")]
     summary = embed_slide(
-        synthetic_ngff, out, cfg, geometry_config=geom,
-        embedders=embedders, receipts_dir=rec,
+        synthetic_ngff,
+        out,
+        cfg,
+        geometry_config=geom,
+        embedders=embedders,
+        receipts_dir=rec,
     )
     assert summary["status"] == "complete"
     assert set(summary["grids"]) == {"mpp0.5_px64", "mpp1_px64"}
@@ -609,8 +750,12 @@ def test_embed_slide_writes_multiple_grids_in_one_run(synthetic_ngff, tmp_path):
 
     # whole-request receipt -> an identical re-run skips both grids
     again = embed_slide(
-        synthetic_ngff, out, cfg, geometry_config=geom,
-        embedders=embedders, receipts_dir=rec,
+        synthetic_ngff,
+        out,
+        cfg,
+        geometry_config=geom,
+        embedders=embedders,
+        receipts_dir=rec,
     )
     assert again["status"] == "skipped"
 
@@ -674,7 +819,10 @@ def test_embed_slide_runs_pooling_encoder_on_each_grid(synthetic_ngff, tmp_path)
     encoder is whatever that grid holds) -> slide/mean under both grids."""
     out = str(tmp_path / "out")
     cfg = RunConfig(
-        models=["mockA", "mockB"], no_seg=True, device="cpu", amp="fp32",
+        models=["mockA", "mockB"],
+        no_seg=True,
+        device="cpu",
+        amp="fp32",
         slide_encoders=["mean"],
     )
     geom = [
@@ -683,7 +831,11 @@ def test_embed_slide_runs_pooling_encoder_on_each_grid(synthetic_ngff, tmp_path)
     ]
     embs = [MockEmbedder(dim=8, name="mockA"), MockEmbedder(dim=5, name="mockB")]
     summary = embed_slide(
-        synthetic_ngff, out, cfg, geometry_config=geom, embedders=embs,
+        synthetic_ngff,
+        out,
+        cfg,
+        geometry_config=geom,
+        embedders=embs,
     )
     assert summary["status"] == "complete"
     root = zarr.open_group(summary["output_uri"].removeprefix("file://"), mode="r")

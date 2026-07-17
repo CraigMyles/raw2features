@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
@@ -9,6 +11,44 @@ pytest.importorskip("torch", reason="torch not installed")
 from conftest import MockEmbedder
 from raw2features.core.store import open_grid
 from raw2features.pipeline.runner import RunConfig, run_slide
+
+
+def test_high_level_external_embedder_uses_its_spec_geometry(tmp_path, monkeypatch):
+    """The documented external-instance hook must not silently use 1.0/224."""
+
+    from raw2features.pipeline import runner
+
+    external = MockEmbedder(dim=8, input_size=64, name="external")
+    external.spec = replace(
+        external.spec,
+        recommended_mpp=0.75,
+        recommended_patch_px=96,
+    )
+    seen = []
+
+    def fake_run_slide(slide_path, out_dir, cfg, **kwargs):
+        seen.append((cfg.target_mpp, cfg.patch_px, tuple(cfg.models)))
+        return {"status": "complete", "grid": "external-grid"}
+
+    monkeypatch.setattr(runner, "run_slide", fake_run_slide)
+    # These fields are the concrete geometry for run_slide. The high-level API uses
+    # model specs unless requested_mpp/requested_patch_px are passed explicitly.
+    cfg = RunConfig(
+        models=["external"],
+        target_mpp=0.5,
+        patch_px=64,
+        no_seg=True,
+        device="cpu",
+        amp="fp32",
+    )
+    runner.embed_slide(
+        str(tmp_path / "source.zarr"),
+        str(tmp_path / "out"),
+        cfg,
+        embedders=[external],
+    )
+
+    assert seen == [(0.75, 96, ("external",))]
 
 
 def test_runner_e2e_mock_no_seg(synthetic_ngff, tmp_path):

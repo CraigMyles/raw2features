@@ -118,18 +118,32 @@ def export_h5(
             raise FileExistsError(f"{path} exists; pass overwrite=True")
         with h5py.File(path, "w") as fh:
             if layout in ("trident", "clam"):
-                _write_trident(fh, feats, coords, level0_patch, achieved_mpp,
-                               mpp_level0, model,
-                               coord_dtype=np.int32 if layout == "clam" else np.int64)
+                _write_trident(
+                    fh,
+                    feats,
+                    coords,
+                    level0_patch,
+                    achieved_mpp,
+                    mpp_level0,
+                    model,
+                    coord_dtype=np.int32 if layout == "clam" else np.int64,
+                )
             else:
-                _write_stamp(fh, feats, coords, patch_px, achieved_mpp, mpp_level0,
-                             model, header)
+                _write_stamp(fh, feats, coords, patch_px, achieved_mpp, model, header)
         written.append(path)
     return written
 
 
-def _write_trident(fh, feats, coords, level0_patch, achieved_mpp, mpp_level0, model,
-                   coord_dtype=np.int64):
+def _write_trident(
+    fh,
+    feats,
+    coords,
+    level0_patch,
+    achieved_mpp,
+    mpp_level0,
+    model,
+    coord_dtype=np.int64,
+):
     """CLAM / TRIDENT / TITAN layout: features + level-0-pixel coords + attrs.
 
     ``coord_dtype`` is int64 for ``trident`` and int32 for the ``clam`` alias (CLAM's
@@ -148,13 +162,34 @@ def _write_trident(fh, feats, coords, level0_patch, achieved_mpp, mpp_level0, mo
     fh["features"].attrs["encoder"] = model
 
 
-def _write_stamp(fh, feats, coords, patch_px, achieved_mpp, mpp_level0, model, header):
-    """KatherLab STAMP layout: feats (fp16) + micron coords + physical-size attrs."""
-    if not mpp_level0:
+def _write_stamp(fh, feats, coords, patch_px, achieved_mpp, model, header):
+    """KatherLab STAMP layout: feats (fp16) + slide-relative micron coords."""
+    source = dict(header.get("source", {}))
+    scale_um = source.get("scale_um")
+    if (
+        isinstance(scale_um, dict)
+        and scale_um.get("x") is not None
+        and scale_um.get("y") is not None
+    ):
+        sx, sy = float(scale_um["x"]), float(scale_um["y"])
+    else:
+        # Legacy stores carry only the isotropic scalar and imply a zero origin.
+        mpp_level0 = source.get("mpp_level0")
+        if not mpp_level0:
+            raise ValueError(
+                "STAMP layout needs source.scale_um or source.mpp_level0 to "
+                "convert px -> microns"
+            )
+        sx = sy = float(mpp_level0)
+
+    if sx <= 0 or sy <= 0:
         raise ValueError(
-            "STAMP layout needs source.mpp_level0 to convert px -> microns"
+            "STAMP layout needs positive source.scale_um/source.mpp_level0"
         )
-    coords_um = coords.astype(np.float32) * float(mpp_level0)  # level-0 px -> µm
+    # STAMP coordinates are measured from the top-left of the WSI scan.  An NGFF
+    # translation describes the source's physical/stage origin, so adding it here
+    # would shift STAMP heatmaps relative to the pixels they are drawn over.
+    coords_um = coords.astype(np.float32) * np.asarray([sx, sy], dtype=np.float32)
     fh.create_dataset("feats", data=feats.astype(np.float16))
     fh.create_dataset("coords", data=coords_um)
     fh.attrs["unit"] = "um"

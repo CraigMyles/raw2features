@@ -387,13 +387,18 @@ def test_high_level_embed_accepts_a_custom_multidevice_factory(
             amp="fp32",
             batch_size=2,
         ),
-        requested_mpp=0.5,
-        requested_patch_px=64,
         embedder_factory=factory,
     )
     group = open_grid(result["output_uri"])
     assert group["features"]["custom"].shape[1] == 8
-    assert len(calls) >= 4  # high-level probe, header copy, and two workers
+    patching = dict(group.attrs["raw2features"])["patching"]
+    # The external spec is scale-agnostic (1.0 default) with a 64-pixel input. The
+    # high-level resolver must use that spec; RunConfig's 1.0/224 remains run_slide's
+    # concrete single-grid geometry rather than an implicit high-level override.
+    assert (patching["target_mpp"], patching["patch_px"]) == (1.0, 64)
+    # One shared high-level spec/contract probe, one header copy, and two workers.
+    # In particular, run_slide must not repeat the contract probe.
+    assert len(calls) == 4
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")

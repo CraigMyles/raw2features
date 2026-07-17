@@ -8,12 +8,16 @@ per slide (or per batch of slides) - picking up where it left off if anything is
 You don't need to be a SLURM expert. You set a few environment variables (where the slides
 are, where output goes, which models), adjust the `#SBATCH` lines at the top of a script to
 match your cluster (partition, GPU, time limit), and submit it. Everything else is handled.
+Install any model-specific extras or pinned git packages listed in
+[`docs/MODELS.md`](../docs/MODELS.md) before preflight; the check validates model names and
+HuggingFace authentication, but deliberately does not download every model on the login
+node.
 
 ## Which script do I use?
 
 | Script | What it does | Use it when |
 |--------|--------------|-------------|
-| **`preflight.sh`** | A read-only sanity check, run on the **login node**: is the venv working, do the slides exist, is HuggingFace access OK? | **Always run this first** - it catches a misconfiguration before you spend GPU hours discovering it. |
+| **`preflight.sh`** | A read-only sanity check, run on the **login node**: is the venv working, do the slides exist, are model names known, and is HuggingFace authentication present when needed? | **Always run this first** - it catches a misconfiguration before you spend GPU hours discovering it. It cannot confirm that every model gate has been accepted. |
 | **`embed_array.sbatch`** | One cluster job **per slide**. Simplest mapping; one log file per slide. | The default. Small-to-medium cohorts. |
 | **`embed_cohort.sbatch`** | One cluster job **per batch ("shard") of slides**, loading the models **once** per job instead of once per slide. | Large cohorts, where re-loading the model for every slide would waste time. |
 
@@ -36,7 +40,11 @@ bash slurm/preflight.sh
 
 # 3. Submit one job per slide (array size = number of slides).
 mkdir -p logs
-N=$(ls -d "$SLIDE_DIR"/*.zarr | wc -l)
+shopt -s nullglob
+SLIDES=("$SLIDE_DIR"/*.zarr)
+shopt -u nullglob
+N=${#SLIDES[@]}
+(( N > 0 )) || { echo "no *.zarr slides found" >&2; exit 1; }
 sbatch --array=0-$((N-1))%64 \
        --export=ALL,SLIDE_DIR,OUT_DIR,MODELS,HF_TOKEN \
        slurm/embed_array.sbatch
@@ -52,7 +60,14 @@ top of each script. The ones you're most likely to touch:
 
 - `MODELS` - which encoders to run (space-separated).
 - `MPP` - extraction scale; leave blank to use each model's recommended scale.
-- `AMP` - precision (`bf16` is a good default on modern GPUs; `auto` uses each model's card).
+- `SOURCE_MPP` - level-0 source calibration for OME-Zarr inputs whose spatial axes
+  declare no physical unit; leave blank for normally calibrated sources. The array
+  script passes it identically to `verify` and `embed`.
+- `PATCH` - patch side; leave blank to use each model's recommended size. Set it only
+  when you intentionally want one size for every model.
+- `STEP` - stride; leave blank for one patch-width (no overlap).
+- `AMP` - precision; keep `auto` to use each model's declared inference precision. Set
+  `bf16` explicitly only when the selected models and GPUs support it.
 - `BATCH_SIZE` - lower it if a GPU runs out of memory.
 - `READ_BLOCK` - read patches in NxN blocks; bigger means fewer, larger reads, which helps on
   a slow shared filesystem (try `16`) at the cost of host RAM.

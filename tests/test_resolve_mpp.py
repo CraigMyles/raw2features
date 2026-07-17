@@ -1,9 +1,10 @@
 """`resolve_target_mpp` - auto-select the patch-extraction MPP from the model cards.
 
-Explicit always wins; a single shared `recommended_mpp` is used; scale-agnostic /
-unknown models fall back to the default; models that disagree raise (one run = one
-scale). The resolver is pure in (models, requested) so embed/embed-many/verify all
-resolve identically and their config hashes line up.
+Explicit always wins for known models; a single shared `recommended_mpp` is used;
+scale-agnostic models fall back to the default; unknown models require an injected
+specification; models that disagree raise (one run = one scale). The resolver is pure
+in its inputs so embed/embed-many/verify all resolve identically and their config
+hashes line up.
 """
 
 from __future__ import annotations
@@ -44,11 +45,22 @@ def test_foundation_plus_scale_agnostic_uses_the_foundation_mpp():
     assert resolve_target_mpp(["uni", "resnet50"], None) == (0.5, "auto")
 
 
-def test_unknown_model_is_ignored_not_an_error():
-    assert resolve_target_mpp(["mock_not_in_registry"], None) == (
-        DEFAULT_TARGET_MPP,
-        "auto-default",
+def test_unknown_model_requires_an_injected_spec_even_with_explicit_mpp():
+    with pytest.raises(ValueError, match="not in the registry or supplied"):
+        resolve_target_mpp(["mock_not_in_registry"], None)
+    with pytest.raises(ValueError, match="not in the registry or supplied"):
+        resolve_target_mpp(["mock_not_in_registry"], 0.5)
+
+
+def test_external_model_spec_participates_in_mpp_resolution():
+    spec = ModelSpec(
+        name="external", family="x", source="x", embedding_dim=1, input_size=32,
+        pooling="cls", mean=(0.0,), std=(1.0,), transform_source_url="x",
+        license="MIT", gated=False, recommended_mpp=0.75,
     )
+    assert resolve_target_mpp(
+        ["external"], None, specs={"external": spec}
+    ) == (0.75, "auto")
 
 
 def test_conflicting_recommendations_raise(monkeypatch):

@@ -4,10 +4,54 @@ from __future__ import annotations
 
 import json
 import shlex
+from types import SimpleNamespace
 
 import pytest
 
 from raw2features.core import provenance
+
+
+def test_git_sha_accepts_the_raw2features_source_checkout(tmp_path, monkeypatch):
+    root = tmp_path / "raw2features"
+    module_file = root / "src/raw2features/core/provenance.py"
+    module_file.parent.mkdir(parents=True)
+    module_file.touch()
+    (root / "pyproject.toml").write_text(
+        '[project]\nname = "raw2features"\n', encoding="utf-8"
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        value = f"{root}\n" if "--show-toplevel" in command else "abc123\n"
+        return SimpleNamespace(returncode=0, stdout=value)
+
+    monkeypatch.setattr(provenance, "__file__", str(module_file))
+    monkeypatch.setattr(provenance.subprocess, "run", fake_run)
+
+    assert provenance._git_sha() == "abc123"
+    assert [call[0][-1] for call in calls] == ["--show-toplevel", "HEAD"]
+
+
+def test_git_sha_rejects_an_unrelated_enclosing_repository(tmp_path, monkeypatch):
+    outer = tmp_path / "unrelated"
+    module_file = outer / ".venv/lib/site-packages/raw2features/core/provenance.py"
+    module_file.parent.mkdir(parents=True)
+    module_file.touch()
+    (outer / "pyproject.toml").write_text(
+        '[project]\nname = "some-other-project"\n', encoding="utf-8"
+    )
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=f"{outer}\n")
+
+    monkeypatch.setattr(provenance, "__file__", str(module_file))
+    monkeypatch.setattr(provenance.subprocess, "run", fake_run)
+
+    assert provenance._git_sha() is None
+    assert calls == [["git", "rev-parse", "--show-toplevel"]]
 
 
 @pytest.mark.parametrize(
@@ -34,8 +78,7 @@ def test_sanitize_cli_redacts_authenticated_uri_and_keeps_semantic_selector():
     )
     got = provenance.sanitize_cli(cli)
     assert got == (
-        "raw2features embed https://example.org/image.zarr?series=2 "
-        "out --model uni"
+        "raw2features embed https://example.org/image.zarr?series=2 out --model uni"
     )
     assert "password" not in got and "R2F_SECRET" not in got
 

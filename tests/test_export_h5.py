@@ -24,18 +24,28 @@ def _make_store(tmp_path, slide_id="slideA", models=("mock",)):
     header = {
         "schema_version": 1,
         "patching": {
-            "level0_patch": _LEVEL0_PATCH, "patch_px": _PATCH_PX,
-            "achieved_mpp": _ACHIEVED_MPP, "target_mpp": _ACHIEVED_MPP,
-            "read_level": 0, "coords_convention": "level0_xy", "n_patches": 3,
+            "level0_patch": _LEVEL0_PATCH,
+            "patch_px": _PATCH_PX,
+            "achieved_mpp": _ACHIEVED_MPP,
+            "target_mpp": _ACHIEVED_MPP,
+            "read_level": 0,
+            "coords_convention": "level0_xy",
+            "n_patches": 3,
         },
         "source": {"uri": "file:///x", "slide_id": slide_id, "mpp_level0": _MPP_LEVEL0},
         "models": {m: {"embedding_dim": 4} for m in models},
     }
     sink = ZarrSink()
     sink.create(
-        str(tmp_path), slide_id, grid="mpp0.5_px224", n_patches=3, coords=_COORDS,
-        grid_index=_COORDS, grid_tissue=np.ones(3, dtype=np.float32),
-        model_dims={m: 4 for m in models}, header=header,
+        str(tmp_path),
+        slide_id,
+        grid="mpp0.5_px224",
+        n_patches=3,
+        coords=_COORDS,
+        grid_index=_COORDS,
+        grid_tissue=np.ones(3, dtype=np.float32),
+        model_dims={m: 4 for m in models},
+        header=header,
     )
     for m in models:
         sink.write_block(m, 0, _FEATS.astype(np.float16))
@@ -90,6 +100,29 @@ def test_stamp_layout(tmp_path):
         assert fh.attrs["extractor"] == "mock"
 
 
+def test_stamp_honours_per_axis_scale_but_remains_slide_relative(tmp_path):
+    import h5py
+    import zarr
+
+    from raw2features.core.store import open_grid
+
+    store = _make_store(tmp_path)
+    g = open_grid(store, mode="r+")
+    header = dict(g.attrs["raw2features"])
+    header["source"]["mpp_level0"] = 0.3  # scalar mean must not mask anisotropy
+    header["source"]["scale_um"] = {"x": 0.2, "y": 0.4}
+    header["source"]["level0_translation_um"] = {"x": 10.0, "y": 20.0}
+    g.attrs["raw2features"] = header
+    zarr.consolidate_metadata(store)
+
+    (path,) = export_h5(store, str(tmp_path / "out"), layout="stamp")
+    with h5py.File(path, "r") as fh:
+        # STAMP defines coords from the scan's top-left, so the NGFF physical/stage
+        # origin must not be added even though it remains in native store metadata.
+        expected = _COORDS.astype(np.float32) * np.array([0.2, 0.4])
+        np.testing.assert_allclose(fh["coords"][:], expected, atol=1e-5)
+
+
 def test_multi_model_writes_one_file_each(tmp_path):
     store = _make_store(tmp_path, models=("uni", "resnet50"))
     paths = export_h5(store, str(tmp_path / "out"), layout="trident")
@@ -108,8 +141,13 @@ def _hdr(slide_id, mpp, px, l0):
     return {
         "schema_version": "0.1",
         "patching": {
-            "achieved_mpp": mpp, "target_mpp": mpp, "patch_px": px, "level0_patch": l0,
-            "read_level": 0, "coords_convention": "level0_xy", "n_patches": 3,
+            "achieved_mpp": mpp,
+            "target_mpp": mpp,
+            "patch_px": px,
+            "level0_patch": l0,
+            "read_level": 0,
+            "coords_convention": "level0_xy",
+            "n_patches": 3,
         },
         "source": {"uri": "file:///x", "slide_id": slide_id, "mpp_level0": _MPP_LEVEL0},
         "models": {"mock": {"embedding_dim": 4}},
@@ -123,15 +161,33 @@ def test_grid_selector_required_on_multigrid(tmp_path):
     slide = "s"
     # Two grids in one store: gridA (0.5/224), gridB (1.0/256), both holding 'mock'.
     a = ZarrSink()
-    a.create(str(tmp_path), slide, grid="mpp0.5_px224", fresh=True, n_patches=3,
-             coords=_COORDS, grid_index=_COORDS, grid_tissue=np.ones(3, np.float32),
-             model_dims={"mock": 4}, header=_hdr(slide, 0.5, 224, 448))
+    a.create(
+        str(tmp_path),
+        slide,
+        grid="mpp0.5_px224",
+        fresh=True,
+        n_patches=3,
+        coords=_COORDS,
+        grid_index=_COORDS,
+        grid_tissue=np.ones(3, np.float32),
+        model_dims={"mock": 4},
+        header=_hdr(slide, 0.5, 224, 448),
+    )
     a.write_block("mock", 0, _FEATS.astype(np.float16))
     a.close()
     b = ZarrSink()
-    b.create(str(tmp_path), slide, grid="mpp1_px256", fresh=False, n_patches=3,
-             coords=_COORDS, grid_index=_COORDS, grid_tissue=np.ones(3, np.float32),
-             model_dims={"mock": 4}, header=_hdr(slide, 1.0, 256, 256))
+    b.create(
+        str(tmp_path),
+        slide,
+        grid="mpp1_px256",
+        fresh=False,
+        n_patches=3,
+        coords=_COORDS,
+        grid_index=_COORDS,
+        grid_tissue=np.ones(3, np.float32),
+        model_dims={"mock": 4},
+        header=_hdr(slide, 1.0, 256, 256),
+    )
     b.write_block("mock", 0, _FEATS.astype(np.float16))
     b.close()
     store = str(tmp_path / f"{slide}.embeddings.zarr")

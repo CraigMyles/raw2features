@@ -157,8 +157,8 @@ def test_apply_source_mpp_lets_an_uncalibrated_source_proceed(tmp_path):
             r.apply_source_mpp(0.0)
 
 
-def test_plane_collapse_warns_on_t_or_z_stack(synthetic_ngff):
-    # dims are (t, c, z, y, x); a >1 extent on t or z means only plane 0 is read.
+def test_plane_collapse_warns_on_non_singleton_fixture_extra_axes(synthetic_ngff):
+    # The fixture's extra axes are t and z; every extra axis is indexed at zero.
     with OmeZarrReader(synthetic_ngff) as r:
         for shape, token in (
             ((2, 3, 1, 300, 200), "t=2"),

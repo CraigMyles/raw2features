@@ -1,15 +1,18 @@
 """raw2features - read OME-Zarr WSIs and emit patch-level FM embeddings.
 
-The storage backend (reader) and the model (embedder) are independently
-swappable via six plugin seams: readers, segmenters, patchers, embedders, sinks,
-slide_embedders (see ``raw2features.core.plugins.SEAMS``). Third parties add a
-backend or model by shipping a package that registers an entry-point in the
-matching ``raw2features.<seam>`` group - no fork required. Those group names are
-the public plugin contract.
+The storage backend (reader) and model implementation are independently swappable
+via six plugin seams: readers, segmenters, patchers, embedders, sinks, and
+slide_embedders (see ``raw2features.core.plugins.SEAMS``). Third parties add an
+implementation through the matching ``raw2features.<seam>`` entry-point group.
+For embedders, that entry point is a loader family used by the packaged model
+registry; it does not add a new CLI ``--model`` name. Programmatic callers can pass
+external patch-model instances through ``embed_slide(..., embedders=[...])``.
+Those group names and the explicit ``embedders=`` hook are the public plugin contract.
 
 Public API (stable import surface - couple to these, not to deep module paths):
 
-* ``run_slide(slide_path, out_dir, cfg)`` / ``RunConfig`` - embed one slide.
+* ``embed_slide(slide_path, out_dir, cfg)`` - high-level per-model geometry runner.
+* ``run_slide(slide_path, out_dir, cfg)`` / ``RunConfig`` - single-grid primitive.
 * ``register`` / ``available`` / ``get`` - the plugin registry.
 * ``write_patches_geojson`` - patch grid -> QuPath-readable GeoJSON.
 * ``validate_store`` - conformance-check an embeddings store against docs/SPEC.md.
@@ -22,10 +25,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "__version__",
+    "embed_slide",
     "run_slide",
     "RunConfig",
     "register",
@@ -37,14 +41,14 @@ __all__ = [
 
 if TYPE_CHECKING:  # import-time only for type checkers; never imported at runtime
     from raw2features.core.plugins import available, get, register
-    from raw2features.pipeline.runner import RunConfig, run_slide
+    from raw2features.pipeline.runner import RunConfig, embed_slide, run_slide
     from raw2features.sinks.zarr_sink import write_patches_geojson
     from raw2features.spec import validate_store
 
 
 def __getattr__(name: str):
     """Resolve a blessed public name on first access (PEP 562 lazy re-export)."""
-    if name in ("run_slide", "RunConfig"):
+    if name in ("embed_slide", "run_slide", "RunConfig"):
         from raw2features.pipeline import runner
 
         return getattr(runner, name)

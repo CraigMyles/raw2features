@@ -26,6 +26,8 @@ from raw2features.pipeline.runner import (
     slide_id_from_path,
 )
 
+from ._validation import validate_amp, validate_batch_size, validate_geometry
+
 
 def _print_run(slide_id: str, rep: dict, idx: int) -> None:
     typer.echo(
@@ -43,11 +45,16 @@ def _print_run(slide_id: str, rep: dict, idx: int) -> None:
 def benchmark(
     slides: list[str] = typer.Argument(..., help="OME-Zarr slide path(s)."),
     feature_extractor: list[str] = typer.Option(
-        ["resnet50"], "--model", "-m", "--feature-extractor", "-f",
-        help="Model(s); repeatable. (--feature-extractor/-f are aliases.)"
+        ["resnet50"],
+        "--model",
+        "-m",
+        "--feature-extractor",
+        "-f",
+        help="Model(s); repeatable. (--feature-extractor/-f are aliases.)",
     ),
     mpp: float | None = typer.Option(
-        None, "--mpp",
+        None,
+        "--mpp",
         help="Target µm/px; default = the model's recommended scale (like embed), so "
         "the benchmark profiles at the same scale production runs at.",
     ),
@@ -76,8 +83,10 @@ def benchmark(
         8, "--read-workers", help="Concurrent patch-decode threads (read parallelism)."
     ),
     read_block: int = typer.Option(
-        1, "--read-block", help="Read patches in NxN blocks (1=off). Bigger helps "
-        "remote/slow storage, costs RAM; bit-identical. Try 8 local / 16 remote."
+        1,
+        "--read-block",
+        help="Read patches in NxN blocks (1=off). Bigger helps "
+        "remote/slow storage, costs RAM; bit-identical. Try 8 local / 16 remote.",
     ),
     compile: bool = typer.Option(
         False,
@@ -97,6 +106,9 @@ def benchmark(
     hf_token: str | None = typer.Option(None, "--hf-token", envvar="HF_TOKEN"),
 ) -> None:
     """Profile the embed pipeline and report per-stage timing + throughput."""
+    validate_amp(amp)
+    validate_batch_size(batch_size)
+    validate_geometry(mpp=mpp, patch_size=patch_size)
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token

@@ -2,8 +2,9 @@
 
 Built-in slide encoders live in the ``slide_encoders`` section of
 ``embedders/registry.yaml`` (the same file as patch encoders, to keep all
-model provenance in one place). Third-party slide encoders can be added
-via the ``raw2features.slide_embedders`` entry-point group.
+model provenance in one place). The ``raw2features.slide_embedders`` entry-point
+group supplies implementations for names in that packaged registry; an entry point
+alone does not extend the CLI slide-encoder catalogue.
 """
 
 from __future__ import annotations

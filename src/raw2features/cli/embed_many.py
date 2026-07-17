@@ -15,6 +15,7 @@ is recorded in its receipt and skipped so it can't take down the rest of the sha
 from __future__ import annotations
 
 import glob as globmod
+import math
 import os
 import sys
 import time
@@ -35,6 +36,8 @@ from raw2features.pipeline.runner import (
     slide_id_from_path,
 )
 
+from ._validation import validate_amp, validate_batch_size, validate_geometry
+
 
 class _WorkerStartupError(RuntimeError):
     """One or more slide-parallel workers could not load their models."""
@@ -54,8 +57,12 @@ def embed_many(
         "*.zarr", "--glob", help="Top-level glob for slides (never recurses)."
     ),
     feature_extractor: list[str] = typer.Option(
-        ["resnet50"], "--model", "-m", "--feature-extractor", "-f",
-        help="Model(s); repeatable. (--feature-extractor/-f are aliases.)"
+        ["resnet50"],
+        "--model",
+        "-m",
+        "--feature-extractor",
+        "-f",
+        help="Model(s); repeatable. (--feature-extractor/-f are aliases.)",
     ),
     mpp: float | None = typer.Option(
         None,
@@ -81,22 +88,27 @@ def embed_many(
     tissue_threshold: float = typer.Option(0.1, "--tissue-threshold"),
     features_dtype: str = typer.Option("float16", "--features-dtype"),
     stain_norm: str | None = typer.Option(
-        None, "--stain-norm",
+        None,
+        "--stain-norm",
         help="Stain-normalize each patch before embedding (macenko|reinhard|vahadane).",
     ),
     slide_encoder: list[str] = typer.Option(
-        [], "--slide-encoder", "-s",
+        [],
+        "--slide-encoder",
+        "-s",
         help="Slide-level encoder(s) to run after patch embedding (e.g. titan).",
     ),
     qc: list[str] = typer.Option(
         [], "--qc", help="Per-patch QC producer(s) writing qc/<tool>/ (e.g. grandqc)."
     ),
     qc_stain_norm: str | None = typer.Option(
-        None, "--qc-stain-norm",
+        None,
+        "--qc-stain-norm",
         help="Normalize the QC input first (macenko|reinhard|vahadane).",
     ),
     qc_artifact_mpp: str = typer.Option(
-        "1.5", "--qc-artifact-mpp",
+        "1.5",
+        "--qc-artifact-mpp",
         help="GrandQC artifact µm/px (1.0|1.5|2.0); coarser = less focus-sensitive.",
     ),
     device: str = typer.Option(
@@ -122,7 +134,8 @@ def embed_many(
         help="auto | fp32 | bf16 | fp16 (auto = each model's card precision)",
     ),
     read_workers: int = typer.Option(
-        8, "--read-workers",
+        8,
+        "--read-workers",
         help="Concurrent patch-decode threads (16 suits a shared/parallel FS).",
     ),
     read_block: int = typer.Option(
@@ -151,17 +164,24 @@ def embed_many(
     receipts_dir: str | None = typer.Option(None, "--receipts-dir"),
     force: bool = typer.Option(False, "--force"),
     config: str | None = typer.Option(
-        None, "--config",
+        None,
+        "--config",
         help="YAML extraction plan ('extractions:' list of {model, mpp?, patch_px?}).",
     ),
     manifest: str | None = typer.Option(
-        None, "--manifest",
+        None,
+        "--manifest",
         help="CSV of slides (path[,source_mpp]) instead of globbing slide_dir; "
         "relative paths resolve against slide_dir.",
     ),
     hf_token: str | None = typer.Option(None, "--hf-token", envvar="HF_TOKEN"),
 ) -> None:
     """Warm worker: build the models once and embed this shard's slides."""
+    validate_amp(amp)
+    validate_batch_size(batch_size)
+    validate_geometry(
+        mpp=mpp, patch_size=patch_size, step=step, source_mpp=source_mpp
+    )
     from raw2features.slide_embedders.model_registry import (
         validate_slide_encoder_names,
     )
@@ -186,7 +206,13 @@ def embed_many(
     if manifest:
         from raw2features.core.config import load_manifest
 
-        rows = load_manifest(manifest)
+        try:
+            rows = load_manifest(manifest)
+        except (OSError, ValueError) as exc:
+            typer.echo(
+                redact_uri_credentials(f"Error: invalid manifest: {exc}"), err=True
+            )
+            raise typer.Exit(1) from exc
         try:
             all_rows = _resolve_manifest_sources(rows, slide_dir)
         except Exception as exc:  # noqa: BLE001 - do not echo malformed credentials
@@ -203,6 +229,11 @@ def embed_many(
         where = manifest or os.path.join(slide_dir, glob)
         typer.echo(f"Error: no slides found ({where})", err=True)
         raise typer.Exit(1)
+    try:
+        _validate_source_mpps(all_rows)
+    except ValueError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
     try:
         _validate_unique_output_ids(all_rows)
     except ValueError as exc:
@@ -226,14 +257,21 @@ def embed_many(
     else:
         models = list(feature_extractor)
 
+    from raw2features.embedders.model_registry import resolve_geometry
+
+    groups = resolve_geometry(models, mpp, patch_size, geometry_config)
+    if not groups:
+        raise typer.BadParameter("at least one model/extraction is required")
+    representative = groups[0]
+
     cfg = RunConfig(
         models=models,
         reader=reader,
         segmenter=segmenter,
         no_seg=no_seg,
-        target_mpp=mpp if mpp is not None else 1.0,  # per-group geometry overrides this
+        target_mpp=representative.mpp,
         source_mpp=source_mpp,
-        patch_px=patch_size if patch_size is not None else 224,
+        patch_px=representative.patch_px,
         step_px=step,
         tissue_threshold=tissue_threshold,
         features_dtype=features_dtype,
@@ -260,13 +298,28 @@ def embed_many(
     try:
         if len(device_list) > 1:
             done, skipped, failed = _embed_shard_parallel(
-                shard, out_dir, cfg, device_list, receipts_dir, cli, force,
-                mpp, patch_size, geometry_config,
+                shard,
+                out_dir,
+                cfg,
+                device_list,
+                receipts_dir,
+                cli,
+                force,
+                mpp,
+                patch_size,
+                geometry_config,
             )
         else:
             done, skipped, failed = _embed_shard_serial(
-                shard, out_dir, cfg, receipts_dir, cli, force,
-                mpp, patch_size, geometry_config,
+                shard,
+                out_dir,
+                cfg,
+                receipts_dir,
+                cli,
+                force,
+                mpp,
+                patch_size,
+                geometry_config,
             )
     except _WorkerStartupError as exc:
         typer.echo(f"Error: {exc}", err=True)
@@ -336,6 +389,26 @@ def _validate_unique_output_ids(rows: list[dict]) -> None:
         "different output directories."
     )
     raise ValueError("\n".join(lines))
+
+
+def _validate_source_mpps(rows: list[dict]) -> None:
+    """Validate every per-slide calibration before sharding or loading models."""
+
+    for index, row in enumerate(rows, 1):
+        if "source_mpp" not in row:
+            continue
+        try:
+            value = float(row["source_mpp"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"manifest row {index} source_mpp must be a finite number greater "
+                "than zero"
+            ) from exc
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(
+                f"manifest row {index} source_mpp must be a finite number greater "
+                "than zero"
+            )
 
 
 def _with_source_mpp(cfg: RunConfig, row: dict) -> RunConfig:

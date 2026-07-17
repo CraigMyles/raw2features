@@ -52,6 +52,21 @@ class PosMockEmbedder(MockEmbedder):
         return (v.unsqueeze(1).repeat(1, self.spec.embedding_dim) + self._bias).cpu()
 
 
+@pytest.fixture(autouse=True)
+def _register_cli_mock_model(monkeypatch):
+    """CLI tests declare their mock model spec explicitly; unknown names fail closed."""
+
+    from raw2features.embedders import model_registry
+
+    registry = model_registry.load_registry()
+    mock_spec = PosMockEmbedder(dim=8, input_size=64, name="mock").spec
+    monkeypatch.setattr(
+        model_registry,
+        "load_registry",
+        lambda: {**registry, "mock": mock_spec},
+    )
+
+
 def _ramp2d_store(path: str, *, h: int = 256, w: int = 192, mpp0: float = 0.5) -> str:
     """An OME-NGFF v0.4 store whose pixels encode a 2-D ramp ``(x + y)``.
 

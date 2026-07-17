@@ -17,16 +17,33 @@ from raw2features.spec import SPEC_VERSION, validate_store
 def _model_meta(feat_dim):
     """A fully-populated per-model provenance block (every SPEC-required key)."""
     return {
-        "source": "hf-hub:org/model", "embedding_dim": feat_dim, "input_size": 224,
-        "pooling": "cls", "mean": [0.5, 0.5, 0.5], "std": [0.5, 0.5, 0.5],
-        "interpolation": "bilinear", "transform_source_url": "https://example/card",
-        "license": "MIT", "gated": False, "weights_sha256": None,
-        "weights_revision": "deadbeef", "doi": None,
+        "source": "hf-hub:org/model",
+        "embedding_dim": feat_dim,
+        "input_size": 224,
+        "pooling": "cls",
+        "mean": [0.5, 0.5, 0.5],
+        "std": [0.5, 0.5, 0.5],
+        "interpolation": "bilinear",
+        "transform_source_url": "https://example/card",
+        "license": "MIT",
+        "gated": False,
+        "weights_sha256": None,
+        "weights_revision": "deadbeef",
+        "doi": None,
     }
 
 
-def _store(tmp_path, *, name="s", header="default", coords_n=2, feat_n=2, feat_dim=4,
-           model="mock", model_in_header=True):
+def _store(
+    tmp_path,
+    *,
+    name="s",
+    header="default",
+    coords_n=2,
+    feat_n=2,
+    feat_dim=4,
+    model="mock",
+    model_in_header=True,
+):
     """Build a store by hand so each test can break exactly one rule."""
     path = str(tmp_path / f"{name}.embeddings.zarr")
     key = "mpp0.5_px224"
@@ -35,22 +52,37 @@ def _store(tmp_path, *, name="s", header="default", coords_n=2, feat_n=2, feat_d
         header = {
             "schema_version": SPEC_VERSION,
             "source": {
-                "uri": "file:///x", "slide_id": name, "mpp_level0": 0.25,
-                "ngff_version": "0.4", "reader": "omezarr",
-                "level_dimensions": [[1024, 1024]], "level_downsamples": [1.0],
+                "uri": "file:///x",
+                "slide_id": name,
+                "mpp_level0": 0.25,
+                "ngff_version": "0.4",
+                "reader": "omezarr",
+                "level_dimensions": [[1024, 1024]],
+                "level_downsamples": [1.0],
             },
             "patching": {
-                "target_mpp": 0.5, "achieved_mpp": 0.5, "patch_px": 224,
-                "level0_patch": 448, "level0_step": 448, "read_level": 0,
-                "step_out_px": 224, "n_patches": coords_n, "grid_shape": [1, coords_n],
+                "target_mpp": 0.5,
+                "achieved_mpp": 0.5,
+                "patch_px": 224,
+                "level0_patch": 448,
+                "level0_step": 448,
+                "read_level": 0,
+                "step_out_px": 224,
+                "n_patches": coords_n,
+                "grid_shape": [1, coords_n],
                 "coords_convention": "level0_xy",
             },
             "models": ({model: _model_meta(feat_dim)} if model_in_header else {}),
             "grid_hash": "abc123",
             "provenance": {
-                "raw2features_version": "0", "created_utc": "1970-01-01T00:00:00Z",
-                "cli": "raw2features embed", "git_sha": None, "host": "h",
-                "arch": "x86_64", "platform": "test", "python": "3.12",
+                "raw2features_version": "0",
+                "created_utc": "1970-01-01T00:00:00Z",
+                "cli": "raw2features embed",
+                "git_sha": None,
+                "host": "h",
+                "arch": "x86_64",
+                "platform": "test",
+                "python": "3.12",
             },
         }
     # Root discovery header + grids index; the authoritative header is per grid.
@@ -58,8 +90,11 @@ def _store(tmp_path, *, name="s", header="default", coords_n=2, feat_n=2, feat_d
         "schema_version": SPEC_VERSION,
         "grids": {
             key: {
-                "target_mpp": 0.5, "patch_px": 224, "n_patches": coords_n,
-                "models": [model] if model_in_header else [], "grid_hash": "abc123",
+                "target_mpp": 0.5,
+                "patch_px": 224,
+                "n_patches": coords_n,
+                "models": [model] if model_in_header else [],
+                "grid_hash": "abc123",
             }
         },
     }
@@ -80,6 +115,17 @@ def test_valid_store_conforms(tmp_path):
     assert validate_store(_store(tmp_path)) == []
 
 
+def test_validation_reads_live_metadata_not_stale_consolidated_view(tmp_path):
+    path = _store(tmp_path)
+    zarr.consolidate_metadata(path)
+    root = zarr.open_group(path, mode="r+", use_consolidated=False)
+    del root[GRIDS]["mpp0.5_px224"]["coords"]
+
+    violations = validate_store(path)
+
+    assert any("required array 'coords' is missing" in item for item in violations)
+
+
 def test_missing_header(tmp_path):
     v = validate_store(_store(tmp_path, header=None))
     assert any("raw2features" in x for x in v)
@@ -88,6 +134,30 @@ def test_missing_header(tmp_path):
 def test_length_mismatch_breaks_1to1(tmp_path):
     v = validate_store(_store(tmp_path, coords_n=2, feat_n=3))
     assert any("1:1 invariant" in x for x in v)
+
+
+def test_header_patch_count_must_match_coords(tmp_path):
+    path = _store(tmp_path, coords_n=2)
+    g = open_grid(path, mode="r+")
+    h = dict(g.attrs)["raw2features"]
+    h["patching"]["n_patches"] = 3
+    g.attrs["raw2features"] = h
+
+    v = validate_store(path)
+    assert any("header.patching.n_patches 3 != coords length 2" in item for item in v)
+
+
+def test_every_header_model_must_have_a_feature_array(tmp_path):
+    path = _store(tmp_path)
+    g = open_grid(path, mode="r+")
+    h = dict(g.attrs)["raw2features"]
+    h["models"]["missing"] = _model_meta(7)
+    g.attrs["raw2features"] = h
+
+    v = validate_store(path)
+    assert any(
+        "header.models.missing has no features/missing array" in item for item in v
+    )
 
 
 def test_model_without_header_entry(tmp_path):
@@ -227,8 +297,15 @@ def test_built_header_aligns_with_schema(synthetic_ngff):
     with OmeZarrReader(synthetic_ngff) as r:
         grid = GridPatcher(target_mpp=0.5, patch_px=64).build_grid(r)
         header = _build_header(
-            r, grid, {"segmenter": "none"}, [MockEmbedder().load()],
-            "s", 0, None, "gridhash", provenance.capture("test"),
+            r,
+            grid,
+            {"segmenter": "none"},
+            [MockEmbedder().load()],
+            "s",
+            0,
+            None,
+            "gridhash",
+            provenance.capture("test"),
         )
     schema = _load_header_schema(SPEC_VERSION)
     jsonschema.Draft202012Validator(schema).validate(header)  # raises on any mismatch
@@ -240,9 +317,18 @@ def test_real_pipeline_output_conforms(synthetic_ngff, tmp_path):
     from conftest import MockEmbedder
     from raw2features.pipeline.runner import RunConfig, run_slide
 
-    cfg = RunConfig(models=["mock"], segmenter="otsu", target_mpp=0.5, patch_px=64,
-                    tissue_threshold=0.0, device="cpu", amp="fp32", batch_size=8)
-    summary = run_slide(synthetic_ngff, str(tmp_path / "out"), cfg,
-                        embedders=[MockEmbedder()])
+    cfg = RunConfig(
+        models=["mock"],
+        segmenter="otsu",
+        target_mpp=0.5,
+        patch_px=64,
+        tissue_threshold=0.0,
+        device="cpu",
+        amp="fp32",
+        batch_size=8,
+    )
+    summary = run_slide(
+        synthetic_ngff, str(tmp_path / "out"), cfg, embedders=[MockEmbedder()]
+    )
     store = summary["output_uri"].removeprefix("file://")
     assert validate_store(store) == [], validate_store(store)

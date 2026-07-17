@@ -11,6 +11,8 @@ from raw2features.core.provenance import sanitize_argv
 from raw2features.pipeline.runner import RunConfig, embed_slide
 from raw2features.viz import DEFAULT_THUMBNAIL_MPP
 
+from ._validation import validate_amp, validate_batch_size, validate_geometry
+
 
 def embed(
     slide: str = typer.Argument(..., help="Path to an OME-Zarr store."),
@@ -18,8 +20,12 @@ def embed(
         ..., help="Output directory for the embeddings zarr."
     ),
     feature_extractor: list[str] = typer.Option(
-        ["resnet50"], "--model", "-m", "--feature-extractor", "-f",
-        help="Model(s); repeatable. (--feature-extractor/-f are aliases.)"
+        ["resnet50"],
+        "--model",
+        "-m",
+        "--feature-extractor",
+        "-f",
+        help="Model(s); repeatable. (--feature-extractor/-f are aliases.)",
     ),
     mpp: float | None = typer.Option(
         None,
@@ -122,7 +128,7 @@ def embed(
         [],
         "--qc",
         help="Per-patch QC producer(s) writing grids/<key>/qc/<tool>/ (e.g. grandqc). "
-        "Needs the producer's extra, e.g. pip install \"raw2features[grandqc]\".",
+        'Needs the producer\'s extra, e.g. pip install "raw2features[grandqc]".',
     ),
     qc_stain_norm: str | None = typer.Option(
         None,
@@ -157,6 +163,11 @@ def embed(
     store in place and skips models already computed (no WSI re-read for them).
     Use ``--force`` to overwrite the store instead.
     """
+    validate_amp(amp)
+    validate_batch_size(batch_size)
+    validate_geometry(
+        mpp=mpp, patch_size=patch_size, step=step, source_mpp=source_mpp
+    )
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
@@ -175,6 +186,8 @@ def embed(
 
     # Resolve and preview the per-model extraction geometry (one grid per group).
     groups = resolve_geometry(models, mpp, patch_size, geometry_config)
+    if not groups:
+        raise typer.BadParameter("at least one model/extraction is required")
     if len(groups) > 1:
         plan = " · ".join(
             f"{','.join(g.models)} -> {g.mpp:g}/{g.patch_px}" for g in groups
@@ -186,14 +199,18 @@ def embed(
             f"geometry: {','.join(g0.models)} -> {g0.mpp:g}/{g0.patch_px} ({g0.source})"
         )
 
+    # RunConfig carries one concrete grid geometry for the run_slide primitive.
+    # embed_slide replaces it for every resolved group, so seed it with a real group
+    # rather than treating an otherwise meaningful 1.0/224 geometry as a sentinel.
+    representative = groups[0]
     cfg = RunConfig(
         models=models,
         reader=reader,
         segmenter=segmenter,
         no_seg=no_seg,
-        target_mpp=mpp if mpp is not None else 1.0,  # per-group geometry overrides this
+        target_mpp=representative.mpp,
         source_mpp=source_mpp,
-        patch_px=patch_size if patch_size is not None else 224,
+        patch_px=representative.patch_px,
         step_px=step,
         tissue_threshold=tissue_threshold,
         features_dtype=features_dtype,

@@ -1,7 +1,7 @@
 # raw2features
 
 <p align="center">
-  <img src="assets/raw2features-diagram.svg" alt="raw2features: OME-Zarr whole-slide image in, patch-level and slide-level foundation-model embeddings out" width="100%">
+  <img src="https://raw.githubusercontent.com/CraigMyles/raw2features/main/assets/raw2features-diagram.png" alt="raw2features: OME-Zarr whole-slide image in, patch-level and slide-level foundation-model embeddings out" width="100%">
 </p>
 
 Read a whole-slide image in **OME-Zarr / OME-NGFF** and emit **patch- and slide-level
@@ -42,9 +42,11 @@ store too.
   (e.g. default 0.5 µm/px @ 224 px) by downsampling from the nearest finer pyramid
   level such that embeddings are comparable across slides and
   datasets.
-- **Modular implementation.** `Reader`, `segmenter`, `patcher`, `embedder` and `sink` are
-  plugin seams exposed via Python entry-points: add a model or backend by
-  shipping a package.
+- **Modular implementation.** Reader, segmenter, patcher, patch-embedder,
+  slide-embedder, and sink implementations are plugin seams exposed through Python
+  entry points. Entry points add implementations/families; the CLI's patch-model names
+  come from the bundled provenance registry, while Python callers can inject external
+  embedder instances through `embed_slide(..., embedders=[...])`.
 - **FAIR & provenance-first.** Stable models' weights are pinned to an **immutable HuggingFace
   revision** (or a sha256-pinned URL), with preprocessing sourced from each
   model's card. Every output records that provenance plus a 1:1
@@ -83,7 +85,7 @@ and the matching extra's comment in `pyproject.toml`.
 **Development** (from a clone, with [uv](https://docs.astral.sh/uv/)):
 
 ```bash
-uv sync                      # core
+uv sync --no-default-groups  # dependency-lean core only
 uv sync --extra zarr --extra image --extra torch --extra models   # full stack
 ```
 

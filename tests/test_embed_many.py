@@ -21,6 +21,21 @@ except ImportError:
     _TORCH = False
 
 
+@pytest.fixture(autouse=True)
+def _register_cli_mock_model(monkeypatch):
+    """CLI tests need an explicit model spec; unknown names now fail closed."""
+
+    from raw2features.embedders import model_registry
+
+    registry = model_registry.load_registry()
+    mock_spec = MockEmbedder(dim=8, input_size=64, name="mock").spec
+    monkeypatch.setattr(
+        model_registry,
+        "load_registry",
+        lambda: {**registry, "mock": mock_spec},
+    )
+
+
 # -- sharding (torch-free) -----------------------------------------------------
 
 
@@ -100,6 +115,37 @@ def test_embed_many_rejects_duplicate_output_ids_before_model_load(
     assert result.exit_code == 1
     assert "multiple inputs derive the same output ID" in result.output
     assert "'S'" in result.output
+    assert "models must not be loaded" not in result.output
+
+
+@pytest.mark.parametrize("source_mpp", ["0", "-0.5", "nan", "inf"])
+def test_embed_many_rejects_invalid_manifest_source_mpp_before_model_load(
+    tmp_path, monkeypatch, source_mpp
+):
+    import raw2features.cli.embed_many as em
+
+    manifest = tmp_path / "manifest.csv"
+    manifest.write_text(f"path,source_mpp\nS.zarr,{source_mpp}\n")
+    monkeypatch.setattr(
+        em,
+        "load_embedders",
+        lambda *args, **kwargs: pytest.fail("models must not be loaded"),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(tmp_path),
+            str(tmp_path / "out"),
+            "--manifest",
+            str(manifest),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "source_mpp" in result.output
+    assert "greater than zero" in result.output
     assert "models must not be loaded" not in result.output
 
 

@@ -119,10 +119,13 @@ disagree on dataset names and coordinate units, so pick the one your downstream 
 | read by | CLAM, TRIDENT, TITAN, THREADS, CHIEF, Patho-Bench | KatherLab STAMP |
 
 We have every field for both natively (level-0 coords + `level0_patch` for TRIDENT;
-`mpp_level0` to convert px→µm and `patch_px × achieved_mpp` for STAMP's `tile_size_um`).
-The schemas are transcribed from each project's own source and written with an independent
-`h5py` writer - file formats are not copyrightable, and no project's code (e.g. CLAM's
-GPL writer) is copied.
+per-axis `source.scale_um` to convert px→µm, and `patch_px × achieved_mpp` for STAMP's
+`tile_size_um`). STAMP coordinates remain relative to the WSI scan's top-left, so an
+NGFF physical/stage origin in `source.level0_translation_um` is deliberately not added.
+Legacy stores without per-axis scale fall back to isotropic `mpp_level0`. The schemas
+are transcribed from each project's own source and written with an independent `h5py`
+writer - file formats are not copyrightable, and no project's code (e.g. CLAM's GPL
+writer) is copied.
 
 ### Verified loading in each tool - a point-in-time claim
 

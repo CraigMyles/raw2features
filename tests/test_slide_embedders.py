@@ -280,6 +280,33 @@ def test_build_slide_embedder_resolves_pool():
 # -- inline runner integration -------------------------------------------------
 
 
+def test_store_fallback_discovers_specific_patch_model(
+    tmp_path, recording_slide_embedder
+):
+    from raw2features.pipeline.runner import _run_slide_encoders_from_store
+
+    path = _write_slide_store(
+        tmp_path,
+        {
+            "mpp0.5_px64": (
+                128,
+                {"conch_v1_5": np.full((3, 8), 2.0, np.float32)},
+            ),
+            "mpp1_px64": (
+                64,
+                {"resnet50": np.full((3, 5), 3.0, np.float32)},
+            ),
+        },
+    )
+
+    result = _run_slide_encoders_from_store(path, ["titan"], "cpu")
+
+    assert result == {"titan": "grids/mpp0.5_px64/slide/titan"}
+    assert "titan" in open_grid(path, "mpp0.5_px64")["slide"]
+    assert "slide" not in open_grid(path, "mpp1_px64")
+    assert recording_slide_embedder["loads"] == 1
+
+
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")
 def test_embed_with_inline_slide_encoder(synthetic_ngff, tmp_path):
     cfg = RunConfig(
@@ -381,6 +408,114 @@ def test_inline_slide_encoder_is_produced_after_complete_receipt(
         receipts_dir=receipts,
     )
     assert again["status"] == "complete"
+    assert recording_slide_embedder["loads"] == 1
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_embed_slide_cannot_succeed_when_explicit_encoder_produces_nothing(
+    synthetic_ngff, tmp_path, monkeypatch
+):
+    """An explicit inline ``-s`` request is success only if an output is present."""
+    import raw2features.pipeline.runner as runner
+
+    monkeypatch.setattr(
+        runner,
+        "run_slide",
+        lambda *args, **kwargs: {
+            "status": "complete",
+            "grid": "mpp0.5_px64",
+            "slide_embeddings": {},
+        },
+    )
+    monkeypatch.setattr(
+        runner,
+        "_run_slide_encoders_from_store",
+        lambda *args, **kwargs: {},
+    )
+    cfg = RunConfig(
+        models=["mock"],
+        no_seg=True,
+        device="cpu",
+        amp="fp32",
+        slide_encoders=["mean"],
+    )
+
+    with pytest.raises(ValueError, match="slide encoder.*mean.*found no grid"):
+        runner.embed_slide(
+            synthetic_ngff,
+            str(tmp_path / "out"),
+            cfg,
+            geometry_config=[{"model": "mock", "mpp": 0.5, "patch_px": 64}],
+            embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
+        )
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_inline_specific_encoder_missing_patch_grid_fails_clearly(
+    synthetic_ngff, tmp_path
+):
+    """A missing required patch model is a final coverage error, not a raw lookup."""
+    from raw2features.pipeline.runner import embed_slide
+
+    with pytest.raises(
+        ValueError,
+        match=r"slide encoder\(s\) titan \(needs conch_v1_5\) found no grid",
+    ):
+        embed_slide(
+            synthetic_ngff,
+            str(tmp_path / "out"),
+            RunConfig(
+                models=["resnet50"],
+                no_seg=True,
+                device="cpu",
+                amp="fp32",
+                slide_encoders=["titan"],
+            ),
+            geometry_config=[{"model": "resnet50", "mpp": 1.0, "patch_px": 64}],
+            embedders=[MockEmbedder(dim=5, input_size=64, name="resnet50")],
+        )
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_inline_specific_encoder_discovers_compatible_existing_grid(
+    synthetic_ngff, tmp_path, recording_slide_embedder
+):
+    """``embed -s`` can consume a compatible grid from an earlier patch run."""
+    from raw2features.core.store import grid_for_model
+    from raw2features.pipeline.runner import embed_slide
+
+    out = str(tmp_path / "out")
+    first = embed_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(models=["conch_v1_5"], no_seg=True, device="cpu", amp="fp32"),
+        geometry_config=[
+            {"model": "conch_v1_5", "mpp": 0.5, "patch_px": 64}
+        ],
+        embedders=[
+            MockEmbedder(dim=8, input_size=64, name="conch_v1_5")
+        ],
+    )
+    produced = embed_slide(
+        synthetic_ngff,
+        out,
+        RunConfig(
+            models=["resnet50"],
+            no_seg=True,
+            device="cpu",
+            amp="fp32",
+            slide_encoders=["titan"],
+        ),
+        geometry_config=[{"model": "resnet50", "mpp": 1.0, "patch_px": 64}],
+        embedders=[MockEmbedder(dim=5, input_size=64, name="resnet50")],
+    )
+
+    root = zarr.open_group(first["output_uri"].removeprefix("file://"), mode="r")
+    conch_grid = open_grid(root, grid_for_model(root, "conch_v1_5"))
+    resnet_grid = open_grid(root, grid_for_model(root, "resnet50"))
+    assert produced["status"] == "complete"
+    assert "titan" in conch_grid["slide"]
+    assert "slide" not in resnet_grid or "titan" not in resnet_grid["slide"]
     assert recording_slide_embedder["loads"] == 1
 
 

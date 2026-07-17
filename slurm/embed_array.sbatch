@@ -23,7 +23,11 @@
 #   export MODELS="uni resnet50"          # gated models need HF_TOKEN exported
 #   export HF_TOKEN=hf_...                 # only if MODELS includes a gated one
 #   mkdir -p logs
-#   N=$(ls -d "$SLIDE_DIR"/*.zarr 2>/dev/null | wc -l)
+#   shopt -s nullglob
+#   SLIDES=("$SLIDE_DIR"/*.zarr)
+#   shopt -u nullglob
+#   N=${#SLIDES[@]}
+#   (( N > 0 )) || { echo "no *.zarr slides found" >&2; exit 1; }
 #   sbatch --array=0-$((N-1))%64 \
 #          --export=ALL,SLIDE_DIR,OUT_DIR,MODELS,HF_TOKEN \
 #          slurm/embed_array.sbatch
@@ -52,12 +56,13 @@ export LC_COLLATE=C
 : "${RECEIPTS_DIR:=$OUT_DIR/receipts}"
 : "${REPO_DIR:=$HOME/raw2features}"
 : "${VENV:=$REPO_DIR/.venv}"
-: "${MODELS:=uni resnet50}"             # space-separated; each becomes a -f flag
+: "${MODELS:=uni resnet50}"             # space-separated; each becomes a -m flag
 : "${MPP:=}"                            # empty => auto (each model's recommended MPP)
-: "${PATCH:=224}"
+: "${SOURCE_MPP:=}"                     # level-0 MPP override for uncalibrated sources
+: "${PATCH:=}"                          # empty => each model's recommended patch size
 : "${STEP:=}"                           # empty => no overlap (step == patch)
 : "${TISSUE_THRESHOLD:=0.1}"
-: "${AMP:=bf16}"
+: "${AMP:=auto}"                        # each model's declared inference precision
 : "${BATCH_SIZE:=256}"
 : "${READ_BLOCK:=8}"                    # read patches in NxN blocks (1=off); bump to 16 on a latency-bound shared FS
 : "${EMIT_GEOJSON:=0}"                  # 1 => also write <slide>.patches.geojson
@@ -91,28 +96,29 @@ set +u
 source "$VENV/bin/activate"
 set -u
 
-# ---- repeated -f flags + the content-affecting flags shared by verify+embed
+# ---- repeated -m flags + the content-affecting flags shared by verify+embed
 # These MUST be identical for `verify` and `embed` so the config hash matches.
 MODEL_FLAGS=()
-for m in $MODELS; do MODEL_FLAGS+=(-f "$m"); done
-
-# Only pin --mpp when MPP is set; empty => let the CLI auto-resolve the model's
-# recommended MPP (identical for verify + embed, so the config hash still matches).
-MPP_FLAG=()
-[ -n "$MPP" ] && MPP_FLAG=(--mpp "$MPP")
+for m in $MODELS; do MODEL_FLAGS+=(-m "$m"); done
 
 COMMON=(
   "${MODEL_FLAGS[@]}"
   --reader omezarr
-  "${MPP_FLAG[@]}"
-  --patch-size "$PATCH"
   --tissue-threshold "$TISSUE_THRESHOLD"
   --amp "$AMP"
 )
+# Add optional geometry overrides directly to COMMON. Avoid expanding empty arrays:
+# Bash 3.2 treats those as unbound under `set -u` (still common on login nodes).
+[[ -n "$MPP" ]] && COMMON+=(--mpp "$MPP")
+[[ -n "$SOURCE_MPP" ]] && COMMON+=(--source-mpp "$SOURCE_MPP")
+[[ -n "$PATCH" ]] && COMMON+=(--patch-size "$PATCH")
 [[ -n "$STEP" ]] && COMMON+=(--step "$STEP")
 
 # ---- skip-if-complete (validates the actual output, not just the receipt) -
-if raw2features verify "$SLIDE" --receipts-dir "$RECEIPTS_DIR" --out-dir "$OUT_DIR" "${COMMON[@]}" --quiet; then
+# An explicit auxiliary-output request must reach `embed`: its own completion path
+# produces a missing GeoJSON without re-embedding otherwise-complete patch arrays.
+if [[ "$EMIT_GEOJSON" != "1" ]] && \
+   raw2features verify "$SLIDE" --receipts-dir "$RECEIPTS_DIR" --out-dir "$OUT_DIR" "${COMMON[@]}" --quiet; then
   echo "[$(date -u +%FT%TZ)] already complete; skipping ${SLIDE}"
   exit 0
 fi

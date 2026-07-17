@@ -14,7 +14,7 @@ import warnings
 import pytest
 
 PUBLIC = (
-    "run_slide", "RunConfig", "register", "available", "get",
+    "embed_slide", "run_slide", "RunConfig", "register", "available", "get",
     "write_patches_geojson", "validate_store",
 )
 
@@ -25,6 +25,13 @@ def test_public_names_resolve():
     for name in PUBLIC:
         assert getattr(raw2features, name) is not None
     assert set(PUBLIC).issubset(set(raw2features.__all__))
+
+
+def test_slide_entry_points_state_their_supported_abstraction():
+    import raw2features
+
+    assert "high-level public entry point" in raw2features.embed_slide.__doc__
+    assert "single-grid primitive" in raw2features.run_slide.__doc__
 
 
 def test_unknown_attr_raises():

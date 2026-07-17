@@ -8,7 +8,7 @@
 #        Workflow: release.yml   Environment: pypi
 #      (A *pending* publisher lets the very first release create the project on PyPI.)
 #   2. Cut a release whose tag matches the version in pyproject.toml, e.g.:
-#        gh release create v0.1.0 --generate-notes
+#        gh release create v0.1.1 --generate-notes
 #      This workflow then builds the sdist + wheel and uploads them automatically.
 name: Release
 
@@ -28,8 +28,27 @@ jobs:
       contents: read # actions/checkout needs read access (required while the repo is private)
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Verify tag matches package version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: >-
+          python -c "import os, pathlib, tomllib;
+          version = tomllib.loads(pathlib.Path('pyproject.toml').read_text())['project']['version'];
+          expected = f'v{version}'; actual = os.environ['RELEASE_TAG'];
+          assert actual == expected, f'release tag {actual!r} does not match {expected!r}'"
       - name: Build sdist + wheel
         run: uv build
+      - name: Check and smoke wheel
+        run: |
+          uvx --from twine twine check dist/*
+          uv venv .venv-release-smoke
+          uv pip install --python .venv-release-smoke/bin/python dist/*.whl
+          .venv-release-smoke/bin/python -c "import importlib.metadata, raw2features; assert raw2features.__version__ == importlib.metadata.version('raw2features')"
+          .venv-release-smoke/bin/raw2features --help
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

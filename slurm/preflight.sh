@@ -1,7 +1,7 @@
 #!/bin/bash
 # raw2features SLURM pre-flight: run this on your cluster's LOGIN node before
 # submitting embed_array.sbatch. It validates the environment so you don't burn
-# a whole array on a misconfiguration (wrong-arch venv, missing HF access, empty
+# a whole array on a misconfiguration (wrong-arch venv, missing HF login, empty
 # slide dir, ...). Read-only except for `mkdir -p` of OUT_DIR/logs.
 #
 # New here? slurm/README.md explains the cluster workflow + which script to use.
@@ -56,27 +56,31 @@ else
 fi
 
 echo "[3] models ($MODELS) + HuggingFace access"
-if command -v python >/dev/null 2>&1; then
-  GATED=$(python - <<PY 2>/dev/null
+if ! command -v python >/dev/null 2>&1; then
+  bad "python is unavailable after venv activation"
+elif GATED=$(R2F_PREFLIGHT_MODELS="$MODELS" python - <<'PY' 2>/dev/null
+import os
 from raw2features.embedders.model_registry import load_registry
-reg = load_registry(); req = "$MODELS".split()
+reg = load_registry(); req = os.environ["R2F_PREFLIGHT_MODELS"].split()
 unknown = [m for m in req if m not in reg]
 gated = [m for m in req if m in reg and reg[m].gated]
 print("UNKNOWN " + " ".join(unknown))
 print("GATED " + " ".join(gated))
 PY
-)
+); then
   UNK=$(sed -n 's/^UNKNOWN //p' <<<"$GATED"); GAT=$(sed -n 's/^GATED //p' <<<"$GATED")
   [[ -n "${UNK// }" ]] && bad "unknown model(s): $UNK (see 'raw2features models')" || ok "all models known"
   if [[ -n "${GAT// }" ]]; then
     if WHO=$(python -c "from huggingface_hub import whoami; print(whoami()['name'])" 2>/dev/null); then
-      ok "gated models [$GAT] -> HF authenticated as '$WHO' (ensure access is granted on the model pages)"
+      ok "gated models [$GAT] -> HF authenticated as '$WHO' (authentication only; ensure each model gate is accepted)"
     else
-      bad "gated models [$GAT] but no HF login -- export HF_TOKEN (and pass it via --export) or 'huggingface-cli login'"
+      bad "gated models [$GAT] but no HF login -- export HF_TOKEN (and pass it via --export) or run 'hf auth login'"
     fi
   else
     ok "no gated models requested (no HF token needed)"
   fi
+else
+  bad "could not load the raw2features model registry in this environment"
 fi
 
 echo "[4] output + logs"

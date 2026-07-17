@@ -6,16 +6,33 @@ on:
   pull_request:
 
 jobs:
+  core-smoke:
+    # A real lean install: no default dev group and therefore no zarr, image, or
+    # torch stack. This protects the documented `pip install raw2features` path.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Install (core only)
+        run: uv sync --locked --no-default-groups
+      - name: Smoke import and CLI
+        run: |
+          uv run --no-sync python -c "import raw2features, sys; assert 'torch' not in sys.modules; assert 'zarr' not in sys.modules"
+          uv run --no-sync raw2features --help
+
   lint-and-test:
-    # Core-only: lint + run the suite with no heavy extras installed. Proves the
-    # package imports and the core paths work without torch/zarr (heavy-dep tests
-    # self-skip), so an end user who installs just the core isn't broken. Run across
-    # every supported Python (matches the requires-python / classifiers contract).
+    # Default developer environment: lint + the offline suite across every
+    # supported Python. The dev group intentionally includes the light Zarr/image
+    # test stack; the separate core-smoke job protects the dependency-lean install.
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -23,8 +40,8 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Install (core only)
-        run: uv sync
+      - name: Install (developer test environment)
+        run: uv sync --locked
       - name: Lint
         run: uv run ruff check .
       - name: Test (core)
@@ -45,6 +62,34 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install (full stack, CPU torch)
-        run: uv sync --extra zarr --extra image --extra torch --extra models --extra stain
+        run: uv sync --locked --extra zarr --extra image --extra torch --extra models --extra stain
       - name: Test (with torch)
         run: uv run pytest -m "not slow and not network" -q
+
+  package-smoke:
+    # Validate exactly what a release would upload, including clean installs from
+    # both artifacts rather than importing from the checkout.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Build and check artifacts
+        run: |
+          uv build
+          uvx --from twine twine check dist/*
+      - name: Smoke wheel
+        run: |
+          uv venv .venv-wheel
+          uv pip install --python .venv-wheel/bin/python dist/*.whl
+          .venv-wheel/bin/python -c "import importlib.metadata, raw2features; assert raw2features.__version__ == importlib.metadata.version('raw2features')"
+          .venv-wheel/bin/raw2features --help
+      - name: Smoke source distribution
+        run: |
+          uv venv .venv-sdist
+          uv pip install --python .venv-sdist/bin/python dist/*.tar.gz
+          .venv-sdist/bin/python -c "import importlib.metadata, raw2features; assert raw2features.__version__ == importlib.metadata.version('raw2features')"
+          .venv-sdist/bin/raw2features --help

@@ -1,6 +1,6 @@
 [project]
 name = "raw2features"
-version = "0.1.0"
+version = "0.1.1"
 description = "Read OME-Zarr whole-slide images and emit patch- and slide-level foundation-model embeddings - storage backend and model independently swappable."
 readme = "README.md"
 authors = [{ name = "Craig Myles", email = "me@craig.im" }]
@@ -25,6 +25,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Image Processing",
     "Topic :: Scientific/Engineering :: Medical Science Apps.",

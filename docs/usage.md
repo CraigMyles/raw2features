@@ -41,10 +41,11 @@ OME-Zarr  ──reader──▶  segmenter ──▶  patcher ──▶  embedde
 | **segmenter** | `otsu` (or `--no-seg`) | low-res tissue mask so only tissue patches are kept |
 | **patcher** | `grid` | tiles a regular grid at an **exact** target MPP |
 | **embedder** | `resnet50` (repeatable) | patch → feature vector; one or many, run together |
+| **slide_embedder** | none | patch-feature matrix → optional slide-level vector |
 | **sink** | `zarr` | writes `coords`/`grid_index`/`mask`/`features/<model>` + provenance |
 
 List what's installed for any component: `raw2features list embedders` (or `readers`,
-`segmenters`, `patchers`, `sinks`).
+`segmenters`, `patchers`, `sinks`, `slide_embedders`).
 
 ---
 
@@ -75,7 +76,7 @@ on another (e.g. an x86 cluster). Verify with `raw2features version`.
 | `raw2features export-h5 <store.embeddings.zarr> <out_dir>` | export features to HDF5 (one `.h5` per model); needs the `[h5]` extra |
 | `raw2features validate-store <store.embeddings.zarr>` | check a store conforms to the embeddings-store spec |
 | `raw2features models` | list the model registry (name, dim, gated, source) |
-| `raw2features list <component>` | list installed plugins for a component type (readers, segmenters, …) |
+| `raw2features list <component>` | list installed plugins for a component type (readers, segmenters, patchers, embedders, sinks, slide_embedders) |
 | `raw2features version` | print the version |
 
 Every option below is also visible via `raw2features <command> --help`.
@@ -135,8 +136,9 @@ Any token passed on the command line is redacted from stored command provenance.
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `-m, --model` | `resnet50` | model name; **repeatable** for multi-model (`-f`/`--feature-extractor` are aliases) |
-| `--mpp` | per-model | target µm/px; default = each model's **recommended** MPP (0.5 for most pathology FMs, 1.0 for scale-agnostic). Pass a value to override (collapses all models to one grid) |
-| `--patch-size` | per-model | patch side in px; default = each model's recommended size (224 / 448 CONCH / 512 conch_v1_5). Pass to force one size for all |
+| `--mpp` | per-model | target µm/px; default = each model's **recommended** MPP (0.5 for most pathology FMs, 1.0 for scale-agnostic). A value overrides the scale while retaining each model's recommended patch size; combine it with `--patch-size` to force one shared grid |
+| `--source-mpp` | source metadata | level-0 source µm/px override for an uncalibrated OME-Zarr whose spatial axes declare no physical unit; normally leave unset |
+| `--patch-size` | per-model | patch side in px; default = each model's recommended size (224 / 448 CONCH / 512 conch_v1_5). A value overrides the size; combine it with `--mpp` to force one shared grid |
 | `--step` | = patch | stride in output px; `< patch` gives overlap |
 | `--no-seg` | off | tile the whole slide (skip tissue masking) |
 | `--segmenter` | `otsu` | tissue segmenter to use |
@@ -211,6 +213,18 @@ Otherwise the patch is resampled and `achieved_mpp == target`. `--snap-to-level`
 forces a native level read (faster, MPP = that level); `--allow-upsample` permits
 going finer than level 0. `raw2features info` prints the exact plan.
 
+### Float source pixels
+
+OME-NGFF float arrays do not necessarily declare whether RGB values use a normalized
+`[0, 1]` range or a byte-like `[0, 255]` range. The OME-Zarr reader therefore chooses
+one convention when the slide is opened and reuses it for every patch and pyramid level;
+it never rescales one patch differently because that patch happens to be locally dark.
+The decision uses the array fill value and a deterministic 3×3 lattice of level-0
+chunks (up to the first three channels): any finite observed value above 1 selects the
+byte-like convention, otherwise the slide is treated as normalized. This bounded sample
+avoids scanning an entire WSI at open. `read_region_channels` remains native-dtype and
+unscaled for multiplex models.
+
 ### Segmentation
 
 The default `otsu` segmenter runs Otsu-on-saturation + morphology on a low-res
@@ -222,8 +236,9 @@ are pluggable via the `segmenters` seam - see
 
 ### Multi-model fan-out (decode-once)
 
-With several `-f` flags, each patch is **read and decoded once** and reused across
-every model in the batch - the slow part (IO + decode) is not repeated per model.
+With several `-m` flags (`-f` is an alias), each patch is **read and decoded once**
+and reused across every model in the batch - the slow part (IO + decode) is not
+repeated per model.
 Each model applies **its own** preprocessing (mean/std/input size, sourced from
 its model card), and writes into its own `features/<model>` array.
 
@@ -269,18 +284,23 @@ re-runs are **additive and idempotent - no `--receipts-dir` required**:
 - A requested model already present and output-validated against its current model
   fingerprint is **skipped**.
 - A **missing** model is embedded and **appended in place**: `features/<model>` is
-  added next to the existing arrays, decoded once at the store's existing patch
-  coordinates. Existing models and `coords` are left untouched.
-- If **all** requested models are already present, the run does nothing
-  (`status: skipped`).
-- If a store exists but its **patch geometry differs** (different `--mpp`,
-  `--patch-size`, segmentation, …), `embed` **errors** rather than mixing
-  incompatible patches. Use `--force` (rebuild from scratch) or a new output dir.
+  added next to the existing arrays when it shares that grid's geometry. Existing
+  models and `coords` are left untouched.
+- A requested geometry not already in the store is added as another
+  `grids/<key>/` group. A difference in `--mpp`, `--patch-size`, segmentation, or
+  another geometry field is **not** an error and does not wipe existing grids or
+  mix incompatible rows in one grid.
+- If **all** requested models and auxiliary outputs are already present, no patch
+  features are recomputed (a model-only run returns `status: skipped`).
+
+Use `--force` only when you intentionally want to rebuild the whole store from
+scratch.
 
 ```bash
 raw2features embed slide.zarr out/ -m uni              # writes features/uni
 raw2features embed slide.zarr out/ -m virchow2         # ADDS features/virchow2; uni untouched
 raw2features embed slide.zarr out/ -m uni -m virchow2  # both present -> nothing to do
+raw2features embed slide.zarr out/ -m conch_v1_5       # ADDS its 0.5/512 grid; other grids untouched
 ```
 
 The shared extraction/storage grid is identified by a **`grid_hash`**, recorded in
@@ -311,13 +331,15 @@ model set:
 
 ```
 reader, models (order-independent), segmenter / --no-seg, --mpp, --patch-size,
---step, --tissue-threshold, --features-dtype, --snap-to-level, --mpp-tolerance,
---allow-upsample, --amp
+--source-mpp (when set), --step, --tissue-threshold, --features-dtype,
+--stain-norm, --snap-to-level, --mpp-tolerance, --allow-upsample, --amp
 ```
 
 Runtime-only knobs do **not** change the hash:
-`--device`, `--batch-size`, `--emit-geojson`, `--emit-thumbnail`,
-`--thumbnail-mpp`, `--max-px`, `--output-zarr-format`, `--force`.
+`--device`, `--devices`, `--batch-size`, `--read-workers`, `--read-block`,
+`--compile`, `--emit-geojson`, `--emit-thumbnail`, `--thumbnail-mpp`, `--max-px`,
+`--slide-encoder`, `--qc`, `--qc-stain-norm`, `--qc-artifact-mpp`,
+`--output-zarr-format`, `--force`.
 `--force` is the exception for control flow: it deliberately bypasses skipping and
 rebuilds the target without changing the content identity.
 
@@ -341,15 +363,20 @@ Pass `--force` to ignore an existing store and rebuild it from scratch (all
 requested models recomputed, the store overwritten). It also bypasses a valid
 receipt's fast path. Deleting the output store (and any receipt) has the same effect.
 
-### Important: side-products are skipped too
+### Auxiliary outputs are produce-if-missing
 
-Thumbnails and geojson are written only on a **fresh build**, not when a model is
-appended to an existing store (the patches and mask are unchanged, so there is
-nothing new to draw). And a fully-complete slide is skipped before any work, so
-re-running `embed --emit-thumbnail` (or `--emit-geojson`) on it produces
-**nothing new**. To add a thumbnail to an already-embedded slide, use the
-standalone [`thumbnail`](#8-thumbnail--previews--qc-overlays) command (geojson
-emits only during a fresh `embed`).
+An explicit `--emit-thumbnail`, `--emit-geojson`, `--qc`, or `-s/--slide-encoder`
+request is checked against the matching grid even when its patch features are already
+complete. Missing outputs are produced without re-embedding patches; existing valid
+outputs are left alone. These runtime products do not change the patch-grid identity or
+receipt content hash. The standalone [`thumbnail`](#8-thumbnail--previews--qc-overlays)
+and `slide-embed` commands remain convenient when you only want to add those products.
+
+In a multi-grid invocation, a slide encoder runs on the grid containing its required
+patch encoder (for example, TITAN uses the `conch_v1_5` grid). Model-agnostic pooling
+encoders run on each requested grid. Standalone `slide-embed` can infer an unambiguous
+grid from the required patch model; otherwise pass `--grid` (and `--patch-model` when
+needed).
 
 ---
 
@@ -420,6 +447,7 @@ rows are also rejected; a per-output lock across independent invocations is not 
 
 ```bash
 cd raw2features && uv sync --extra zarr --extra image --extra torch --extra models
+# Add any model-specific extras / pinned git packages from docs/MODELS.md.
 export SLIDE_DIR=/path/to/raw            # dir of *.zarr stores (top-level only)
 export OUT_DIR=/path/to/embeddings
 export MODELS="uni resnet50"             # space-separated; each becomes a -m flag
@@ -427,7 +455,11 @@ export HF_TOKEN=hf_...                    # only if MODELS includes a gated mode
 
 bash slurm/preflight.sh                  # validates venv/arch, models/HF, slide count
 mkdir -p logs                            # SLURM opens --output here before the job runs
-N=$(ls -d "$SLIDE_DIR"/*.zarr | wc -l)
+shopt -s nullglob
+SLIDES=("$SLIDE_DIR"/*.zarr)
+shopt -u nullglob
+N=${#SLIDES[@]}
+(( N > 0 )) || { echo "no *.zarr slides found" >&2; exit 1; }
 sbatch --array=0-$((N-1))%64 --export=ALL,SLIDE_DIR,OUT_DIR,MODELS,HF_TOKEN slurm/embed_array.sbatch
 ```
 
@@ -464,12 +496,16 @@ Notes:
 <slide_id>.patches.geojson          # optional (--emit-geojson): per-patch polygons for QuPath
 <slide_id>.thumbnail.png            # optional (--emit-thumbnail / thumbnail cmd)
 <slide_id>.thumbnail.overlay.png    # optional QC overlay
+<slide_id>.<key>.patches.geojson              # corresponding sidecar for each additional grid
+<slide_id>.<key>.thumbnail.overlay.png        # corresponding overlay for each additional grid
 ```
 
 A store nests its patch sets under `grids/<key>/` (one child per extraction geometry -
 `mpp0.5_px224`, etc.); a one-geometry run is just a single grid. Open one grid with the
 reader helper (`raw2features.core.store.open_grid(store)` returns the sole grid, or pass a
-key), and `export`/`info` default to the sole grid (a multi-grid store wants `--grid`).
+key), and `export`/`info` default to the sole grid (a multi-grid store wants `--grid`). The
+first-created grid keeps the backward-compatible unsuffixed GeoJSON/overlay names; later
+grids use their key as shown above. The plain thumbnail is shared by the slide.
 
 **Spatial-provenance contract (within a grid).** Row `i` refers to the same patch across
 **every** array of that grid: `coords[i]`, `grid_index[i]`, and `features/<model>[i]` are
@@ -479,7 +515,8 @@ pixel extent), any embedding is invertible to the exact slide region
 
 **Each grid's `.zattrs["raw2features"]`** records the full, self-describing header:
 `schema_version`, `provenance` (version, CLI, git SHA, host, GPU), `thumbnail` (if emitted),
-`source` (uri, ngff_version, reader, mpp_level0, level_dimensions, level_downsamples),
+`source` (uri, ngff_version, reader, mpp_level0, dimensions/downsamples, source axes,
+per-axis physical scale, and source translation/origin),
 `patching` (target/achieved MPP, patch_px, read_level, read_px, resample, level0_patch,
 level0_step, n_patches, grid_shape, `coords_convention: level0_xy`), `segmentation`, and
 per-model `models.<name>` (source, embedding_dim, input_size, pooling, mean, std,
@@ -490,8 +527,10 @@ models, grid_hash}`) for discovery without opening each grid.
 Read it back:
 
 ```python
-import zarr
-g = zarr.open_group("out/<slide_id>.embeddings.zarr", mode="r")
+from raw2features.core.store import open_grid
+
+# Omit the key only when the store contains exactly one grid.
+g = open_grid("out/<slide_id>.embeddings.zarr", key="mpp0.5_px224")
 print(g["features/uni"].shape)          # (N, 1024)
 print(dict(g.attrs)["raw2features"]["patching"]["achieved_mpp"])
 ```
@@ -500,17 +539,20 @@ print(dict(g.attrs)["raw2features"]["patching"]["achieved_mpp"])
 
 ## 11. FAQ / gotchas
 
-**`embed --emit-thumbnail` produced no thumbnail.** The slide was already complete
-(receipt + matching config) so the run was skipped before any work. Use the
-standalone `raw2features thumbnail … --overlay` to add thumbnails to
-already-embedded slides, or force a re-run (§7).
+**`embed --emit-thumbnail` produced no thumbnail.** A missing thumbnail should be
+produced even when the patch arrays are complete, while an existing valid thumbnail is
+left unchanged. Check the command's error and output path; in a multi-grid store,
+non-primary overlays have the grid key in their filename. The standalone
+`raw2features thumbnail … --overlay` command is also available when only a preview is
+needed.
 
-**Adding a model didn't append - it recomputed everything.** Correct: the model
-set is part of the config hash, so a different set is a different run and the store
-is rewritten. Run all the models you want in a single `embed` invocation.
+**What happens when I add a model?** A model with the same extraction geometry is
+appended to that grid. A model with a different geometry gets a new grid. Existing
+valid arrays are preserved; only a missing, damaged, legacy-unfingerprinted, or
+stale-fingerprint model output is recomputed.
 
 **`verify` always says incomplete.** It must be given the **same content-affecting
-flags** as the `embed` that produced the store (same `-f` models, `--mpp`,
+flags** as the `embed` that produced the store (same `-m` models, `--mpp`,
 `--patch-size`, etc.) so the config hash matches. Pass the same output directory as
 `--out-dir` so the receipt is also bound to the intended target store.
 

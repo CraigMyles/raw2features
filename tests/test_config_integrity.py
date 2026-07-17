@@ -12,6 +12,8 @@ from __future__ import annotations
 import inspect
 from dataclasses import fields
 
+import pytest
+
 from raw2features.cli.embed import embed
 from raw2features.cli.embed_many import embed_many
 from raw2features.cli.verify import verify
@@ -45,6 +47,21 @@ def test_content_hash_is_pinned():
         ).content_hash()
         == "7af8f129093bb671"
     )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("target_mpp", 0),
+        ("target_mpp", float("nan")),
+        ("source_mpp", -0.5),
+        ("patch_px", 0),
+        ("step_px", -1),
+    ],
+)
+def test_runconfig_rejects_invalid_geometry_at_construction(field, value):
+    with pytest.raises(ValueError, match=field):
+        RunConfig(models=["resnet50"], **{field: value})
 
 
 def test_content_hash_is_model_order_independent():

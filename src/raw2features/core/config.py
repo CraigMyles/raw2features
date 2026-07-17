@@ -16,6 +16,30 @@ These are *just* the compute plan and the input set -- no output routing or temp
 
 from __future__ import annotations
 
+import math
+
+
+def _positive_float(value, *, field: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a finite number greater than zero") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{field} must be a finite number greater than zero")
+    return number
+
+
+def _positive_int(value, *, field: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer greater than zero")
+    try:
+        integer = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer greater than zero") from exc
+    if integer != value or integer <= 0:
+        raise ValueError(f"{field} must be an integer greater than zero")
+    return integer
+
 
 def load_extractions(path: str) -> list[dict]:
     """Parse an extraction-plan config; return the validated ``extractions`` list.
@@ -42,9 +66,13 @@ def load_extractions(path: str) -> list[dict]:
             )
         entry: dict = {"model": str(e["model"])}
         if e.get("mpp") is not None:
-            entry["mpp"] = float(e["mpp"])
+            entry["mpp"] = _positive_float(
+                e["mpp"], field=f"{path}: extractions[{i}].mpp"
+            )
         if e.get("patch_px") is not None:
-            entry["patch_px"] = int(e["patch_px"])
+            entry["patch_px"] = _positive_int(
+                e["patch_px"], field=f"{path}: extractions[{i}].patch_px"
+            )
         out.append(entry)
     return out
 
@@ -75,14 +103,18 @@ def load_manifest(path: str) -> list[dict]:
             row: dict = {"path": p}
             sm = (r.get("source_mpp") or "").strip()
             if sm:
-                row["source_mpp"] = float(sm)
+                row["source_mpp"] = _positive_float(
+                    sm, field=f"{path}: source_mpp"
+                )
             out.append(row)
     else:
         for ln in lines:
             parts = [c.strip() for c in ln.split(",")]
             row = {"path": parts[0]}
             if len(parts) > 1 and parts[1]:
-                row["source_mpp"] = float(parts[1])
+                row["source_mpp"] = _positive_float(
+                    parts[1], field=f"{path}: source_mpp"
+                )
             out.append(row)
     if not out:
         raise ValueError(f"{path}: manifest has no slide paths")

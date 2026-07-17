@@ -38,6 +38,18 @@ def test_load_extractions_rejects_entry_without_model(tmp_path):
         load_extractions(str(p))
 
 
+@pytest.mark.parametrize(
+    "geometry", ["mpp: 0", "mpp: .nan", "patch_px: 0", "patch_px: -2"]
+)
+def test_load_extractions_rejects_nonpositive_or_nonfinite_geometry(
+    tmp_path, geometry
+):
+    p = tmp_path / "bad.yaml"
+    p.write_text(f"extractions:\n  - {{model: uni, {geometry}}}\n")
+    with pytest.raises(ValueError, match="greater than zero"):
+        load_extractions(str(p))
+
+
 # -- slide manifest ------------------------------------------------------------
 
 
@@ -89,4 +101,14 @@ def test_load_manifest_rejects_non_numeric_source_mpp(tmp_path):
     p = tmp_path / "m.csv"
     p.write_text("path,source_mpp\n/a/x.zarr,notanumber\n")
     with pytest.raises(ValueError):  # float("notanumber") fails loudly
+        load_manifest(str(p))
+
+
+@pytest.mark.parametrize("source_mpp", ["0", "-0.5", "nan", "inf"])
+def test_load_manifest_rejects_nonpositive_or_nonfinite_source_mpp(
+    tmp_path, source_mpp
+):
+    p = tmp_path / "m.csv"
+    p.write_text(f"path,source_mpp\n/a/x.zarr,{source_mpp}\n")
+    with pytest.raises(ValueError, match="source_mpp.*greater than zero"):
         load_manifest(str(p))

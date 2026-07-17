@@ -6,6 +6,7 @@ time per batch and reused across every requested model.
 
 from __future__ import annotations
 
+import math
 import os
 import queue
 import threading
@@ -31,7 +32,11 @@ from raw2features.embedders.fingerprint import (
 )
 from raw2features.embedders.model_registry import build_embedder, resolve_geometry
 from raw2features.patcher.grid import GridPatcher, resample_patch
-from raw2features.sinks.zarr_sink import ZarrSink, write_patches_geojson
+from raw2features.sinks.zarr_sink import (
+    ZarrSink,
+    _grid_scaffold_is_usable,
+    write_patches_geojson,
+)
 
 from .receipt import (
     SCHEMA_VERSION,
@@ -45,6 +50,28 @@ from .receipt import (
 )
 
 _AMP = {"bf16": "bfloat16", "fp16": "float16", "fp32": "float32", None: "float32"}
+
+
+def _positive_float(value, *, field: str) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be a finite number greater than zero") from exc
+    if not math.isfinite(number) or number <= 0:
+        raise ValueError(f"{field} must be a finite number greater than zero")
+    return number
+
+
+def _positive_int(value, *, field: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field} must be an integer greater than zero")
+    try:
+        integer = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field} must be an integer greater than zero") from exc
+    if integer != value or integer <= 0:
+        raise ValueError(f"{field} must be an integer greater than zero")
+    return integer
 
 
 @dataclass
@@ -117,6 +144,16 @@ class RunConfig:
     # GrandQC artifact model scale in µm/px ("1.0"/"1.5"/"2.0"): coarser is less
     # focus-sensitive; raise it for a softer-scanned cohort that over-reads as blur.
     qc_artifact_mpp: str = "1.5"
+
+    def __post_init__(self) -> None:
+        """Reject invalid geometry before hashing, model loading, or store writes."""
+
+        self.target_mpp = _positive_float(self.target_mpp, field="target_mpp")
+        self.patch_px = _positive_int(self.patch_px, field="patch_px")
+        if self.step_px is not None:
+            self.step_px = _positive_int(self.step_px, field="step_px")
+        if self.source_mpp is not None:
+            self.source_mpp = _positive_float(self.source_mpp, field="source_mpp")
 
     # Single source of truth for which fields affect the output (and thus the
     # config hash) vs. runtime-only knobs. ``test_config_integrity`` asserts these
@@ -239,11 +276,7 @@ class RunConfig:
             except Exception:  # noqa: BLE001 - no torch/cuda visible -> single device
                 n = 0
             return [f"cuda:{i}" for i in range(n)] if n > 1 else [single]
-        out = [
-            resolve_device(d.strip())
-            for d in self.devices.split(",")
-            if d.strip()
-        ]
+        out = [resolve_device(d.strip()) for d in self.devices.split(",") if d.strip()]
         return out or [single]
 
 
@@ -271,8 +304,13 @@ def run_slide(
     force: bool = False,
     profiler=None,
     allow_hashless_legacy: bool = True,
+    _expected_model_contracts: dict[str, dict] | None = None,
 ) -> dict:
-    """Embed one slide. Returns a summary dict.
+    """Embed one slide into exactly one configured grid. Returns a summary dict.
+
+    This is the single-grid primitive. Library callers that want registry-recommended
+    per-model geometry (and therefore potentially several grids) should use the
+    top-level :func:`raw2features.embed_slide` entry point instead.
 
     Resume / additive behaviour:
       * A validated 'complete' receipt for this exact request short-circuits
@@ -330,12 +368,19 @@ def run_slide(
     if store_exists:
         _assert_store_source(out_path, expected_source)
 
-    model_contracts = _expected_contracts_with_factory_probe(
-        cfg,
-        embedders,
-        embedder_factory if multi_device else None,
-        devices=devices,
-    )
+    if _expected_model_contracts is None:
+        model_contracts = _expected_contracts_with_factory_probe(
+            cfg,
+            embedders,
+            embedder_factory if multi_device else None,
+            devices=devices,
+        )
+    else:
+        model_contracts = dict(_expected_model_contracts)
+        if set(model_contracts) != set(cfg.models):
+            raise ValueError(
+                "Pre-resolved model contracts do not match this grid's models."
+            )
 
     # Fast path: a validated 'complete' receipt for this exact config (incl. the
     # model set), source, and requested output. ``--force`` deliberately bypasses it.
@@ -366,6 +411,7 @@ def run_slide(
             expected_model_contracts=model_contracts,
             compatible_grid_hashes=cfg.compatible_legacy_grid_hashes(),
             allow_hashless_legacy=allow_hashless_legacy,
+            require_mask=not cfg.no_seg,
         )
     # append: a grid of THIS geometry already exists -> add the missing models to it.
     # Otherwise we create a fresh store (no store yet) or ADD a new grid to an existing
@@ -728,9 +774,7 @@ def run_slide(
                                 thumbnail_tissue, _ = _segment(
                                     reader,
                                     cfg,
-                                    _stored_grid_segmenter(
-                                        out_path, grid_key_existing
-                                    ),
+                                    _stored_grid_segmenter(out_path, grid_key_existing),
                                 )
                                 thumb_meta = _write_grid_thumbnail(
                                     reader,
@@ -880,6 +924,8 @@ def resolve_run(
     requested_mpp: float | None = None,
     requested_patch_px: int | None = None,
     geometry_config: list[dict] | None = None,
+    *,
+    model_specs: dict | None = None,
 ):
     """``(groups, group_cfgs, run_hash)`` for a request.
 
@@ -889,8 +935,14 @@ def resolve_run(
     identically to the embed that produced the store.
     """
     groups = resolve_geometry(
-        cfg.models, requested_mpp, requested_patch_px, geometry_config
+        cfg.models,
+        requested_mpp,
+        requested_patch_px,
+        geometry_config,
+        specs=model_specs,
     )
+    if not groups:
+        raise ValueError("at least one model/extraction is required")
     group_cfgs = [
         replace(cfg, models=list(g.models), target_mpp=g.mpp, patch_px=g.patch_px)
         for g in groups
@@ -915,16 +967,26 @@ def embed_slide(
 ) -> dict:
     """Resolve per-model geometry and embed each group as its own grid in one store.
 
-    The user-facing entry point. Without an mpp/patch override, models that recommend
-    different geometries are each extracted at their own ``(mpp, patch_px)`` into a
-    separate ``grids/<key>/``; an explicit override collapses them onto one grid (see
+    The high-level public entry point. Without an mpp/patch override, models that
+    recommend different geometries are each extracted at their own
+    ``(mpp, patch_px)`` into a separate ``grids/<key>/``. An mpp-only override
+    retains each model's extraction size; supplying both mpp and patch size
+    collapses them onto one grid (see
     :func:`raw2features.embedders.model_registry.resolve_geometry`). It drives the
-    single-grid :func:`run_slide` once per group: the first writes the store, each later
-    group *finds-or-creates* its grid (never a wipe). ``force`` wipes once, on the first
-    group. A single per-slide receipt records the whole request for fast skip.
+    single-grid :func:`run_slide` once per group: the first writes the store, each
+    later group *finds-or-creates* its grid (never a wipe). ``force`` wipes once, on
+    the first group. A single per-slide receipt records the whole request for fast
+    skip.
 
     ``embedders`` (a warm worker's pre-built set for all of ``cfg.models``) is passed
-    through to every group; ``run_slide`` selects each group's subset.
+    through to every group; ``run_slide`` selects each group's subset. Their
+    :class:`~raw2features.embedders.base.ModelSpec` objects also drive geometry for
+    models outside the packaged registry. When only ``embedder_factory`` is supplied,
+    it is probed once for the same specifications and output contracts. High-level
+    overrides belong in ``requested_mpp`` / ``requested_patch_px`` (or
+    ``geometry_config``);
+    ``RunConfig.target_mpp`` and ``RunConfig.patch_px`` remain the concrete geometry
+    consumed by the single-grid :func:`run_slide` primitive.
     """
     from raw2features.slide_embedders.model_registry import (
         validate_slide_encoder_names,
@@ -946,13 +1008,26 @@ def embed_slide(
         raise ValueError(
             "Source URI is malformed and no safe output ID can be derived."
         ) from None
+    model_specs = {embedder.name: embedder.spec for embedder in (embedders or [])}
+    probed_contracts: dict[str, dict] | None = None
+    if not model_specs and embedder_factory is not None:
+        # A factory can be the only source for a programmatic external model. Probe it
+        # once before geometry resolution, then pass the resulting contracts into each
+        # run_slide call so the same loaded copy is not probed a second time.
+        model_specs, probed_contracts = _probe_factory_contracts(
+            cfg, embedder_factory, devices
+        )
     groups, group_cfgs, run_hash = resolve_run(
-        cfg, requested_mpp, requested_patch_px, geometry_config
+        cfg,
+        requested_mpp,
+        requested_patch_px,
+        geometry_config,
+        model_specs=model_specs,
     )
     out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
     grids = {grid_key(g.mpp, g.patch_px): list(g.models) for g in groups}
     expected_output = f"file://{os.path.abspath(out_path)}"
-    model_contracts = _expected_contracts_with_factory_probe(
+    model_contracts = probed_contracts or _expected_contracts_with_factory_probe(
         cfg,
         embedders,
         embedder_factory,
@@ -1010,23 +1085,29 @@ def embed_slide(
                 # requested geometry, but cannot identify which of several grids it
                 # represents. A multi-grid request therefore leaves it untouched.
                 allow_hashless_legacy=(len(group_cfgs) == 1),
+                _expected_model_contracts={
+                    model: model_contracts[model] for model in gc.models
+                },
             )
         )
-    elapsed = round(time.time() - started, 2)
     grids = {
         (result.get("grid") or grid_key(group.mpp, group.patch_px)): list(group.models)
         for group, result in zip(groups, results, strict=True)
     }
     status = "skipped" if all(r["status"] == "skipped" for r in results) else "complete"
 
-    # Coverage: each requested slide encoder must have run on some grid (the one holding
-    # its patch encoder). One that ran nowhere has no grid with its patch model -> clear
-    # error rather than a silent omission.
-    if cfg.slide_encoders and status != "skipped":
+    # Coverage: first use outputs produced on this request's grids. If a specific
+    # encoder's patch model lives only on another, already-existing grid, discover it
+    # with the same selection path as standalone `slide-embed` and produce it there.
+    # An explicit -s request never returns success without a complete output.
+    if cfg.slide_encoders:
         ran: set[str] = set()
         for r in results:
             ran |= set(r.get("slide_embeddings") or {})
         missing = [s for s in cfg.slide_encoders if s not in ran]
+        if missing:
+            ran |= set(_run_slide_encoders_from_store(out_path, missing, cfg.device))
+            missing = [s for s in cfg.slide_encoders if s not in ran]
         if missing:
             from raw2features.slide_embedders.model_registry import get_slide_spec
 
@@ -1040,6 +1121,8 @@ def embed_slide(
                 f"{slide_id}: slide encoder(s) {', '.join(need)} found no grid with "
                 "their patch encoder -- embed that patch model (at its geometry) first."
             )
+
+    elapsed = round(time.time() - started, 2)
 
     # Record the explicit job knobs (extraction plan, stain norm) so the run replays
     # from one artifact and the store is self-describing about how it was made.
@@ -1165,11 +1248,25 @@ def _expected_contracts_with_factory_probe(
         factory = embedder_factory or (
             lambda device: _build_embedders_on(cfg, cfg.models, device)
         )
+    _specs, contracts = _probe_factory_contracts(cfg, factory, worker_devices)
+    return contracts
+
+
+def _probe_factory_contracts(
+    cfg: RunConfig,
+    factory,
+    worker_devices: list[str],
+) -> tuple[dict[str, object], dict[str, dict]]:
+    """Probe a factory once for external specs and the shared worker contract."""
+
+    if not worker_devices:
+        raise ValueError("At least one patch worker device is required.")
     probe = factory(worker_devices[0])
     try:
         contracts = _expected_contracts_for_devices(cfg, probe, worker_devices)
         _assert_loaded_model_contracts(probe, contracts)
-        return contracts
+        specs = {embedder.name: embedder.spec for embedder in probe}
+        return specs, contracts
     finally:
         for embedder in probe:
             embedder.unload()
@@ -1390,8 +1487,16 @@ def _warn_read_block_memory(reader, cfg, read_px, read_workers, multichannel) ->
         )
 
 
-def _decode_batch(reader, batch, read_level, read_px, patch_px, executor=None,
-                  multichannel=False, read_block=1):
+def _decode_batch(
+    reader,
+    batch,
+    read_level,
+    read_px,
+    patch_px,
+    executor=None,
+    multichannel=False,
+    read_block=1,
+):
     """Decode one batch's patch list once at the store geometry (read + resample).
 
     Read read_px px then resample to exactly patch_px -> the stored patch is at the
@@ -1413,7 +1518,13 @@ def _decode_batch(reader, batch, read_level, read_px, patch_px, executor=None,
     """
     if read_block > 1:
         return _decode_batch_blocked(
-            reader, batch, read_level, read_px, patch_px, executor, multichannel,
+            reader,
+            batch,
+            read_level,
+            read_px,
+            patch_px,
+            executor,
+            multichannel,
             side=read_block,
         )
     if executor is None:
@@ -1510,8 +1621,18 @@ def _group_by_transform(embedders: list) -> list[list]:
 
 
 def _embed_patches(
-    reader, coords, read_level, read_px, patch_px, embedders, sink, cfg, prof=None,
-    multichannel=False, normalizer=None, device=None,
+    reader,
+    coords,
+    read_level,
+    read_px,
+    patch_px,
+    embedders,
+    sink,
+    cfg,
+    prof=None,
+    multichannel=False,
+    normalizer=None,
+    device=None,
 ):
     """Decode each patch once at the store geometry and embed it with every
     extractor in *embedders*, writing ``features/<model>`` in batches.
@@ -1622,8 +1743,14 @@ def _run_batches(
                     batch = coords[start : start + cfg.batch_size]
                     with prof.stage("read"):
                         patches = _decode_batch(
-                            reader, batch, read_level, read_px, patch_px, executor,
-                            multichannel, read_block=cfg.read_block,
+                            reader,
+                            batch,
+                            read_level,
+                            read_px,
+                            patch_px,
+                            executor,
+                            multichannel,
+                            read_block=cfg.read_block,
                         )
                         if normalizer is not None:  # per-patch stain norm (brightfield)
                             patches = [normalizer(p) for p in patches]
@@ -1662,7 +1789,9 @@ def _run_batches(
                     for emb in group:
                         with prof.stage("gpu"):
                             feats = (
-                                emb.embed_batch(batch_tensor).numpy().astype(cfg.features_dtype)
+                                emb.embed_batch(batch_tensor)
+                                .numpy()
+                                .astype(cfg.features_dtype)
                             )
                         with prof.stage("write"):
                             write_block(emb.name, start, feats)
@@ -1817,6 +1946,7 @@ def _inspect_store(
     expected_model_contracts: dict[str, dict] | None = None,
     compatible_grid_hashes: tuple[str, ...] = (),
     allow_hashless_legacy: bool = True,
+    require_mask: bool = False,
 ):
     """Find the grid matching ``expected_grid_hash``: ``(key | None, n, valid_models)``.
 
@@ -1842,6 +1972,26 @@ def _inspect_store(
     def _result_for(k: str):
         g = root[GRIDS][k]
         try:
+            header = dict(g.attrs.get("raw2features", {}))
+            patching = header.get("patching", {})
+            patching = patching if isinstance(patching, dict) else {}
+            declared_n = patching.get("n_patches")
+            expected_n = declared_n if isinstance(declared_n, int) else None
+            grid_shape = patching.get("grid_shape")
+            expected_mask_shape = (
+                tuple(int(v) for v in grid_shape)
+                if require_mask
+                and isinstance(grid_shape, (list, tuple))
+                and len(grid_shape) == 2
+                else None
+            )
+            if not _grid_scaffold_is_usable(
+                g,
+                expected_n=expected_n,
+                require_mask=require_mask,
+                expected_mask_shape=expected_mask_shape,
+            ):
+                return None
             n = int(g["coords"].shape[0])
         except Exception:  # noqa: BLE001 - skip an unreadable grid
             return None
@@ -1957,9 +2107,7 @@ def _missing_qc_tools(
         group = open_grid(root, key)
         n_patches = int(group["coords"].shape[0])
         present = {
-            tool
-            for tool in requested
-            if _qc_tool_complete(group, tool, n_patches)
+            tool for tool in requested if _qc_tool_complete(group, tool, n_patches)
         }
     except Exception:  # noqa: BLE001 - unreadable auxiliary state is missing
         return list(requested)
@@ -2030,9 +2178,7 @@ def _thumbnail_files_complete(
     )
 
 
-def _stored_thumbnail_metadata(
-    out_path: str, key: str | None = None
-) -> dict | None:
+def _stored_thumbnail_metadata(out_path: str, key: str | None = None) -> dict | None:
     """Read live root or per-grid thumbnail metadata, even when an asset is missing."""
 
     try:
@@ -2113,9 +2259,7 @@ def _stored_grid_segmenter(out_path: str, key: str | None) -> str | None:
         return None
 
 
-def _grid_geojson_path(
-    out_dir: str, slide_id: str, key: str, primary_key: str
-) -> str:
+def _grid_geojson_path(out_dir: str, slide_id: str, key: str, primary_key: str) -> str:
     """Backward-compatible primary path; namespaced path for every other grid."""
 
     filename = (
@@ -2126,9 +2270,7 @@ def _grid_geojson_path(
     return os.path.join(out_dir, filename)
 
 
-def _grid_thumbnail_overlay_name(
-    slide_id: str, key: str, primary_key: str
-) -> str:
+def _grid_thumbnail_overlay_name(slide_id: str, key: str, primary_key: str) -> str:
     return (
         f"{slide_id}.thumbnail.overlay.png"
         if key == primary_key
@@ -2190,9 +2332,7 @@ def _stored_grid_summary(
         root = zarr.open_group(out_path, mode="r", use_consolidated=False)
         keys = grid_keys(root)
         stored = {
-            key: dict(root[GRIDS][key].attrs.get("raw2features", {})).get(
-                "grid_hash"
-            )
+            key: dict(root[GRIDS][key].attrs.get("raw2features", {})).get("grid_hash")
             for key in keys
         }
         result: dict[str, list[str]] = {}
@@ -2202,9 +2342,7 @@ def _stored_grid_summary(
             match = None
             for candidate in dict.fromkeys(candidates):
                 hits = [
-                    key
-                    for key in keys
-                    if key not in used and stored[key] == candidate
+                    key for key in keys if key not in used and stored[key] == candidate
                 ]
                 if len(hits) == 1:
                     match = hits[0]
@@ -2249,7 +2387,13 @@ def _slide_encoders_for(names: list[str], available: list[str]) -> list[str]:
 
 
 def _run_qc(
-    qc_tools, reader, sink, coords, level0_patch, device, stain_norm=None,
+    qc_tools,
+    reader,
+    sink,
+    coords,
+    level0_patch,
+    device,
+    stain_norm=None,
     artifact_mpp="1.5",
 ) -> None:
     """Run requested QC producers on the active grid -> write ``qc/<tool>/`` scores.
@@ -2338,6 +2482,76 @@ def _run_slide_encoders(
     return results
 
 
+def _run_slide_encoders_from_store(
+    out_path: str,
+    slide_encoder_names: list[str],
+    device: str,
+) -> dict[str, str]:
+    """Produce missing slide outputs by discovering compatible grids in a store.
+
+    This is the high-level inline fallback for patch features written by an earlier
+    request. Grid and patch-model selection is shared with standalone ``slide-embed``;
+    no WSI is reopened and complete outputs are left untouched.
+    """
+    import zarr
+
+    from raw2features.slide_embedders.encoding import (
+        encode_slide_embedding,
+        resolve_slide_grid,
+        slide_embedding_is_complete,
+        write_slide_embedding,
+    )
+
+    root = zarr.open_group(out_path, mode="r+", use_consolidated=False)
+    results: dict[str, str] = {}
+    wrote = False
+    for slide_model_name in slide_encoder_names:
+        try:
+            selected_grid, group, patch_model = resolve_slide_grid(
+                root,
+                slide_model_name,
+            )
+        except (KeyError, ValueError):
+            # Coverage is checked by embed_slide after every requested grid and this
+            # fallback have been tried. Selection failure here means only that no
+            # compatible pre-existing grid was found; model-load/encode errors below
+            # still propagate rather than being mistaken for a missing grid.
+            continue
+        if slide_embedding_is_complete(
+            group,
+            slide_model_name,
+            patch_model=patch_model,
+            device=device,
+        ):
+            results[slide_model_name] = (
+                f"grids/{selected_grid}/slide/{slide_model_name}"
+            )
+            continue
+        encoding = encode_slide_embedding(
+            group,
+            slide_model_name,
+            device,
+            patch_model=patch_model,
+        )
+        if encoding is None:
+            continue
+        write_slide_embedding(
+            group,
+            slide_model_name,
+            encoding.vector,
+            encoding.provenance,
+        )
+        wrote = True
+        results[slide_model_name] = f"grids/{selected_grid}/slide/{slide_model_name}"
+
+    if wrote:
+        try:
+            zarr.consolidate_metadata(root.store)
+        except Exception:  # noqa: BLE001 - consolidation is rebuildable metadata
+            pass
+    return results
+
+
 def _models_header(
     embedders: list,
     model_contracts: dict[str, dict] | None = None,
@@ -2378,8 +2592,17 @@ def _models_header(
 
 
 def _build_header(
-    reader, grid, seg_meta, embedders, slide_id, n, thumbnail, grid_hash, prov,
-    panel_meta=None, model_contracts=None,
+    reader,
+    grid,
+    seg_meta,
+    embedders,
+    slide_id,
+    n,
+    thumbnail,
+    grid_hash,
+    prov,
+    panel_meta=None,
+    model_contracts=None,
 ) -> dict:
     header = {
         "schema_version": SCHEMA_VERSION,

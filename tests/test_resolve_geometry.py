@@ -2,15 +2,18 @@
 
 With no `--mpp`/`--patch-size`, each model is extracted at its own card geometry
 (`recommended_mpp`, `recommended_patch_px` or `input_size`); models that disagree
-get SEPARATE grids instead of raising. An explicit `--mpp`/`--patch-size` collapses
-everything onto one grid; a config controls geometry per model (incl. repeats).
+get SEPARATE grids instead of raising. A bare `--mpp` preserves model patch sizes;
+supplying both `--mpp` and `--patch-size` collapses everything onto one grid. A config
+controls geometry per model (incl. repeats).
 Pure in (models, mpp, patch_px, config) so every CLI resolves identically.
 """
 
 from __future__ import annotations
 
+import pytest
+
+from raw2features.embedders.base import ModelSpec
 from raw2features.embedders.model_registry import (
-    DEFAULT_PATCH_PX,
     DEFAULT_TARGET_MPP,
     get_spec,
     model_geometry,
@@ -41,12 +44,42 @@ def test_scale_agnostic_baseline_defaults():
     assert model_geometry("resnet50") == (DEFAULT_TARGET_MPP, 224, "default")
 
 
-def test_unknown_model_falls_back_to_default_geometry():
-    assert model_geometry("not_a_real_model") == (
-        DEFAULT_TARGET_MPP,
-        DEFAULT_PATCH_PX,
-        "default",
+def _external_spec(
+    *, name="external", recommended_mpp=0.75, recommended_patch_px=96
+):
+    return ModelSpec(
+        name=name,
+        family="external",
+        source="external://weights",
+        embedding_dim=8,
+        input_size=64,
+        pooling="cls",
+        mean=(0.5, 0.5, 0.5),
+        std=(0.5, 0.5, 0.5),
+        transform_source_url="https://example.org/external",
+        license="MIT",
+        gated=False,
+        recommended_mpp=recommended_mpp,
+        recommended_patch_px=recommended_patch_px,
     )
+
+
+def test_unknown_model_requires_an_injected_specification():
+    with pytest.raises(ValueError, match="not in the registry or supplied"):
+        model_geometry("not_a_real_model")
+
+
+def test_external_model_geometry_comes_from_its_injected_specification():
+    spec = _external_spec()
+    assert model_geometry("external", specs={"external": spec}) == (
+        0.75,
+        96,
+        "recommended",
+    )
+    groups = resolve_geometry(["external"], specs={"external": spec})
+    assert [(g.mpp, g.patch_px, g.models) for g in groups] == [
+        (0.75, 96, ("external",))
+    ]
 
 
 # --- per-model grouping (no override) --------------------------------------
@@ -87,15 +120,24 @@ def test_duplicate_model_names_dedup_within_a_grid():
     assert len(groups) == 1 and groups[0].models == ("uni",)
 
 
-# --- global collapse (explicit override) -----------------------------------
+def test_high_level_run_resolution_rejects_an_empty_request():
+    from raw2features.pipeline.runner import RunConfig, resolve_run
+
+    with pytest.raises(ValueError, match="at least one model/extraction is required"):
+        resolve_run(RunConfig(models=[]))
 
 
-def test_explicit_mpp_collapses_all_to_one_grid():
+# --- explicit geometry overrides ------------------------------------------
+
+
+def test_explicit_mpp_preserves_each_models_recommended_patch_size():
     groups = resolve_geometry(["uni", "conch", "retccl"], requested_mpp=0.5)
-    assert len(groups) == 1
-    assert (groups[0].mpp, groups[0].patch_px) == (0.5, DEFAULT_PATCH_PX)
-    assert set(groups[0].models) == {"uni", "conch", "retccl"}
-    assert groups[0].source == "explicit"
+    assert _geom_by_models(groups) == {
+        frozenset({"uni"}): (0.5, 224),
+        frozenset({"conch"}): (0.5, 448),
+        frozenset({"retccl"}): (0.5, 256),
+    }
+    assert all(group.source == "explicit" for group in groups)
 
 
 def test_explicit_mpp_and_patch_size_collapse():

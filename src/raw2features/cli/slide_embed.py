@@ -67,15 +67,13 @@ def slide_embed(
     import zarr
 
     from raw2features.core.device import resolve_device
-    from raw2features.core.store import grid_for_model, grid_keys, open_grid
     from raw2features.slide_embedders.encoding import (
         encode_slide_embedding,
-        resolve_slide_patch_model,
+        resolve_slide_grid,
         slide_embedding_is_complete,
         write_slide_embedding,
     )
     from raw2features.slide_embedders.model_registry import (
-        get_slide_spec,
         validate_slide_encoder_names,
     )
 
@@ -103,44 +101,13 @@ def slide_embed(
     # consolidated metadata predates any slide/ group we add here. Reading the
     # live metadata avoids stale-key KeyErrors; we re-consolidate at the end.
     root = zarr.open_group(path, mode="r+", use_consolidated=False)
-    keys = grid_keys(root)
-    if not keys:
-        typer.echo(
-            "Error: store has no grids/ group; expected a v0.1 embeddings store.",
-            err=True,
-        )
-        raise typer.Exit(1)
 
     for slide_model_name in slide_encoder:
         try:
-            if grid is not None:
-                if grid not in keys:
-                    raise ValueError(
-                        f"Unknown grid {grid!r}. Available grid keys: {keys}"
-                    )
-                selected_grid = grid
-            elif len(keys) == 1:
-                selected_grid = keys[0]
-            elif patch_model is not None:
-                selected_grid = grid_for_model(root, patch_model)
-            else:
-                required = get_slide_spec(slide_model_name).patch_encoder
-                if required == "any":
-                    raise ValueError(
-                        f"Slide encoder {slide_model_name!r} is model-agnostic and "
-                        f"the store has multiple grids {keys}; pass --grid or "
-                        "--patch-model to choose one."
-                    )
-                selected_grid = grid_for_model(root, required)
-            group = open_grid(root, selected_grid)
-        except (KeyError, ValueError) as exc:
-            typer.echo(f"Error: {exc}", err=True)
-            raise typer.Exit(1) from exc
-
-        try:
-            selected_patch_model = resolve_slide_patch_model(
-                group,
+            selected_grid, group, selected_patch_model = resolve_slide_grid(
+                root,
                 slide_model_name,
+                grid=grid,
                 patch_model=patch_model,
             )
         except (KeyError, ValueError) as exc:

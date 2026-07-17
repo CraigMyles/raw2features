@@ -165,6 +165,52 @@ def slide_embedding_is_complete(
     return bool(vector.size and np.isfinite(vector).all() and (vector != 0).any())
 
 
+def resolve_slide_grid(
+    root,
+    slide_model: str,
+    *,
+    grid: str | None = None,
+    patch_model: str | None = None,
+):
+    """Select the store grid and patch model for one slide encoder request.
+
+    This is the shared selection contract for standalone ``slide-embed`` and inline
+    ``embed -s`` fallback. A specific slide model is discovered by its required patch
+    encoder across all grids. Model-agnostic encoders require an explicit choice when
+    the store has several grids.
+    """
+    from raw2features.core.store import grid_for_model, grid_keys, open_grid
+    from raw2features.slide_embedders.model_registry import get_slide_spec
+
+    keys = grid_keys(root)
+    if not keys:
+        raise ValueError("store has no grids/ group; expected a v0.1 embeddings store")
+    if grid is not None:
+        if grid not in keys:
+            raise ValueError(f"Unknown grid {grid!r}. Available grid keys: {keys}")
+        selected_grid = grid
+    elif len(keys) == 1:
+        selected_grid = keys[0]
+    elif patch_model is not None:
+        selected_grid = grid_for_model(root, patch_model)
+    else:
+        required = get_slide_spec(slide_model).patch_encoder
+        if required == "any":
+            raise ValueError(
+                f"Slide encoder {slide_model!r} is model-agnostic and the store has "
+                f"multiple grids {keys}; pass --grid or --patch-model to choose one."
+            )
+        selected_grid = grid_for_model(root, required)
+
+    group = open_grid(root, selected_grid)
+    selected_patch_model = resolve_slide_patch_model(
+        group,
+        slide_model,
+        patch_model=patch_model,
+    )
+    return selected_grid, group, selected_patch_model
+
+
 def resolve_slide_patch_model(
     group,
     slide_model: str,

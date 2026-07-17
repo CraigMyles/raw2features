@@ -20,6 +20,8 @@ from raw2features.pipeline.runner import (
     slide_id_from_path,
 )
 
+from ._validation import validate_amp, validate_geometry
+
 
 def verify(
     slide: str = typer.Argument(...),
@@ -34,6 +36,11 @@ def verify(
     ),
     mpp: float | None = typer.Option(
         None, "--mpp", help="Target µm/px (default: model recommended; matches embed)."
+    ),
+    source_mpp: float | None = typer.Option(
+        None,
+        "--source-mpp",
+        help="Source level-0 µm/px override (must match the embed run).",
     ),
     patch_size: int | None = typer.Option(
         None, "--patch-size", help="Patch size in px (default: model recommended)."
@@ -62,7 +69,12 @@ def verify(
     quiet: bool = typer.Option(False, "--quiet"),
 ) -> None:
     """Exit 0 if the slide is already complete & output-validated, else exit 1."""
+    validate_amp(amp)
+    validate_geometry(
+        mpp=mpp, patch_size=patch_size, step=step, source_mpp=source_mpp
+    )
     from raw2features.core.device import resolve_device
+    from raw2features.embedders.model_registry import resolve_geometry
     from raw2features.pipeline.runner import resolve_run
 
     geometry_config = None
@@ -73,13 +85,33 @@ def verify(
         models = list(dict.fromkeys(e["model"] for e in geometry_config))
     else:
         models = list(feature_extractor)
+    # Verification has no programmatic external-embedder instance from which to
+    # derive a current contract or geometry. Fail closed with the established clean
+    # diagnostic before the geometry resolver rejects the unknown name.
+    from raw2features.embedders.model_registry import load_registry
+
+    registered = load_registry()
+    unknown = [model for model in models if model not in registered]
+    if unknown:
+        if not quiet:
+            typer.echo(
+                "cannot derive the current output contract for unregistered "
+                f"model(s) {', '.join(unknown)}; incomplete",
+                err=True,
+            )
+        raise typer.Exit(code=1)
+    groups = resolve_geometry(models, mpp, patch_size, geometry_config)
+    if not groups:
+        raise typer.BadParameter("at least one model/extraction is required")
+    representative = groups[0]
     cfg = RunConfig(
         models=models,
         reader=reader,
         segmenter=segmenter,
         no_seg=no_seg,
-        target_mpp=mpp if mpp is not None else 1.0,  # per-group geometry overrides this
-        patch_px=patch_size if patch_size is not None else 224,
+        target_mpp=representative.mpp,
+        source_mpp=source_mpp,
+        patch_px=representative.patch_px,
         step_px=step,
         tissue_threshold=tissue_threshold,
         features_dtype=features_dtype,
@@ -113,18 +145,6 @@ def verify(
         if expected_path is not None
         else None
     )
-    from raw2features.embedders.model_registry import load_registry
-
-    registered = load_registry()
-    unknown = [model for model in models if model not in registered]
-    if unknown:
-        if not quiet:
-            typer.echo(
-                "cannot derive the current output contract for unregistered "
-                f"model(s) {', '.join(unknown)}; incomplete",
-                err=True,
-            )
-        raise typer.Exit(code=1)
     contracts = expected_model_contracts(cfg)
     expected_grid_models = {
         group_cfg.grid_hash(): list(group_cfg.models) for group_cfg in group_cfgs

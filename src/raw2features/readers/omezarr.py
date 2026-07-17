@@ -62,11 +62,11 @@ class _ChunkCache:
     """Thread-safe LRU cache of decompressed 2D (y, x) chunk planes.
 
     Keyed by ``(level, c_index, chunk_y, chunk_x)``; the value is the decompressed
-    chunk plane (uint8/source dtype, edge-clipped to the array bounds) exactly as
-    a single chunk-aligned zarr slice returns it. Adjacent ~224 px patches read in
-    grid order overlap the same 512x512 chunks, so caching the decompressed plane
-    lets the second patch reuse it instead of re-decompressing - and an RGB read
-    touches three channel chunks, all cached.
+    chunk plane (uint8/source dtype, edge-clipped to the array bounds), normalised
+    from the source axis order to ``(y, x)``. Adjacent ~224 px patches read in grid
+    order overlap the same 512x512 chunks, so caching the decompressed plane lets
+    the second patch reuse it instead of re-decompressing - and an RGB read touches
+    three channel chunks, all cached.
 
     The reads run on the pipeline's parallel read-worker pool, so get/put are
     guarded by a lock. ``capacity`` bounds the cache to N planes (LRU eviction);
@@ -171,6 +171,11 @@ class OmeZarrReader(WSISource):
         # the on-disk chunk grid for whatever layout the store actually uses.
         self._chunk_hw: list[tuple[int, int]] = []
         self._chunk_cache = _ChunkCache(_chunk_cache_capacity())
+        # Float pixels have no dtype range to distinguish normalized [0, 1] from
+        # byte-like [0, 255]. This multiplier is inferred once from level 0 at open
+        # (255 or 1), then reused for every region and pyramid level. ``None`` means
+        # the level-0 dtype is not floating and keeps the integer path untouched.
+        self._float_to_uint8_scale: float | None = None
         # Query-authenticated HTTP paths use a custom read-only store so the raw
         # query is attached after every metadata/chunk key. Cache one per child root.
         self._source_stores: dict[str, object] = {}
@@ -258,6 +263,7 @@ class OmeZarrReader(WSISource):
             (int(a.chunks[yi]), int(a.chunks[xi]))  # type: ignore[attr-defined]
             for a in self._arrays
         ]
+        self._float_to_uint8_scale = self._infer_float_to_uint8_scale(self._arrays[0])
         self._channel_names = self._read_omero_channels(ms_path)
         self._warn_plane_collapse(self._arrays[0].shape)  # type: ignore[attr-defined]
         self._chunk_cache.clear()
@@ -265,27 +271,28 @@ class OmeZarrReader(WSISource):
         return self
 
     def _warn_plane_collapse(self, level0_shape: tuple[int, ...]) -> None:
-        """Warn if the source has a t or z extent > 1 (only plane 0 is read).
+        """Warn for every extra axis with extent > 1 (only index 0 is read).
 
-        The reader serves a single 2D (y, x[, c]) plane per patch, indexing any time
-        or depth axis at 0. A multi-timepoint or z-stack source is therefore silently
-        reduced to its first plane - fine if intended, a trap if not - so we surface it
-        once at open rather than embedding plane 0 without a word.
+        The reader serves a single 2D ``(y, x[, c])`` plane per patch, indexing every
+        axis other than x, y, and c at 0. Any non-singleton extra axis is therefore
+        reduced to its first plane - fine if intended, a trap if not - so we surface
+        it once at open rather than embedding plane 0 without a word.
         """
-        for axis in ("t", "z"):
-            if axis in self._dims:
-                extent = int(level0_shape[self._dims.index(axis)])
-                if extent > 1:
-                    warnings.warn(
-                        f"{source_uri(self.path)}: source has {axis}={extent}; only "
-                        f"{axis}=0 is "
-                        "read (the reader serves one 2D plane per patch).",
-                        stacklevel=2,
-                    )
+        for pos, axis in enumerate(self._dims):
+            if axis in {"x", "y", "c"}:
+                continue
+            extent = int(level0_shape[pos])
+            if extent > 1:
+                warnings.warn(
+                    f"{source_uri(self.path)}: source has {axis}={extent}; only "
+                    f"{axis}=0 is read (the reader serves one 2D plane per patch).",
+                    stacklevel=2,
+                )
 
     def close(self) -> None:
         self._arrays = []
         self._chunk_hw = []
+        self._float_to_uint8_scale = None
         self._chunk_cache.clear()
         for store in self._source_stores.values():
             store.close()  # type: ignore[attr-defined]
@@ -430,8 +437,12 @@ class OmeZarrReader(WSISource):
         nc = block.shape[2]
         if block.shape[0] != h or block.shape[1] != w:
             out = np.zeros((h, w, nc), dtype=block.dtype)
-            ph, pw = min(block.shape[0], h), min(block.shape[1], w)
-            out[:ph, :pw, :] = block[:ph, :pw, :]
+            dst_y = min(h, max(0, -y0))
+            dst_x = min(w, max(0, -x0))
+            ph = min(block.shape[0], h - dst_y)
+            pw = min(block.shape[1], w - dst_x)
+            if ph > 0 and pw > 0:
+                out[dst_y : dst_y + ph, dst_x : dst_x + pw, :] = block[:ph, :pw, :]
             block = out
         return np.ascontiguousarray(block)
 
@@ -452,7 +463,7 @@ class OmeZarrReader(WSISource):
     def _read_hwc(
         self, arr: object, level: int, x0: int, y0: int, w: int, h: int
     ) -> np.ndarray:
-        """Slice a 2-5D level array and normalise to (h, w, 3) uint8.
+        """Slice a multidimensional level array and normalise to (h, w, 3) uint8.
 
         The (y, x) window is assembled from a decompressed-chunk cache (see
         ``_read_block_cached``) so adjacent/overlapping patches reuse already-
@@ -480,13 +491,20 @@ class OmeZarrReader(WSISource):
         # Convert to 8-bit RGB by rescaling on the source dtype range -- never a
         # truncating ``astype(uint8)``, which would wrap uint16/float pixels
         # mod 256 and silently corrupt them (e.g. uint16 40000 -> 64).
-        block = self._to_uint8(block)
+        block = self._to_uint8(
+            block,
+            float_scale=self._float_to_uint8_scale,
+        )
 
         # Pad to the requested size if the read was clipped at a border.
         if block.shape[0] != h or block.shape[1] != w:
             out = np.full((h, w, 3), 255, dtype=np.uint8)
-            ph, pw = min(block.shape[0], h), min(block.shape[1], w)
-            out[:ph, :pw, :] = block[:ph, :pw, :]
+            dst_y = min(h, max(0, -y0))
+            dst_x = min(w, max(0, -x0))
+            ph = min(block.shape[0], h - dst_y)
+            pw = min(block.shape[1], w - dst_x)
+            if ph > 0 and pw > 0:
+                out[dst_y : dst_y + ph, dst_x : dst_x + pw, :] = block[:ph, :pw, :]
             block = out
         return np.ascontiguousarray(block)
 
@@ -496,8 +514,9 @@ class OmeZarrReader(WSISource):
         """Assemble the (y, x[, c]) window from cached decompressed chunk planes.
 
         Returns ``(block, sliced)`` where ``block`` is byte-identical to a direct
-        ``arr[t0, :, z0, y0:y0+h, x0:x0+w]`` slice (scalar t/z axes dropped, axes in
-        ``self._dims`` order) and ``sliced`` lists the surviving non-scalar dims.
+        source-order slice with every extra axis indexed at 0 (and the complete c,
+        y, and x ranges retained). ``sliced`` lists those surviving dimensions in
+        ``self._dims`` order.
 
         The window is built by copying from per-(channel, chunk_y, chunk_x) planes
         pulled from ``self._chunk_cache``; a miss decompresses exactly one chunk via
@@ -515,8 +534,8 @@ class OmeZarrReader(WSISource):
         clip_h = max(0, y_hi - y_lo)
         clip_w = max(0, x_hi - x_lo)
 
-        # The surviving (non-scalar) dims in self._dims order; t/z/... collapse to a
-        # single plane just as the direct slice's scalar 0-index did.
+        # The surviving dimensions in self._dims order; every extra axis collapses
+        # to a single plane just as the direct slice's scalar 0-index did.
         ci = None
         sliced: list[str] = []
         for pos, d in enumerate(self._dims):
@@ -572,9 +591,10 @@ class OmeZarrReader(WSISource):
     ) -> np.ndarray:
         """Decompress one chunk-aligned (y, x) plane for a single channel.
 
-        Builds a full index over ``self._dims`` (scalar axes -> 0, the c axis -> the
-        single channel ``c_val``, y/x -> the chunk's bounds) so the result is a 2D
-        ``(y, x)`` array, exactly the chunk's pixels the multi-chunk slice would use.
+        Builds a full index over ``self._dims`` (extra axes -> 0, the c axis -> the
+        single channel ``c_val``, y/x -> the chunk's bounds), then explicitly
+        transposes the two surviving spatial dimensions from source order to
+        ``(y, x)``. This keeps the cache contract independent of source axis order.
         """
         idx: list[object] = []
         for d in self._dims:
@@ -586,7 +606,13 @@ class OmeZarrReader(WSISource):
                 idx.append(c_val)
             else:
                 idx.append(0)
-        return np.asarray(arr[tuple(idx)])  # type: ignore[index]
+        plane = np.asarray(arr[tuple(idx)])  # type: ignore[index]
+        spatial_order = [d for d in self._dims if d in {"y", "x"}]
+        plane = np.transpose(
+            plane,
+            (spatial_order.index("y"), spatial_order.index("x")),
+        )
+        return np.ascontiguousarray(plane)
 
     @staticmethod
     def _place(
@@ -600,7 +626,9 @@ class OmeZarrReader(WSISource):
         """Write a 2D (y, x) sub-window into ``block`` at the right axis positions.
 
         ``block`` axes follow ``nonscalar`` (dims order). The c axis (if present) is
-        indexed by the scalar ``c_pos``; y/x take the destination slices.
+        indexed by the scalar ``c_pos``; y/x take the destination slices. The cached
+        ``sub`` plane is always ``(y, x)``, so it is transposed back to the block's
+        source spatial order for assignment when necessary.
         """
         sel: list[object] = []
         for d in nonscalar:
@@ -610,11 +638,90 @@ class OmeZarrReader(WSISource):
                 sel.append(dst_y)
             else:  # "x"
                 sel.append(dst_x)
-        block[tuple(sel)] = sub
+        spatial_order = [d for d in nonscalar if d in {"y", "x"}]
+        source_order = ("y", "x")
+        sub_in_block_order = np.transpose(
+            sub,
+            tuple(source_order.index(d) for d in spatial_order),
+        )
+        block[tuple(sel)] = sub_in_block_order
+
+    def _infer_float_to_uint8_scale(self, level0: object) -> float | None:
+        """Choose one float convention for the opened slide from level zero.
+
+        OME-NGFF does not require float arrays to declare whether pixels use
+        normalized ``[0, 1]`` or byte-like ``[0, 255]`` values. Scanning a whole
+        level-zero WSI at open would be prohibitively expensive, so inspect a
+        deterministic 3x3 lattice of complete source chunks (up to the first three
+        channels), plus the array fill value. Any finite value above 1 selects the
+        byte-like convention; otherwise the slide is treated as normalized.
+
+        The important invariant is that this bounded, slide-level decision is made
+        once. It is never revised from a later patch or lower pyramid level, so two
+        regions from one float slide cannot receive different scaling merely because
+        their local value ranges differ.
+        """
+        dtype = np.dtype(level0.dtype)  # type: ignore[attr-defined]
+        if not np.issubdtype(dtype, np.floating):
+            return None
+
+        fill_value = getattr(level0, "fill_value", None)
+        try:
+            fill = float(fill_value)
+        except (TypeError, ValueError):
+            fill = float("nan")
+        if np.isfinite(fill) and fill > 1.0:
+            return 1.0
+
+        height = self._level_dims[0].height
+        width = self._level_dims[0].width
+        if height <= 0 or width <= 0:
+            return 255.0
+        chunk_h, chunk_w = self._chunk_hw[0]
+        chunk_rows = (height + chunk_h - 1) // chunk_h
+        chunk_cols = (width + chunk_w - 1) // chunk_w
+        sample_rows = sorted({0, (chunk_rows - 1) // 2, chunk_rows - 1})
+        sample_cols = sorted({0, (chunk_cols - 1) // 2, chunk_cols - 1})
+
+        if "c" in self._dims:
+            ci = self._dims.index("c")
+            channels: tuple[int | None, ...] = tuple(
+                range(min(3, int(level0.shape[ci])))  # type: ignore[attr-defined]
+            )
+        else:
+            channels = (None,)
+
+        for chunk_y in sample_rows:
+            y0 = chunk_y * chunk_h
+            y1 = min(y0 + chunk_h, height)
+            for chunk_x in sample_cols:
+                x0 = chunk_x * chunk_w
+                x1 = min(x0 + chunk_w, width)
+                for channel in channels:
+                    sample = self._read_chunk_plane(
+                        level0,
+                        channel,
+                        y0,
+                        y1,
+                        x0,
+                        x1,
+                    )
+                    finite = sample[np.isfinite(sample)]
+                    if finite.size and float(finite.max()) > 1.0:
+                        return 1.0
+        return 255.0
 
     @staticmethod
-    def _to_uint8(block: np.ndarray) -> np.ndarray:
-        """Rescale an image to 8-bit by its dtype range (never wrap mod 256)."""
+    def _to_uint8(
+        block: np.ndarray,
+        *,
+        float_scale: float | None = None,
+    ) -> np.ndarray:
+        """Rescale an image to 8-bit by its dtype range (never wrap mod 256).
+
+        ``float_scale`` is the slide-level convention selected at open. Leaving it
+        unset preserves the standalone helper's historical local-range behaviour.
+        """
         if block.dtype == np.uint8:
             return block
         if np.issubdtype(block.dtype, np.unsignedinteger):
@@ -627,11 +734,17 @@ class OmeZarrReader(WSISource):
             scaled = np.rint(np.clip(block.astype(np.float32), 0, None) * scale)
             return np.clip(scaled, 0, 255).astype(np.uint8)
         if np.issubdtype(block.dtype, np.floating):
-            # Float images are usually [0, 1] (normalized) or already [0, 255]; pick the
-            # convention from the data range (NaNs treated as 0).
+            # Float images are usually [0, 1] (normalized) or already [0, 255]. The
+            # reader supplies one level-zero decision; the fallback is retained for
+            # backwards-compatible direct calls to this internal helper.
             b = np.nan_to_num(block.astype(np.float32))
-            if b.size and float(b.max()) <= 1.0:
-                b = b * 255.0
+            scale = float_scale
+            if scale is None:
+                scale = 255.0 if b.size and float(b.max()) <= 1.0 else 1.0
+            if scale != 1.0:
+                # Clip before multiplying so +inf (converted to float32 max by
+                # nan_to_num) saturates without an overflow warning.
+                b = np.clip(b, 0, 255.0 / scale) * scale
             return np.clip(np.rint(b), 0, 255).astype(np.uint8)
         raise NotImplementedError(
             f"unsupported OME-Zarr pixel dtype {block.dtype!r}; expected uint8, "

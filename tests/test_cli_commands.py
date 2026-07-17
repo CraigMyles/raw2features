@@ -7,8 +7,10 @@ actual `app` command surface. These run them as a user would (typer CliRunner).
 from __future__ import annotations
 
 import os
+from importlib import import_module
 
 import pytest
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 from conftest import MockEmbedder, build_ngff_v04
@@ -22,15 +24,161 @@ except ImportError:
     _TORCH = False
 
 
+def test_embed_cli_seeds_runconfig_from_resolved_geometry(tmp_path, monkeypatch):
+    """The high-level CLI must not encode "unset" as the real 1.0/224 geometry."""
+    embed_module = import_module("raw2features.cli.embed")
+    captured = {}
+
+    def fake_embed_slide(slide, out_dir, cfg, **kwargs):
+        captured.update(cfg=cfg, kwargs=kwargs)
+        return {"status": "complete"}
+
+    monkeypatch.setattr(embed_module, "embed_slide", fake_embed_slide)
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed",
+            str(tmp_path / "unused.zarr"),
+            str(tmp_path / "out"),
+            "-m",
+            "conch_v1_5",
+            "--mpp",
+            "1.0",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert (captured["cfg"].target_mpp, captured["cfg"].patch_px) == (1.0, 512)
+    assert captured["kwargs"]["requested_mpp"] == 1.0
+    assert captured["kwargs"]["requested_patch_px"] is None
+
+
+def test_verify_cli_hashes_the_source_mpp_override(tmp_path, monkeypatch):
+    verify_module = import_module("raw2features.cli.verify")
+    captured = {}
+
+    def fake_contracts(cfg):
+        captured["source_mpp"] = cfg.source_mpp
+        return {}
+
+    monkeypatch.setattr(verify_module, "expected_model_contracts", fake_contracts)
+    monkeypatch.setattr(verify_module, "is_complete", lambda *args, **kwargs: True)
+    result = CliRunner().invoke(
+        app,
+        [
+            "verify",
+            str(tmp_path / "slide.zarr"),
+            "--receipts-dir",
+            str(tmp_path / "receipts"),
+            "--source-mpp",
+            "0.37",
+            "--device",
+            "cpu",
+            "--quiet",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert captured["source_mpp"] == pytest.approx(0.37)
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["embed", "slide.zarr", "out"],
+        ["embed-many", "slides", "out"],
+        ["benchmark", "slide.zarr"],
+        ["verify", "slide.zarr", "--receipts-dir", "receipts"],
+    ],
+)
+def test_commands_reject_unknown_amp_before_doing_work(args):
+    result = CliRunner().invoke(app, [*args, "--amp", "fast16"])
+    output = strip_ansi(result.output)
+
+    assert result.exit_code == 2
+    assert "--amp" in output
+    assert "auto, fp32, bf16, fp16" in output
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["embed", "slide.zarr", "out"],
+        ["embed-many", "slides", "out"],
+        ["benchmark", "slide.zarr"],
+    ],
+)
+@pytest.mark.parametrize("batch_size", ["0", "-3"])
+def test_embedding_commands_reject_nonpositive_batch_size(args, batch_size):
+    result = CliRunner().invoke(app, [*args, "--batch-size", batch_size])
+    output = strip_ansi(result.output)
+
+    assert result.exit_code == 2
+    assert "--batch-size" in output
+    assert "greater than zero" in output
+
+
+@pytest.mark.parametrize(
+    ("command", "option"),
+    [
+        ("embed", "--mpp"),
+        ("embed", "--source-mpp"),
+        ("embed", "--patch-size"),
+        ("embed", "--step"),
+        ("embed-many", "--mpp"),
+        ("embed-many", "--source-mpp"),
+        ("embed-many", "--patch-size"),
+        ("embed-many", "--step"),
+        ("verify", "--mpp"),
+        ("verify", "--source-mpp"),
+        ("verify", "--patch-size"),
+        ("verify", "--step"),
+        ("benchmark", "--mpp"),
+        ("benchmark", "--patch-size"),
+    ],
+)
+def test_geometry_options_reject_zero_before_work(command, option):
+    positional = {
+        "embed": ["slide.zarr", "out"],
+        "embed-many": ["slides", "out"],
+        "verify": ["slide.zarr", "--receipts-dir", "receipts"],
+        "benchmark": ["slide.zarr"],
+    }[command]
+    result = CliRunner().invoke(app, [command, *positional, option, "0"])
+    output = strip_ansi(result.output)
+
+    assert result.exit_code == 2
+    assert option in output
+    assert "greater than zero" in output
+
+
+def test_mpp_option_rejects_nonfinite_value_before_work():
+    result = CliRunner().invoke(
+        app, ["embed", "slide.zarr", "out", "--mpp", "nan"]
+    )
+    output = strip_ansi(result.output)
+
+    assert result.exit_code == 2
+    assert "--mpp" in output
+    assert "finite and greater than zero" in output
+
+
 def _build_store(tmp_path) -> str:
     from raw2features.pipeline.runner import RunConfig, embed_slide
 
     slide = build_ngff_v04(str(tmp_path / "S.zarr"))
     out = str(tmp_path / "out")
-    cfg = RunConfig(models=["mock"], no_seg=True, target_mpp=0.5, patch_px=64,
-                    device="cpu", amp="fp32")
-    embed_slide(slide, out, cfg,
-                embedders=[MockEmbedder(dim=8, input_size=64, name="mock")])
+    cfg = RunConfig(
+        models=["mock"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        device="cpu",
+        amp="fp32",
+    )
+    embed_slide(
+        slide, out, cfg, embedders=[MockEmbedder(dim=8, input_size=64, name="mock")]
+    )
     return os.path.join(out, "S.embeddings.zarr")
 
 
@@ -58,8 +206,21 @@ def test_verify_cli_exits_1_when_not_complete(tmp_path):
     receipts = str(tmp_path / "receipts")  # empty -> nothing is complete
     os.makedirs(receipts, exist_ok=True)
     r = CliRunner().invoke(
-        app, ["verify", slide, "--receipts-dir", receipts, "-f", "mock",
-              "--no-seg", "--mpp", "0.5", "--patch-size", "64", "--quiet"],
+        app,
+        [
+            "verify",
+            slide,
+            "--receipts-dir",
+            receipts,
+            "-f",
+            "mock",
+            "--no-seg",
+            "--mpp",
+            "0.5",
+            "--patch-size",
+            "64",
+            "--quiet",
+        ],
     )
     assert r.exit_code == 1
 

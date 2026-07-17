@@ -10,6 +10,7 @@ import os
 from importlib import import_module
 
 import pytest
+from click.utils import strip_ansi
 from typer.testing import CliRunner
 
 from conftest import MockEmbedder, build_ngff_v04
@@ -92,10 +93,11 @@ def test_verify_cli_hashes_the_source_mpp_override(tmp_path, monkeypatch):
 )
 def test_commands_reject_unknown_amp_before_doing_work(args):
     result = CliRunner().invoke(app, [*args, "--amp", "fast16"])
+    output = strip_ansi(result.output)
 
     assert result.exit_code == 2
-    assert "--amp" in result.output
-    assert "auto, fp32, bf16, fp16" in result.output
+    assert "--amp" in output
+    assert "auto, fp32, bf16, fp16" in output
 
 
 @pytest.mark.parametrize(
@@ -109,10 +111,11 @@ def test_commands_reject_unknown_amp_before_doing_work(args):
 @pytest.mark.parametrize("batch_size", ["0", "-3"])
 def test_embedding_commands_reject_nonpositive_batch_size(args, batch_size):
     result = CliRunner().invoke(app, [*args, "--batch-size", batch_size])
+    output = strip_ansi(result.output)
 
     assert result.exit_code == 2
-    assert "--batch-size" in result.output
-    assert "greater than zero" in result.output
+    assert "--batch-size" in output
+    assert "greater than zero" in output
 
 
 @pytest.mark.parametrize(
@@ -142,20 +145,22 @@ def test_geometry_options_reject_zero_before_work(command, option):
         "benchmark": ["slide.zarr"],
     }[command]
     result = CliRunner().invoke(app, [command, *positional, option, "0"])
+    output = strip_ansi(result.output)
 
     assert result.exit_code == 2
-    assert option in result.output
-    assert "greater than zero" in result.output
+    assert option in output
+    assert "greater than zero" in output
 
 
 def test_mpp_option_rejects_nonfinite_value_before_work():
     result = CliRunner().invoke(
         app, ["embed", "slide.zarr", "out", "--mpp", "nan"]
     )
+    output = strip_ansi(result.output)
 
     assert result.exit_code == 2
-    assert "--mpp" in result.output
-    assert "finite and greater than zero" in result.output
+    assert "--mpp" in output
+    assert "finite and greater than zero" in output
 
 
 def _build_store(tmp_path) -> str:

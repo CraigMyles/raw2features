@@ -6,6 +6,7 @@ time per batch and reused across every requested model.
 
 from __future__ import annotations
 
+import json
 import math
 import os
 import queue
@@ -14,23 +15,30 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from raw2features.benchmark.profiler import null_profiler
 from raw2features.core import plugins, provenance
 from raw2features.core.geometry import Point, Region, Size
 from raw2features.core.store import grid_key
 from raw2features.core.uris import (
+    redact_metadata_credentials,
+    redact_metadata_uri_credentials,
     redact_uri_credentials,
     slide_id_from_source,
     source_uri,
 )
 from raw2features.embedders.fingerprint import (
     expected_patch_outputs,
+    make_output_fingerprint,
     patch_output_fingerprint,
     resolved_patch_amp,
 )
-from raw2features.embedders.model_registry import build_embedder, resolve_geometry
+from raw2features.embedders.model_registry import (
+    build_embedder,
+    get_spec,
+    resolve_geometry,
+)
 from raw2features.patcher.grid import GridPatcher, resample_patch
 from raw2features.sinks.zarr_sink import (
     ZarrSink,
@@ -72,6 +80,30 @@ def _positive_int(value, *, field: str) -> int:
     if integer != value or integer <= 0:
         raise ValueError(f"{field} must be an integer greater than zero")
     return integer
+
+
+def _registered_models_need_nuclear(models: list[str]) -> bool:
+    """Whether any known native patch model consumes a multiplex marker stack."""
+
+    for name in models:
+        try:
+            if get_spec(name).modality == "multiplex":
+                return True
+        except KeyError:
+            # Programmatic external models are resolved from their injected specs in
+            # resolve_run/run_slide, where that information is available.
+            continue
+    return False
+
+
+def _models_need_nuclear(models: list[str], specs: dict | None = None) -> bool:
+    provided = specs or {}
+    for name in models:
+        spec = provided.get(name)
+        if spec is not None and getattr(spec, "modality", "brightfield") == "multiplex":
+            return True
+    missing = [name for name in models if name not in provided]
+    return _registered_models_need_nuclear(missing)
 
 
 @dataclass
@@ -144,6 +176,30 @@ class RunConfig:
     # GrandQC artifact model scale in µm/px ("1.0"/"1.5"/"2.0"): coarser is less
     # focus-sensitive; raise it for a softer-scanned cohort that over-reads as blur.
     qc_artifact_mpp: str = "1.5"
+    # Optional strategy that adapts ordinary RGB patch encoders to a named-channel
+    # multiplex source. Appended after every v0.1 field to preserve RunConfig's public
+    # positional constructor. These affect model output/receipts, never grid geometry.
+    multiplex_strategy: str | None = None
+    multiplex_markers: list[str] = field(default_factory=list)
+    multiplex_normalization: str = "percentile"
+    multiplex_percentile_low: float = 1.0
+    multiplex_percentile_high: float = 99.0
+    multiplex_aggregation: str = "mean"
+    # JSON-safe, namespaced content parameters for third-party strategy plugins.
+    # The built-in channelwise strategy uses its explicit typed fields instead.
+    multiplex_strategy_params: dict[str, Any] = field(default_factory=dict)
+    multiplex_normalization_max_side_px: int = 2048
+    # A user-supplied complete positional panel, normally parsed from
+    # ``--channel-names-file``. It is an input to source binding rather than the
+    # persisted identity itself; ``resolved_channel_names`` below is the authoritative
+    # panel after validating it against the physical C axis and any existing labels.
+    channel_names_override: list[str] = field(default_factory=list)
+    resolved_channel_names: list[str] = field(default_factory=list)
+    resolved_nuclear_channel_indices: list[int] = field(default_factory=list)
+    # Original positional OME labels before a channel-names-file fills blanks. This is
+    # runtime migration evidence only: effective names above determine current output,
+    # while the original list lets us prove whether a v0.1 selector used the same index.
+    resolved_original_channel_names: list[str] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         """Reject invalid geometry before hashing, model loading, or store writes."""
@@ -154,6 +210,105 @@ class RunConfig:
             self.step_px = _positive_int(self.step_px, field="step_px")
         if self.source_mpp is not None:
             self.source_mpp = _positive_float(self.source_mpp, field="source_mpp")
+        if self.multiplex_strategy is not None:
+            self.multiplex_strategy = self.multiplex_strategy.strip().lower() or None
+        if not self.no_seg and (
+            self.multiplex_strategy is not None
+            or _registered_models_need_nuclear(self.models)
+        ):
+            # Execution has always routed multiplex inputs to the nuclear segmenter.
+            # Canonicalise the configured value too so grid identity cannot alias an
+            # Otsu brightfield grid whose coordinates differ.
+            self.segmenter = "nuclear"
+        self.multiplex_markers = [str(name).strip() for name in self.multiplex_markers]
+        self.channel_names_override = [
+            str(name).strip() for name in self.channel_names_override
+        ]
+        if any(not name for name in self.channel_names_override):
+            raise ValueError("channel_names_override entries must be non-empty")
+        self.resolved_channel_names = [
+            "" if name is None else str(name) for name in self.resolved_channel_names
+        ]
+        self.resolved_original_channel_names = [
+            "" if name is None else str(name)
+            for name in self.resolved_original_channel_names
+        ]
+        self.resolved_nuclear_channel_indices = list(
+            self.resolved_nuclear_channel_indices
+        )
+        if any(
+            isinstance(index, bool) or not isinstance(index, int) or index < 0
+            for index in self.resolved_nuclear_channel_indices
+        ):
+            raise ValueError(
+                "resolved_nuclear_channel_indices must contain non-negative integers"
+            )
+        if len(set(self.resolved_nuclear_channel_indices)) != len(
+            self.resolved_nuclear_channel_indices
+        ):
+            raise ValueError("resolved_nuclear_channel_indices must be unique")
+        if not isinstance(self.multiplex_strategy_params, dict) or any(
+            not isinstance(key, str) for key in self.multiplex_strategy_params
+        ):
+            raise ValueError(
+                "multiplex_strategy_params must be a mapping with string keys"
+            )
+        try:
+            encoded_params = json.dumps(
+                self.multiplex_strategy_params,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            self.multiplex_strategy_params = json.loads(encoded_params)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "multiplex_strategy_params must contain only finite JSON values"
+            ) from exc
+        if self.multiplex_strategy is None:
+            orphaned = bool(
+                self.multiplex_markers or self.multiplex_strategy_params
+            ) or any(
+                (
+                    str(self.multiplex_normalization).lower() != "percentile",
+                    self.multiplex_percentile_low != 1.0,
+                    self.multiplex_percentile_high != 99.0,
+                    str(self.multiplex_aggregation).lower() != "mean",
+                    self.multiplex_normalization_max_side_px != 2048,
+                )
+            )
+            if orphaned:
+                raise ValueError(
+                    "multiplex marker/normalization/aggregation options require "
+                    "multiplex_strategy (for example 'channelwise')"
+                )
+            # Ordinary brightfield requests deliberately do not validate or hash the
+            # dormant strategy defaults. Their historical identity and execution path
+            # remain byte-for-byte unchanged.
+            return
+        if any(not name for name in self.multiplex_markers):
+            raise ValueError("multiplex marker names must be non-empty")
+        self.multiplex_normalization = str(self.multiplex_normalization).lower()
+        if self.multiplex_normalization not in {"percentile", "dtype"}:
+            raise ValueError(
+                "multiplex_normalization must be one of: percentile, dtype"
+            )
+        self.multiplex_aggregation = str(self.multiplex_aggregation).lower()
+        if self.multiplex_aggregation not in {"mean", "concat"}:
+            raise ValueError("multiplex_aggregation must be one of: mean, concat")
+        low = float(self.multiplex_percentile_low)
+        high = float(self.multiplex_percentile_high)
+        if not (math.isfinite(low) and math.isfinite(high) and 0 <= low < high <= 100):
+            raise ValueError(
+                "multiplex percentiles must be finite and satisfy "
+                "0 <= low < high <= 100"
+            )
+        self.multiplex_percentile_low = low
+        self.multiplex_percentile_high = high
+        self.multiplex_normalization_max_side_px = _positive_int(
+            self.multiplex_normalization_max_side_px,
+            field="multiplex_normalization_max_side_px",
+        )
 
     # Single source of truth for which fields affect the output (and thus the
     # config hash) vs. runtime-only knobs. ``test_config_integrity`` asserts these
@@ -170,6 +325,16 @@ class RunConfig:
         "tissue_threshold",
         "features_dtype",
         "stain_norm",
+        "multiplex_strategy",
+        "multiplex_markers",
+        "multiplex_normalization",
+        "multiplex_percentile_low",
+        "multiplex_percentile_high",
+        "multiplex_aggregation",
+        "multiplex_strategy_params",
+        "multiplex_normalization_max_side_px",
+        "resolved_channel_names",
+        "resolved_nuclear_channel_indices",
         "snap_to_level",
         "mpp_tolerance",
         "allow_upsample",
@@ -191,6 +356,8 @@ class RunConfig:
         "qc",
         "qc_stain_norm",
         "qc_artifact_mpp",
+        "channel_names_override",
+        "resolved_original_channel_names",
     )
 
     def _hash_payload(
@@ -199,12 +366,46 @@ class RunConfig:
         include_models: bool,
         include_amp: bool = True,
         models: list[str] | None = None,
+        segmenter_override: str | None = None,
     ) -> str:
         # Build the hashed payload from _CONTENT_FIELDS, applying the few value
         # transforms inline. config_hash sorts keys, so insertion order is
         # irrelevant -- the bytes are identical to listing the dict by hand.
         payload: dict = {}
         for name in self._CONTENT_FIELDS:
+            if name == "resolved_channel_names":
+                # The complete panel changes model outputs/receipts, but only the
+                # resolved nuclear position below is a geometry input.
+                if not self.resolved_channel_names or not include_models:
+                    continue
+            if name == "resolved_nuclear_channel_indices":
+                if not self.resolved_nuclear_channel_indices or self.no_seg:
+                    continue
+                payload["nuclear_channel_binding"] = {
+                    "contract_version": 2,
+                    "source_indices": self.resolved_nuclear_channel_indices,
+                    "combination": (
+                        "identity"
+                        if len(self.resolved_nuclear_channel_indices) == 1
+                        else "float32_mean"
+                    ),
+                }
+                continue
+            if name.startswith("multiplex_"):
+                # Multiplex strategy settings belong to the model output/receipt,
+                # not the geometry.  Omit defaults entirely for ordinary RGB runs so
+                # all v0.1 content hashes remain byte-for-byte stable.
+                if not include_models or self.multiplex_strategy is None:
+                    continue
+                if (
+                    name
+                    in {
+                        "multiplex_percentile_low",
+                        "multiplex_percentile_high",
+                    }
+                    and self.multiplex_normalization != "percentile"
+                ):
+                    continue
             if name == "amp" and not include_amp:
                 continue
             if name == "models":
@@ -214,7 +415,15 @@ class RunConfig:
                 continue
             value = getattr(self, name)
             if name == "segmenter":
-                value = "none" if self.no_seg else value
+                value = (
+                    "none"
+                    if self.no_seg
+                    else segmenter_override
+                    if segmenter_override is not None
+                    else "nuclear"
+                    if self.multiplex_strategy is not None
+                    else value
+                )
             elif name == "step_px":
                 value = self.step_px or self.patch_px
             elif name == "source_mpp" and self.source_mpp is None:
@@ -245,15 +454,166 @@ class RunConfig:
     def legacy_grid_hash(self) -> str:
         """Pre-fingerprint grid identity, retained solely to append to v0.1 stores."""
 
-        return self._hash_payload(include_models=False, include_amp=True)
+        return replace(
+            self,
+            resolved_channel_names=[],
+            resolved_nuclear_channel_indices=[],
+        )._hash_payload(include_models=False, include_amp=True)
 
     def compatible_legacy_grid_hashes(self) -> tuple[str, ...]:
-        """Old grid identities, preferring this request's configured AMP first."""
+        """Safe old grid identities, preferring configured AMP first.
+
+        Native-multiplex v0.1 grids are compatible only when the old selector provably
+        used the same singleton physical channel. Both its nuclear-valued hash family
+        and its historical Otsu-valued aliases additionally require a stored header
+        proving nuclear segmentation. Brightfield and strategy requests retain their
+        existing compatibility families.
+        """
 
         amps = (self.amp, "auto", "fp32", "bf16", "fp16")
-        return tuple(
-            dict.fromkeys(replace(self, amp=value).legacy_grid_hash() for value in amps)
+        configs = [
+            replace(
+                self,
+                amp=value,
+                resolved_channel_names=[],
+                resolved_nuclear_channel_indices=[],
+            )
+            for value in amps
+        ]
+        hashes = [config.legacy_grid_hash() for config in configs]
+        if self._is_native_multiplex_grid_request() and not (
+            self._v01_nuclear_selector_matches_current()
+        ):
+            # A v0.1 native-multiplex grid may have thresholded a different physical
+            # channel after blank labels were dropped or ambiguous names were matched
+            # by substring. Its header still says ``nuclear``, so segmenter evidence
+            # cannot make this family safe without the positional-index proof.
+            hashes = []
+        otsu_aliases = self._native_multiplex_otsu_grid_aliases()
+        if otsu_aliases:
+            # Prefer the newest no-AMP historical identity, then retain older
+            # AMP-bearing variants for pre-fingerprint stores.
+            hashes[0:0] = otsu_aliases
+        return tuple(dict.fromkeys(hashes))
+
+    def compatible_legacy_grid_segmenters(self) -> dict[str, str]:
+        """Segmenter evidence required before accepting ambiguous legacy hashes.
+
+        Every accepted native-multiplex legacy family requires a live grid header
+        proving that nuclear segmentation produced its coordinates. The positional
+        selector check in :meth:`compatible_legacy_grid_hashes` remains independently
+        load-bearing because old nuclear headers did not record the physical index.
+        """
+
+        if not self._is_native_multiplex_grid_request() or not (
+            self._v01_nuclear_selector_matches_current()
+        ):
+            return {}
+        nuclear_hashes = [
+            replace(
+                self,
+                amp=value,
+                resolved_channel_names=[],
+                resolved_nuclear_channel_indices=[],
+            ).legacy_grid_hash()
+            for value in (self.amp, "auto", "fp32", "bf16", "fp16")
+        ]
+        return {
+            grid_hash: "nuclear"
+            for grid_hash in (
+                *nuclear_hashes,
+                *self._native_multiplex_otsu_grid_aliases(),
+            )
+        }
+
+    def allows_hashless_legacy_grid(self) -> bool:
+        """Whether a sole grid without identity may be reused for this request.
+
+        The historical brightfield fallback remains available. A derived multiplex
+        strategy cannot predate this feature, and a native multiplex request whose
+        old selector cannot be proven equivalent must not reuse coordinates whose
+        physical nuclear-channel binding is unknowable.
+        """
+
+        if self.multiplex_strategy is not None:
+            return False
+        return not self._is_native_multiplex_grid_request() or (
+            self._v01_nuclear_selector_matches_current()
         )
+
+    def _is_native_multiplex_grid_request(self) -> bool:
+        """Whether legacy reuse concerns a segmented native multiplex model."""
+
+        return (
+            not self.no_seg
+            and self.multiplex_strategy is None
+            and (
+                _registered_models_need_nuclear(self.models)
+                # An injected native multiplex embedder is not present in the built-in
+                # registry, but source resolution still binds its positional panel.
+                or (self.segmenter == "nuclear" and bool(self.resolved_channel_names))
+            )
+        )
+
+    def _native_multiplex_otsu_grid_aliases(self) -> tuple[str, ...]:
+        if (
+            not self._is_native_multiplex_grid_request()
+            or not self._v01_nuclear_selector_matches_current()
+        ):
+            return ()
+        amps = (self.amp, "auto", "fp32", "bf16", "fp16")
+        configs = [
+            replace(
+                self,
+                amp=value,
+                resolved_channel_names=[],
+                resolved_nuclear_channel_indices=[],
+            )
+            for value in amps
+        ]
+        legacy_base = replace(
+            self,
+            resolved_channel_names=[],
+            resolved_nuclear_channel_indices=[],
+        )
+        hashes = [
+            legacy_base._hash_payload(
+                include_models=False,
+                include_amp=False,
+                segmenter_override="otsu",
+            )
+        ]
+        hashes.extend(
+            config._hash_payload(
+                include_models=False,
+                include_amp=True,
+                segmenter_override="otsu",
+            )
+            for config in configs
+        )
+        return tuple(dict.fromkeys(hashes))
+
+    def _v01_nuclear_selector_matches_current(self) -> bool:
+        """Whether v0.1 provably thresholded the same one physical channel.
+
+        v0.1 dropped blank OME channel entries, then selected the first remaining
+        label containing one of four substrings. Reusing its grid is safe only when
+        emulating those exact rules on the original metadata yields the same singleton
+        physical index selected now. A DNA1/DNA2 mean or any uncertain panel gets a new
+        grid while the historical grid remains readable.
+        """
+
+        if (
+            len(self.resolved_nuclear_channel_indices) != 1
+            or not self.resolved_original_channel_names
+        ):
+            return False
+        legacy_names = [name for name in self.resolved_original_channel_names if name]
+        for legacy_index, name in enumerate(legacy_names):
+            lowered = name.lower()
+            if any(alias in lowered for alias in ("dapi", "hoechst", "hochst", "dna")):
+                return legacy_index == self.resolved_nuclear_channel_indices[0]
+        return False
 
     def device_list(self) -> list[str]:
         """The devices to run on, in order. ``--devices`` overrides the single
@@ -292,6 +652,388 @@ def _amp_dtype(amp: str):
     return getattr(torch, _AMP.get(amp, "float32"))
 
 
+def _multiplex_normalization_level(reader, max_side: int = 2048) -> int:
+    """Highest-resolution whole-slide level bounded to a practical scan size."""
+
+    for level, dimensions in enumerate(reader.level_dimensions):
+        if max(dimensions.width, dimensions.height) <= max_side:
+            return level
+    smallest = reader.level_dimensions[-1]
+    raise ValueError(
+        "multiplex slide-level normalization requires a pyramid level whose "
+        f"maximum side is <= {max_side} px; the smallest available level is "
+        f"{smallest.width}x{smallest.height}. Add a downsampled level, or set "
+        "--multiplex-normalization-max-side-px to at least "
+        f"{max(smallest.width, smallest.height)} (which may use more RAM)."
+    )
+
+
+def resolve_multiplex_source_config(
+    slide_path: str,
+    cfg: RunConfig,
+    *,
+    model_specs: dict | None = None,
+) -> RunConfig:
+    """Bind the physical C axis and its positional names before completion checks.
+
+    The returned config contains the resolved panel, which feeds model-output identity
+    and (when nuclear masking is enabled) grid identity. A supplied override may fill
+    absent or blank OME metadata, but the reader rejects conflicts with existing labels.
+    """
+
+    native_multiplex = _models_need_nuclear(cfg.models, model_specs)
+    if (
+        cfg.channel_names_override
+        and cfg.multiplex_strategy is None
+        and not native_multiplex
+    ):
+        raise ValueError(
+            "--channel-names-file is only valid with a native multiplex model or "
+            "--multiplex-strategy"
+        )
+    if cfg.multiplex_strategy is None and not native_multiplex:
+        return cfg
+
+    reader_cls = plugins.get("readers", cfg.reader)
+    with reader_cls(slide_path) as reader:
+        original_names = getattr(reader, "original_channel_names", None)
+        original_names = [
+            "" if value is None else str(value) for value in (original_names or [])
+        ]
+        if cfg.channel_names_override:
+            reader.apply_channel_names(cfg.channel_names_override)
+        if not getattr(reader, "has_channel_axis", False):
+            raise ValueError(
+                "multiplex embedding requires a source with an explicit channel axis"
+            )
+        names = reader.channel_names
+        if names is None:
+            raise ValueError(
+                "multiplex embedding requires positional channel names in "
+                "omero.channels or --channel-names-file"
+            )
+        names = ["" if value is None else str(value) for value in names]
+        if len(names) != int(reader.channel_count):
+            raise ValueError(
+                "multiplex channel metadata does not match the physical C axis: "
+                f"found {len(names)} names but C={reader.channel_count}"
+            )
+        if cfg.resolved_channel_names and names != cfg.resolved_channel_names:
+            raise ValueError(
+                "source channel names changed after multiplex request resolution; "
+                f"expected {cfg.resolved_channel_names!r}, got {names!r}"
+            )
+        if (
+            cfg.resolved_original_channel_names
+            and original_names != cfg.resolved_original_channel_names
+        ):
+            raise ValueError(
+                "source OME channel metadata changed after multiplex request resolution"
+            )
+        nuclear_indices: list[int] = []
+        if not cfg.no_seg:
+            from raw2features.segmenters.nuclear import NuclearSegmenter
+
+            nuclear_indices = [
+                index for index, _name in NuclearSegmenter().nuclear_channels(names)
+            ]
+    return replace(
+        cfg,
+        resolved_channel_names=names,
+        resolved_nuclear_channel_indices=nuclear_indices,
+        resolved_original_channel_names=original_names,
+    )
+
+
+def _validate_multiplex_slide_encoders(names: list[str]) -> None:
+    """Allow only model-agnostic poolers over strategy-derived patch features."""
+
+    from raw2features.slide_embedders.model_registry import get_slide_spec
+
+    incompatible = [
+        name for name in names if get_slide_spec(name).patch_encoder != "any"
+    ]
+    if incompatible:
+        raise ValueError(
+            "multiplex strategy outputs may be passed only to model-agnostic slide "
+            f"poolers (mean, max, meanmax); learned slide encoder(s) {incompatible} "
+            "are tied to their native registered patch encoders"
+        )
+
+
+def _resolve_multiplex_request(
+    slide_path: str,
+    cfg: RunConfig,
+    *,
+    embedders: list | None,
+    device: str,
+    load_models: bool,
+) -> tuple[list, RunConfig, dict[str, dict]]:
+    """Resolve source-dependent strategy wrappers and their exact contracts.
+
+    Metadata, marker selection, and whole-slide normalization are resolved before
+    optional registry models are loaded. ``verify`` calls the same helper with
+    ``load_models=False``; embedding calls it with ``True``. This keeps the effective
+    feature keys and per-slide fingerprints identical between both entry points.
+    """
+
+    from raw2features.multiplex import BoundMultiplexStrategy, build_strategy
+
+    # Resolve the plugin before constructing even an unloaded base model, so an
+    # unknown strategy cannot trigger an expensive gated-model operation first.
+    strategy = build_strategy(cfg.multiplex_strategy)
+    if embedders is None:
+        base_embedders = [build_embedder(name) for name in cfg.models]
+        registry_owned = True
+    else:
+        by_name = {embedder.name: embedder for embedder in embedders}
+        if len(by_name) != len(embedders):
+            raise ValueError("loaded base embedders contain duplicate model names")
+        missing = [name for name in cfg.models if name not in by_name]
+        if missing:
+            raise ValueError(
+                "loaded base embedders do not match the requested multiplex models; "
+                f"missing {missing}"
+            )
+        base_embedders = [by_name[name] for name in cfg.models]
+        registry_owned = False
+
+    reader_cls = plugins.get("readers", cfg.reader)
+    with reader_cls(slide_path) as reader:
+        if cfg.channel_names_override:
+            reader.apply_channel_names(cfg.channel_names_override)
+        if not getattr(reader, "has_channel_axis", False):
+            raise ValueError(
+                "multiplex strategy requires a source with an explicit channel axis"
+            )
+        names = reader.channel_names
+        if names is None:
+            raise ValueError(
+                "multiplex strategy requires marker identity in omero.channels"
+            )
+        names = ["" if value is None else str(value) for value in names]
+        if cfg.resolved_channel_names and names != cfg.resolved_channel_names:
+            raise ValueError(
+                "source channel names changed after multiplex request resolution"
+            )
+        prepared = [
+            strategy.prepare(
+                base_embedder=embedder,
+                channel_names=names,
+                channel_count=reader.channel_count,
+                config=cfg,
+            )
+            for embedder in base_embedders
+        ]
+        for item in prepared:
+            if (
+                cfg.multiplex_strategy_params
+                and item.config_metadata.get("strategy_params")
+                != cfg.multiplex_strategy_params
+            ):
+                raise ValueError(
+                    f"multiplex strategy {cfg.multiplex_strategy!r} did not bind "
+                    "multiplex_strategy_params into its static config metadata"
+                )
+        context_sides = {int(item.context_max_side_px) for item in prepared}
+        if len(context_sides) != 1:
+            raise ValueError(
+                "multiplex strategy preparations disagree on slide-context level"
+            )
+        max_side = context_sides.pop()
+        expansion_factors = [item.base_inputs_per_patch for item in prepared]
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value <= 0
+            for value in expansion_factors
+        ):
+            raise ValueError(
+                "multiplex strategy base_inputs_per_patch must be a positive integer"
+            )
+        # One native whole-image read supplies deterministic slide-level context for
+        # every base encoder. The chosen level and actual HWC shape are persisted.
+        level = _multiplex_normalization_level(reader, max_side=max_side)
+        dimensions = reader.level_dimensions[level]
+        image = reader.read_region_channels(
+            Region(level, Point(0, 0), Size(dimensions.width, dimensions.height))
+        )
+        resolved = [
+            item.resolve_slide_context(
+                image,
+                level=level,
+                source_dtype=image.dtype,
+            )
+            for item in prepared
+        ]
+
+    wrapped = []
+    contracts: dict[str, dict] = {}
+    for base, item, normalization in zip(
+        base_embedders, prepared, resolved, strict=True
+    ):
+        bound = item.bind(normalization)
+        if not isinstance(bound, BoundMultiplexStrategy):
+            raise TypeError(
+                f"multiplex strategy {cfg.multiplex_strategy!r} returned "
+                f"{type(bound).__name__}, not a BoundMultiplexStrategy"
+            )
+        effective_name = bound.name
+        if (
+            not isinstance(effective_name, str)
+            or not effective_name
+            or effective_name in {".", ".."}
+            or any(character in effective_name for character in ("/", "\\", "\x00"))
+        ):
+            raise ValueError(
+                f"multiplex strategy produced unsafe effective model key "
+                f"{effective_name!r}; keys must be single Zarr path segments"
+            )
+        # Registry-owned bases remain unloaded through store completion checks.
+        # _select_embedders invokes the normal lifecycle only if writing is needed.
+        bound._raw2features_deferred_load = bool(load_models and registry_owned)
+        bound._raw2features_owns_base = bool(registry_owned)
+        resolved_amp = _resolve_amp(cfg, base.spec, device)
+        base_fingerprint = patch_output_fingerprint(base.spec, resolved_amp)
+        multiplex_contract = bound.multiplex_fingerprint_payload(base_fingerprint)
+        bound.spec = replace(bound.spec, multiplex=multiplex_contract)
+        contract = {
+            "embedding_dim": int(bound.embedding_dim),
+            "output_fingerprint": patch_output_fingerprint(bound.spec, resolved_amp),
+        }
+        if effective_name in contracts:
+            raise ValueError(
+                "multiplex strategy produced duplicate effective key "
+                f"{effective_name!r}"
+            )
+        contracts[effective_name] = contract
+        wrapped.append(bound)
+
+    # The recursive primitive must stay on the pre-existing brightfield/native-
+    # multiplex path. Reset every strategy knob as well as the selector so RunConfig
+    # cannot interpret them as orphaned options; their full values are already bound
+    # transitively into each effective model key and fingerprint above.
+    effective_cfg = replace(
+        cfg,
+        models=[embedder.name for embedder in wrapped],
+        segmenter="nuclear" if not cfg.no_seg else cfg.segmenter,
+        batch_size=max(
+            1,
+            cfg.batch_size // max(expansion_factors),
+        ),
+        multiplex_strategy=None,
+        multiplex_markers=[],
+        multiplex_normalization="percentile",
+        multiplex_percentile_low=1.0,
+        multiplex_percentile_high=99.0,
+        multiplex_aggregation="mean",
+        multiplex_strategy_params={},
+        multiplex_normalization_max_side_px=2048,
+    )
+    return wrapped, effective_cfg, contracts
+
+
+def resolve_multiplex_output_contracts(
+    slide_path: str,
+    cfg: RunConfig,
+    *,
+    embedders: list | None = None,
+    device: str | None = None,
+) -> tuple[RunConfig, dict[str, dict]]:
+    """Read-only source resolution used by ``verify`` and external schedulers."""
+
+    if cfg.multiplex_strategy is None:
+        raise ValueError("no multiplex strategy is configured")
+    cfg = resolve_multiplex_source_config(slide_path, cfg)
+    _validate_multiplex_slide_encoders(cfg.slide_encoders)
+    _wrapped, effective_cfg, contracts = _resolve_multiplex_request(
+        slide_path,
+        cfg,
+        embedders=embedders,
+        device=device or cfg.device,
+        load_models=False,
+    )
+    return effective_cfg, contracts
+
+
+def _run_slide_with_multiplex_strategy(
+    slide_path: str,
+    out_dir: str,
+    cfg: RunConfig,
+    *,
+    receipts_dir: str | None,
+    cli: str | None,
+    embedders: list | None,
+    embedder_factory,
+    force: bool,
+    profiler,
+    allow_hashless_legacy: bool,
+    devices: list[str],
+) -> dict:
+    """Bind one source-dependent strategy, then use the unchanged single-grid path.
+
+    This deliberately sits in front of (rather than inside) the existing brightfield
+    orchestration. Ordinary RGB requests never enter it, preserving their fingerprints,
+    completion ordering, and resume semantics byte-for-byte.
+    """
+
+    if len(devices) != 1:
+        raise ValueError(
+            "multiplex strategies are currently single-device; pass one --device. "
+            "The marker panel and slide-level normalization must be bound identically "
+            "before patch workers can be sharded safely."
+        )
+    if embedder_factory is not None and embedders is None:
+        # A custom model remains supported by passing its loaded embedder explicitly.
+        raise ValueError(
+            "multiplex strategies do not support an unprobed embedder_factory; pass "
+            "the loaded base embedder through embedders= on the single-device path"
+        )
+
+    _validate_multiplex_slide_encoders(cfg.slide_encoders)
+    expected_source = canonical_source_uri(slide_path)
+    if expected_source is None:
+        raise ValueError("Source URI is malformed and cannot be compared safely.")
+    try:
+        slide_id = slide_id_from_path(slide_path)
+    except Exception:  # noqa: BLE001 - suppress credential-bearing parser errors
+        raise ValueError(
+            "Source URI is malformed and no safe output ID can be derived."
+        ) from None
+    out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
+    if os.path.exists(out_path) and not force:
+        _assert_store_source(out_path, expected_source)
+
+    wrapped, effective_cfg, contracts = _resolve_multiplex_request(
+        slide_path,
+        cfg,
+        embedders=embedders,
+        device=devices[0],
+        load_models=True,
+    )
+    try:
+        return run_slide(
+            slide_path,
+            out_dir,
+            effective_cfg,
+            receipts_dir=receipts_dir,
+            cli=cli,
+            embedders=wrapped,
+            embedder_factory=None,
+            force=force,
+            profiler=profiler,
+            # A derived-strategy grid cannot predate this feature. Never treat an
+            # unidentifiable hashless brightfield store as compatible with it.
+            allow_hashless_legacy=False,
+            _expected_model_contracts=contracts,
+            _receipt_config_hash=cfg.content_hash(),
+        )
+    finally:
+        # Registry-created bases are local to this call. Injected bases belong to
+        # warm-worker/library callers and their wrappers intentionally ignore unload.
+        for embedder in wrapped:
+            if getattr(embedder, "_raw2features_owns_base", False):
+                embedder.unload()
+
+
 def run_slide(
     slide_path: str,
     out_dir: str,
@@ -305,6 +1047,8 @@ def run_slide(
     profiler=None,
     allow_hashless_legacy: bool = True,
     _expected_model_contracts: dict[str, dict] | None = None,
+    _model_specs: dict | None = None,
+    _receipt_config_hash: str | None = None,
 ) -> dict:
     """Embed one slide into exactly one configured grid. Returns a summary dict.
 
@@ -340,6 +1084,16 @@ def run_slide(
 
     validate_slide_encoder_names(cfg.slide_encoders)
 
+    injected_specs = dict(_model_specs or {})
+    injected_specs.update(
+        {embedder.name: embedder.spec for embedder in (embedders or [])}
+    )
+    cfg = resolve_multiplex_source_config(
+        slide_path,
+        cfg,
+        model_specs=injected_specs,
+    )
+
     import torch  # noqa: F401 - imported so a torch-less env fails clearly, here
 
     from raw2features.core.device import resolve_device
@@ -347,6 +1101,22 @@ def run_slide(
     cfg.device = resolve_device(cfg.device)  # "auto" -> cuda/mps/cpu (idempotent)
     devices = cfg.device_list()
     multi_device = len(devices) > 1
+    if cfg.multiplex_strategy is not None:
+        return _run_slide_with_multiplex_strategy(
+            slide_path,
+            out_dir,
+            cfg,
+            receipts_dir=receipts_dir,
+            cli=cli,
+            embedders=embedders,
+            embedder_factory=embedder_factory,
+            force=force,
+            profiler=profiler,
+            allow_hashless_legacy=allow_hashless_legacy,
+            devices=devices,
+        )
+    if not cfg.no_seg and _models_need_nuclear(cfg.models, injected_specs):
+        cfg = replace(cfg, segmenter="nuclear")
     expected_source = canonical_source_uri(slide_path)
     if expected_source is None:
         raise ValueError("Source URI is malformed and cannot be compared safely.")
@@ -356,8 +1126,11 @@ def run_slide(
         raise ValueError(
             "Source URI is malformed and no safe output ID can be derived."
         ) from None
-    content_hash = cfg.content_hash()
+    content_hash = _receipt_config_hash or cfg.content_hash()
     grid_hash = cfg.grid_hash()
+    allow_hashless_for_request = (
+        allow_hashless_legacy and cfg.allows_hashless_legacy_grid()
+    )
     out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
     expected_output = f"file://{os.path.abspath(out_path)}"
     store_exists = os.path.exists(out_path) and not force
@@ -397,9 +1170,18 @@ def run_slide(
             expected_model_contracts=model_contracts,
             expected_grid_models={grid_hash: list(cfg.models)},
             compatible_grid_hashes={grid_hash: cfg.compatible_legacy_grid_hashes()},
+            compatible_grid_segmenters={
+                grid_hash: cfg.compatible_legacy_grid_segmenters()
+            },
+            allow_hashless_legacy_grids={grid_hash: allow_hashless_for_request},
         )
     ):
-        return {"slide_id": slide_id, "status": "skipped", "reason": "already complete"}
+        return {
+            "slide_id": slide_id,
+            "status": "skipped",
+            "reason": "already complete",
+            "requested_models": list(cfg.models),
+        }
 
     present_valid: list[str] = []
     grid_key_existing: str | None = None
@@ -410,7 +1192,8 @@ def run_slide(
             cfg.models,
             expected_model_contracts=model_contracts,
             compatible_grid_hashes=cfg.compatible_legacy_grid_hashes(),
-            allow_hashless_legacy=allow_hashless_legacy,
+            compatible_grid_segmenters=cfg.compatible_legacy_grid_segmenters(),
+            allow_hashless_legacy=allow_hashless_for_request,
             require_mask=not cfg.no_seg,
         )
     # append: a grid of THIS geometry already exists -> add the missing models to it.
@@ -477,6 +1260,7 @@ def run_slide(
             "status": "skipped",
             "reason": "all requested models and auxiliary outputs already present",
             "models_present": present_valid,
+            "requested_models": list(cfg.models),
             "grid": grid_key_existing,
             "geojson": geojson_path,
             "thumbnail": thumb_meta,
@@ -513,8 +1297,10 @@ def run_slide(
                     )
                 )
             run_contracts = {name: model_contracts[name] for name in models_to_do}
-            _assert_loaded_model_contracts(run_embedders, run_contracts)
-            # Modality of this run: multiplex (marker stacks, e.g. KRONOS) routes the
+            _assert_loaded_model_contracts(
+                run_embedders, run_contracts, cfg.resolved_channel_names
+            )
+            # Modality of this run: a marker stack routes the
             # nuclear segmenter + N-channel reads; brightfield is the RGB default.
             multiplex = any(
                 getattr(e, "modality", "brightfield") == "multiplex"
@@ -525,12 +1311,21 @@ def run_slide(
                 # native channels, so multiplex on >1 device would embed wrong data.
                 # Reject it cleanly rather than produce silently-corrupt features.
                 raise ValueError(
-                    "multiplex models (e.g. kronos) are not supported on the "
+                    "multiplex models are not supported on the "
                     "multi-device path; run with a single --device (the panel is "
                     "bound per-slide and channels are read natively only there)."
                 )
             reader_cls = plugins.get("readers", cfg.reader)
             with reader_cls(slide_path) as reader:
+                if cfg.channel_names_override:
+                    reader.apply_channel_names(cfg.channel_names_override)
+                if cfg.resolved_channel_names and (
+                    list(reader.channel_names or []) != cfg.resolved_channel_names
+                ):
+                    raise ValueError(
+                        "source channel names changed after multiplex request "
+                        "resolution"
+                    )
                 _warn_channel_collapse(reader, multiplex)
                 # An uncalibrated source (no axis unit -> reader.mpp is None) needs an
                 # explicit physical pixel size; apply --source-mpp when given, else the
@@ -547,7 +1342,9 @@ def run_slide(
                 panel_meta: dict[str, dict] = {}
                 if multiplex:
                     for e in run_embedders:
-                        panel_meta[e.name] = e.set_panel(reader.channel_names)
+                        panel_meta[e.name] = redact_metadata_credentials(
+                            e.set_panel(reader.channel_names)
+                        )
                 if append:
                     (
                         n,
@@ -563,6 +1360,10 @@ def run_slide(
                         key=grid_key_existing,
                         new_model_dims={e.name: e.embedding_dim for e in run_embedders},
                         new_model_meta=_models_header(run_embedders, run_contracts),
+                        new_panel_meta=panel_meta,
+                        new_source_meta=(
+                            _source_channel_metadata(reader) if multiplex else None
+                        ),
                         replace_models=models_to_do,
                     )
                 else:
@@ -763,6 +1564,16 @@ def run_slide(
                 if qc_to_do or thumbnail_to_do:
                     reader_cls = plugins.get("readers", cfg.reader)
                     with reader_cls(slide_path) as reader:
+                        if cfg.channel_names_override:
+                            reader.apply_channel_names(cfg.channel_names_override)
+                        if cfg.resolved_channel_names and (
+                            list(reader.channel_names or [])
+                            != cfg.resolved_channel_names
+                        ):
+                            raise ValueError(
+                                "source channel names changed after multiplex request "
+                                "resolution"
+                            )
                         if (
                             reader.mpp is None
                             and cfg.source_mpp is not None
@@ -823,7 +1634,11 @@ def run_slide(
             if encoders_here:
                 with prof.stage("slide_encode"):
                     slide_results = _run_slide_encoders(
-                        sink, encoders_here, cfg.device, available
+                        sink,
+                        encoders_here,
+                        cfg.device,
+                        available,
+                        preferred_patch_models=list(cfg.models),
                     )
 
         final_dims = sink.feature_dims()
@@ -832,6 +1647,12 @@ def run_slide(
         elapsed = time.time() - started
 
         if receipts_dir:
+            receipt_models = (
+                sorted(cfg.models)
+                if _receipt_config_hash is not None
+                else sorted(final_dims)
+            )
+            receipt_dims = {model: final_dims[model] for model in receipt_models}
             write_receipt(
                 receipts_dir,
                 Receipt(
@@ -840,10 +1661,14 @@ def run_slide(
                     source_uri=source_uri(slide_path),
                     output_uri=sink.uri,
                     reader=cfg.reader,
-                    models=sorted(final_dims),
-                    config_hash=cfg.content_hash(sorted(final_dims)),
+                    models=receipt_models,
+                    config_hash=(
+                        _receipt_config_hash
+                        if _receipt_config_hash is not None
+                        else cfg.content_hash(receipt_models)
+                    ),
                     n_patches=n,
-                    model_dims=final_dims,
+                    model_dims=receipt_dims,
                     started_utc=provenance.now_utc_iso(),
                     finished_utc=provenance.now_utc_iso(),
                     elapsed_s=round(elapsed, 2),
@@ -858,6 +1683,7 @@ def run_slide(
             "models": sorted(final_dims),
             "models_added": models_to_do,
             "models_skipped": present_valid,
+            "requested_models": list(cfg.models),
             "grid": actual_grid_key,
             "slide_embeddings": slide_results,
             "output_uri": sink.uri,
@@ -943,10 +1769,19 @@ def resolve_run(
     )
     if not groups:
         raise ValueError("at least one model/extraction is required")
-    group_cfgs = [
-        replace(cfg, models=list(g.models), target_mpp=g.mpp, patch_px=g.patch_px)
-        for g in groups
-    ]
+    group_cfgs = []
+    for group in groups:
+        group_cfg = replace(
+            cfg,
+            models=list(group.models),
+            target_mpp=group.mpp,
+            patch_px=group.patch_px,
+        )
+        if not group_cfg.no_seg and _models_need_nuclear(
+            list(group.models), model_specs
+        ):
+            group_cfg = replace(group_cfg, segmenter="nuclear")
+        group_cfgs.append(group_cfg)
     return groups, group_cfgs, _run_content_hash(group_cfgs)
 
 
@@ -1009,14 +1844,20 @@ def embed_slide(
             "Source URI is malformed and no safe output ID can be derived."
         ) from None
     model_specs = {embedder.name: embedder.spec for embedder in (embedders or [])}
+    multiplex_request = cfg.multiplex_strategy is not None
     probed_contracts: dict[str, dict] | None = None
-    if not model_specs and embedder_factory is not None:
+    if not multiplex_request and not model_specs and embedder_factory is not None:
         # A factory can be the only source for a programmatic external model. Probe it
         # once before geometry resolution, then pass the resulting contracts into each
         # run_slide call so the same loaded copy is not probed a second time.
         model_specs, probed_contracts = _probe_factory_contracts(
             cfg, embedder_factory, devices
         )
+    cfg = resolve_multiplex_source_config(
+        slide_path,
+        cfg,
+        model_specs=model_specs,
+    )
     groups, group_cfgs, run_hash = resolve_run(
         cfg,
         requested_mpp,
@@ -1027,12 +1868,20 @@ def embed_slide(
     out_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
     grids = {grid_key(g.mpp, g.patch_px): list(g.models) for g in groups}
     expected_output = f"file://{os.path.abspath(out_path)}"
-    model_contracts = probed_contracts or _expected_contracts_with_factory_probe(
-        cfg,
-        embedders,
-        embedder_factory,
-        devices=devices,
-    )
+    model_contracts = None
+    if not multiplex_request:
+        model_contracts = probed_contracts or _expected_contracts_with_factory_probe(
+            cfg,
+            embedders,
+            embedder_factory,
+            devices=devices,
+        )
+        model_contracts = _bind_native_multiplex_panel_contracts(
+            model_contracts,
+            cfg.models,
+            model_specs,
+            cfg.resolved_channel_names,
+        )
     expected_grid_models = {
         group_cfg.grid_hash(): list(group_cfg.models) for group_cfg in group_cfgs
     }
@@ -1040,12 +1889,21 @@ def embed_slide(
         group_cfg.grid_hash(): group_cfg.compatible_legacy_grid_hashes()
         for group_cfg in group_cfgs
     }
+    compatible_grid_segmenters = {
+        group_cfg.grid_hash(): group_cfg.compatible_legacy_grid_segmenters()
+        for group_cfg in group_cfgs
+    }
+    allow_hashless_legacy_grids = {
+        group_cfg.grid_hash(): group_cfg.allows_hashless_legacy_grid()
+        for group_cfg in group_cfgs
+    }
 
     if os.path.exists(out_path) and not force:
         _assert_store_source(out_path, expected_source)
 
     if (
-        not force
+        not multiplex_request
+        and not force
         and receipts_dir
         and not _runtime_aux_requested(cfg)
         and is_complete(
@@ -1057,9 +1915,18 @@ def embed_slide(
             expected_model_contracts=model_contracts,
             expected_grid_models=expected_grid_models,
             compatible_grid_hashes=compatible_grid_hashes,
+            compatible_grid_segmenters=compatible_grid_segmenters,
+            allow_hashless_legacy_grids=allow_hashless_legacy_grids,
         )
     ):
-        grids = _stored_grid_summary(out_path, group_cfgs) or grids
+        grids = (
+            _stored_grid_summary(
+                out_path,
+                group_cfgs,
+                allow_hashless_legacy_grids=allow_hashless_legacy_grids,
+            )
+            or grids
+        )
         return {
             "slide_id": slide_id,
             "status": "skipped",
@@ -1085,13 +1952,22 @@ def embed_slide(
                 # requested geometry, but cannot identify which of several grids it
                 # represents. A multi-grid request therefore leaves it untouched.
                 allow_hashless_legacy=(len(group_cfgs) == 1),
-                _expected_model_contracts={
-                    model: model_contracts[model] for model in gc.models
+                _expected_model_contracts=(
+                    None
+                    if model_contracts is None
+                    else {model: model_contracts[model] for model in gc.models}
+                ),
+                _model_specs={
+                    model: model_specs[model]
+                    for model in gc.models
+                    if model in model_specs
                 },
             )
         )
     grids = {
-        (result.get("grid") or grid_key(group.mpp, group.patch_px)): list(group.models)
+        (result.get("grid") or grid_key(group.mpp, group.patch_px)): list(
+            result.get("requested_models", group.models)
+        )
         for group, result in zip(groups, results, strict=True)
     }
     status = "skipped" if all(r["status"] == "skipped" for r in results) else "complete"
@@ -1184,12 +2060,54 @@ def expected_model_contracts(
     """
 
     specs = {e.name: e.spec for e in (embedders or [])}
-    return expected_patch_outputs(
+    contracts = expected_patch_outputs(
         cfg.models,
         cfg.amp,
         cfg.device if device is None else device,
         specs=specs,
     )
+    return _bind_native_multiplex_panel_contracts(
+        contracts,
+        cfg.models,
+        specs,
+        cfg.resolved_channel_names,
+    )
+
+
+def _bind_native_multiplex_panel_contracts(
+    contracts: dict[str, dict],
+    models: list[str],
+    specs: dict,
+    channel_names: list[str],
+) -> dict[str, dict]:
+    """Bind a positional source panel into every native multiplex fingerprint.
+
+    Strategy-derived multiplex specs already carry their selected-panel contract in
+    ``spec.multiplex``. Native models otherwise have a static weights/loader
+    fingerprint, even though their output changes when channel identity changes; this
+    transitive wrapper closes that completion gap before a receipt or array is accepted.
+    """
+
+    if not channel_names:
+        return dict(contracts)
+    bound = {name: dict(contract) for name, contract in contracts.items()}
+    for name in models:
+        spec = specs.get(name) or get_spec(name)
+        if (
+            getattr(spec, "modality", "brightfield") != "multiplex"
+            or getattr(spec, "multiplex", None) is not None
+        ):
+            continue
+        fingerprint = bound[name]["output_fingerprint"]
+        payload = json.loads(json.dumps(fingerprint["payload"]))
+        payload["multiplex_panel"] = {
+            "binding_contract_version": 1,
+            "channel_axis": "c",
+            "physical_channel_count": len(channel_names),
+            "effective_channel_names": list(channel_names),
+        }
+        bound[name]["output_fingerprint"] = make_output_fingerprint(payload)
+    return bound
 
 
 def _expected_contracts_for_devices(
@@ -1264,7 +2182,7 @@ def _probe_factory_contracts(
     probe = factory(worker_devices[0])
     try:
         contracts = _expected_contracts_for_devices(cfg, probe, worker_devices)
-        _assert_loaded_model_contracts(probe, contracts)
+        _assert_loaded_model_contracts(probe, contracts, cfg.resolved_channel_names)
         specs = {embedder.name: embedder.spec for embedder in probe}
         return specs, contracts
     finally:
@@ -1285,7 +2203,9 @@ def _amp_label(dtype) -> str:
     }.get(dtype, "fp32")
 
 
-def _loaded_model_contracts(embedders: list) -> dict[str, dict]:
+def _loaded_model_contracts(
+    embedders: list, channel_names: list[str] | None = None
+) -> dict[str, dict]:
     """Derive contracts from loaded specs and their effective execution precision."""
 
     contracts: dict[str, dict] = {}
@@ -1300,13 +2220,22 @@ def _loaded_model_contracts(embedders: list) -> dict[str, dict]:
             "embedding_dim": int(embedder.embedding_dim),
             "output_fingerprint": patch_output_fingerprint(embedder.spec, effective),
         }
-    return contracts
+    return _bind_native_multiplex_panel_contracts(
+        contracts,
+        [embedder.name for embedder in embedders],
+        {embedder.name: embedder.spec for embedder in embedders},
+        list(channel_names or []),
+    )
 
 
-def _assert_loaded_model_contracts(embedders: list, expected: dict[str, dict]) -> None:
+def _assert_loaded_model_contracts(
+    embedders: list,
+    expected: dict[str, dict],
+    channel_names: list[str] | None = None,
+) -> None:
     """Fail before store mutation if loaded model copies differ from provenance."""
 
-    actual = _loaded_model_contracts(embedders)
+    actual = _loaded_model_contracts(embedders, channel_names)
     if set(actual) != set(expected):
         missing = sorted(set(expected) - set(actual))
         extra = sorted(set(actual) - set(expected))
@@ -1382,7 +2311,7 @@ def _warn_channel_collapse(reader, multiplex: bool) -> None:
     """Warn when a brightfield run silently drops channels of a multi-channel source.
 
     The RGB read path keeps the first three channels, so feeding a brightfield model a
-    source whose ``omero`` lists more than three channels (a multiplex/CODEX stack)
+    source whose ``omero`` lists more than three channels (a multiplex stack)
     discards the rest with no diagnostic - exactly the kind of garbage-in the embeddings
     would hide. The reverse (a multiplex model on a source with no marker panel) already
     fails loudly when the panel is bound, so it needs no guard here.
@@ -1396,7 +2325,8 @@ def _warn_channel_collapse(reader, multiplex: bool) -> None:
         warnings.warn(
             f"source has {len(names)} channels ({', '.join(names[:4])}…) but a "
             "brightfield (RGB) model keeps only the first three; the rest are dropped. "
-            "If this is a multiplex slide, run a multiplex model (e.g. kronos).",
+            "If this is a multiplex slide, use --multiplex-strategy or a native "
+            "multiplex model.",
             stacklevel=2,
         )
 
@@ -1415,7 +2345,21 @@ def _select_embedders(
     can mix precisions across models.
     """
     if embedders is not None:
-        return [e for e in embedders if e.name in names]
+        selected = [e for e in embedders if e.name in names]
+        for embedder in selected:
+            if not getattr(embedder, "_raw2features_deferred_load", False):
+                continue
+            base = getattr(embedder, "base_embedder", embedder)
+            _warn_scale_mismatch(cfg, base.spec)
+            target_device = device or cfg.device
+            dtype = _amp_dtype(_resolve_amp(cfg, base.spec, target_device))
+            embedder.load(
+                device=target_device,
+                dtype=dtype,
+                compile=cfg.compile,
+            )
+            embedder._raw2features_deferred_load = False
+        return selected
     return _build_embedders_on(cfg, names, device or cfg.device)
 
 
@@ -1430,12 +2374,27 @@ def _segment(reader, cfg: RunConfig, segmenter_name: str | None = None):
     name = segmenter_name or cfg.segmenter
     seg = plugins.get("segmenters", name)()
     tissue = seg.segment(reader)
-    return tissue, {
+    metadata = {
         "segmenter": name,
         "tissue_threshold": cfg.tissue_threshold,
         "seg_level": tissue.level,
         "seg_downsample": tissue.downsample,
     }
+    if name == "nuclear" and hasattr(seg, "nuclear_channels"):
+        channels = seg.nuclear_channels(reader.channel_names)
+        indices = [int(index) for index, _channel_name in channels]
+        names = [str(channel_name) for _index, channel_name in channels]
+        metadata["nuclear_channel_indices"] = indices
+        metadata["nuclear_channel_names"] = names
+        metadata["nuclear_channel_combination"] = (
+            "identity" if len(indices) == 1 else "float32_mean"
+        )
+        metadata["channel_binding_contract_version"] = 2
+        if len(indices) == 1:
+            # Retain the convenient singular fields for existing readers.
+            metadata["nuclear_channel_index"] = indices[0]
+            metadata["nuclear_channel_name"] = names[0]
+    return tissue, metadata
 
 
 def _decode_one(reader, x, y, read_level, read_px, patch_px, multichannel=False):
@@ -1889,7 +2848,9 @@ def _embed_patches_multi(
         try:
             embedders = embedder_factory(device)
             if expected_contracts is not None:
-                _assert_loaded_model_contracts(embedders, expected_contracts)
+                _assert_loaded_model_contracts(
+                    embedders, expected_contracts, cfg.resolved_channel_names
+                )
             collector = _FeatureCollector(hi - lo, model_dims, cfg.features_dtype)
             # Own reader per worker: per-reader chunk cache, thread-safe zarr reads.
             with reader_cls(slide_path) as reader:
@@ -1945,6 +2906,7 @@ def _inspect_store(
     *,
     expected_model_contracts: dict[str, dict] | None = None,
     compatible_grid_hashes: tuple[str, ...] = (),
+    compatible_grid_segmenters: dict[str, str] | None = None,
     allow_hashless_legacy: bool = True,
     require_mask: bool = False,
 ):
@@ -2008,18 +2970,45 @@ def _inspect_store(
                 valid.append(model)
         return (k, n, valid)
 
+    def _recorded_segmenter(k: str) -> str | None:
+        try:
+            header = dict(root[GRIDS][k].attrs.get("raw2features", {}))
+            segmentation = header.get("segmentation") or {}
+            name = segmentation.get("segmenter")
+            return str(name) if name is not None else None
+        except Exception:  # noqa: BLE001 - missing evidence cannot satisfy a guard
+            return None
+
     # Prefer the new identity, then the exact requested legacy AMP, then other legal
-    # legacy AMP values. A hashless hand-built/legacy grid is the last-resort match.
+    # legacy AMP values. Ambiguous aliases additionally require live segmenter
+    # evidence. A hashless hand-built/legacy grid is the last-resort match.
+    requirements = compatible_grid_segmenters or {}
     candidates = tuple(dict.fromkeys((expected_grid_hash, *compatible_grid_hashes)))
     for candidate in candidates:
+        required_segmenter = requirements.get(candidate)
         for k in keys:
             stored = dict(root[GRIDS][k].attrs.get("raw2features", {})).get("grid_hash")
-            if stored == candidate and (result := _result_for(k)) is not None:
+            if (
+                stored == candidate
+                and (
+                    required_segmenter is None
+                    or _recorded_segmenter(k) == required_segmenter
+                )
+                and (result := _result_for(k)) is not None
+            ):
                 return result
     if allow_hashless_legacy and len(keys) == 1:
         k = keys[0]
         stored = dict(root[GRIDS][k].attrs.get("raw2features", {})).get("grid_hash")
-        if stored is None and (result := _result_for(k)) is not None:
+        required = set(requirements.values())
+        evidence_matches = not required or (
+            len(required) == 1 and _recorded_segmenter(k) == next(iter(required))
+        )
+        if (
+            stored is None
+            and evidence_matches
+            and (result := _result_for(k)) is not None
+        ):
             return result
     return (None, 0, [])
 
@@ -2320,7 +3309,10 @@ def _write_grid_thumbnail(
 
 
 def _stored_grid_summary(
-    out_path: str, group_cfgs: list[RunConfig]
+    out_path: str,
+    group_cfgs: list[RunConfig],
+    *,
+    allow_hashless_legacy_grids: dict[str, bool] | None = None,
 ) -> dict[str, list[str]]:
     """Resolve requested grid hashes to their actual (possibly suffixed) labels."""
 
@@ -2339,10 +3331,25 @@ def _stored_grid_summary(
         used: set[str] = set()
         for cfg in group_cfgs:
             candidates = (cfg.grid_hash(), *cfg.compatible_legacy_grid_hashes())
+            requirements = cfg.compatible_legacy_grid_segmenters()
             match = None
             for candidate in dict.fromkeys(candidates):
+                required_segmenter = requirements.get(candidate)
                 hits = [
-                    key for key in keys if key not in used and stored[key] == candidate
+                    key
+                    for key in keys
+                    if key not in used
+                    and stored[key] == candidate
+                    and (
+                        required_segmenter is None
+                        or (
+                            dict(root[GRIDS][key].attrs.get("raw2features", {})).get(
+                                "segmentation"
+                            )
+                            or {}
+                        ).get("segmenter")
+                        == required_segmenter
+                    )
                 ]
                 if len(hits) == 1:
                     match = hits[0]
@@ -2354,8 +3361,19 @@ def _stored_grid_summary(
                 and len(group_cfgs) == 1
                 and len(keys) == 1
                 and stored[keys[0]] is None
+                and (allow_hashless_legacy_grids or {}).get(cfg.grid_hash(), True)
             ):
-                match = keys[0]
+                required = set(requirements.values())
+                recorded = (
+                    dict(root[GRIDS][keys[0]].attrs.get("raw2features", {})).get(
+                        "segmentation"
+                    )
+                    or {}
+                ).get("segmenter")
+                if not required or (
+                    len(required) == 1 and recorded == next(iter(required))
+                ):
+                    match = keys[0]
             if match is None:
                 return {}
             used.add(match)
@@ -2433,6 +3451,8 @@ def _run_slide_encoders(
     slide_encoder_names: list[str],
     device: str,
     available_patch_models: list[str],
+    *,
+    preferred_patch_models: list[str] | None = None,
 ) -> dict[str, str]:
     """Run slide-level encoders on patch features already written to *sink*.
 
@@ -2444,23 +3464,36 @@ def _run_slide_encoders(
         encode_slide_embedding,
         resolve_slide_patch_model,
         slide_embedding_is_complete,
+        slide_output_key,
     )
 
     results: dict[str, str] = {}
 
     for slide_model_name in slide_encoder_names:
+        from raw2features.slide_embedders.model_registry import get_slide_spec
+
+        preferred = list(preferred_patch_models or [])
+        explicit_patch_model = (
+            preferred[0]
+            if get_slide_spec(slide_model_name).patch_encoder == "any"
+            and len(preferred) == 1
+            else None
+        )
         patch_model = resolve_slide_patch_model(
             sink._group,
             slide_model_name,
+            patch_model=explicit_patch_model,
             available_patch_models=available_patch_models,
         )
+        output_name = slide_output_key(sink._group, slide_model_name, patch_model)
         if slide_embedding_is_complete(
             sink._group,
             slide_model_name,
             patch_model=patch_model,
             device=device,
+            output_name=output_name,
         ):
-            results[slide_model_name] = f"slide/{slide_model_name}"
+            results[slide_model_name] = f"slide/{output_name}"
             continue
 
         encoding = encode_slide_embedding(
@@ -2476,8 +3509,9 @@ def _run_slide_encoders(
             slide_model_name,
             encoding.vector,
             encoding.provenance,
+            output_name=output_name,
         )
-        results[slide_model_name] = f"slide/{slide_model_name}"
+        results[slide_model_name] = f"slide/{output_name}"
 
     return results
 
@@ -2499,6 +3533,7 @@ def _run_slide_encoders_from_store(
         encode_slide_embedding,
         resolve_slide_grid,
         slide_embedding_is_complete,
+        slide_output_key,
         write_slide_embedding,
     )
 
@@ -2517,15 +3552,15 @@ def _run_slide_encoders_from_store(
             # compatible pre-existing grid was found; model-load/encode errors below
             # still propagate rather than being mistaken for a missing grid.
             continue
+        output_name = slide_output_key(group, slide_model_name, patch_model)
         if slide_embedding_is_complete(
             group,
             slide_model_name,
             patch_model=patch_model,
             device=device,
+            output_name=output_name,
         ):
-            results[slide_model_name] = (
-                f"grids/{selected_grid}/slide/{slide_model_name}"
-            )
+            results[slide_model_name] = f"grids/{selected_grid}/slide/{output_name}"
             continue
         encoding = encode_slide_embedding(
             group,
@@ -2540,9 +3575,10 @@ def _run_slide_encoders_from_store(
             slide_model_name,
             encoding.vector,
             encoding.provenance,
+            output_name=output_name,
         )
         wrote = True
-        results[slide_model_name] = f"grids/{selected_grid}/slide/{slide_model_name}"
+        results[slide_model_name] = f"grids/{selected_grid}/slide/{output_name}"
 
     if wrote:
         try:
@@ -2566,7 +3602,7 @@ def _models_header(
         }
         for e in embedders
     }
-    return {
+    headers = {
         e.name: {
             "source": e.spec.source,
             "embedding_dim": e.spec.embedding_dim,
@@ -2588,6 +3624,23 @@ def _models_header(
             "inference_amp": _amp_label(getattr(e, "_dtype", None)),
         }
         for e in embedders
+    }
+    for e in embedders:
+        if e.spec.multiplex is None:
+            continue
+        # Mirror only the already credential-sanitized canonical fingerprint payload;
+        # plugin-supplied in-memory metadata is untrusted persistence input.
+        fingerprint = contracts[e.name]["output_fingerprint"]
+        multiplex = dict(fingerprint["payload"]["multiplex"])
+        headers[e.name]["base_model"] = multiplex.get("base_model")
+        headers[e.name]["multiplex"] = multiplex
+        headers[e.name]["pooling"] = multiplex.get("aggregation", {}).get("name")
+    # Programmatic embedders may supply private model URLs. Sanitize URI values without
+    # interpreting semantic constructor keys such as ``token`` as authentication fields;
+    # those keys must remain intact for complete output identity.
+    return {
+        name: redact_metadata_uri_credentials(metadata)
+        for name, metadata in headers.items()
     }
 
 
@@ -2645,9 +3698,26 @@ def _build_header(
         "segmentation": seg_meta,
         "models": _models_header(embedders, model_contracts),
     }
+    header["source"].update(_source_channel_metadata(reader))
     # Multiplex marker-panel resolution (per model): which of the slide's channels
     # matched the model's marker vocabulary and which were dropped. Absent for
     # brightfield runs. Part of the reproducibility record for a multiplex embedding.
     if panel_meta:
         header["panel"] = panel_meta
     return header
+
+
+def _source_channel_metadata(reader) -> dict:
+    """Effective positional channel provenance for a named-channel source."""
+
+    channel_names = getattr(reader, "channel_names", None)
+    if channel_names is None:
+        return {}
+    metadata = {
+        "channel_names": list(channel_names),
+        "channel_names_source": getattr(reader, "channel_names_source", None),
+    }
+    original_names = getattr(reader, "original_channel_names", None)
+    if original_names != channel_names:
+        metadata["omero_channel_names"] = original_names
+    return metadata

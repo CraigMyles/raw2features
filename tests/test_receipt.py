@@ -18,6 +18,7 @@ from raw2features.pipeline.receipt import (
     validate_store_models,
     write_receipt,
 )
+from raw2features.pipeline.runner import RunConfig
 from raw2features.sinks.zarr_sink import ZarrSink
 
 
@@ -84,19 +85,20 @@ def test_is_complete_true_then_false_on_mismatch(tmp_path):
             n_patches=4,
         ),
     )
-    assert is_complete(
-        rec_dir,
-        "s",
-        chash,
-        expected_source_uri="file:///x",
-        expected_output_uri=uri,
-    ) is True
+    assert (
+        is_complete(
+            rec_dir,
+            "s",
+            chash,
+            expected_source_uri="file:///x",
+            expected_output_uri=uri,
+        )
+        is True
+    )
     # Legacy callers no longer raise, but fail closed without the current source.
     assert is_complete(rec_dir, "s", chash) is False
     # wrong config hash -> not complete
-    assert is_complete(
-        rec_dir, "s", "other", expected_source_uri="file:///x"
-    ) is False
+    assert is_complete(rec_dir, "s", "other", expected_source_uri="file:///x") is False
 
 
 def test_is_complete_false_when_output_missing_model(tmp_path):
@@ -116,9 +118,7 @@ def test_is_complete_false_when_output_missing_model(tmp_path):
             n_patches=4,
         ),
     )
-    assert is_complete(
-        rec_dir, "s", "h", expected_source_uri="file:///x"
-    ) is False
+    assert is_complete(rec_dir, "s", "h", expected_source_uri="file:///x") is False
 
 
 def test_expected_contract_mapping_must_cover_every_receipt_model(tmp_path):
@@ -272,6 +272,76 @@ def test_per_grid_requirements_allow_unambiguous_legacy_hashless_store(tmp_path)
     )
 
 
+def test_unsafe_native_selector_disallows_hashless_receipt_completion(tmp_path):
+    uri = _make_output(tmp_path / "out")
+    native = RunConfig(
+        models=["kronos"],
+        resolved_channel_names=["", "DAPI", "CD3"],
+        resolved_nuclear_channel_indices=[1],
+        resolved_original_channel_names=["", "DAPI", "CD3"],
+    )
+    expected_hash = native.grid_hash()
+    policy = {expected_hash: native.allows_hashless_legacy_grid()}
+
+    assert not validate_store_models(
+        uri,
+        ["m"],
+        expected_grid_models={expected_hash: ["m"]},
+        allow_hashless_legacy_grids=policy,
+    )
+
+    receipts = str(tmp_path / "receipts")
+    write_receipt(
+        receipts,
+        Receipt(
+            slide_id="s",
+            status="complete",
+            source_uri="file:///x",
+            output_uri=uri,
+            reader="omezarr",
+            models=["m"],
+            config_hash="unsafe-native",
+            n_patches=4,
+        ),
+    )
+    assert not is_complete(
+        receipts,
+        "s",
+        "unsafe-native",
+        expected_source_uri="file:///x",
+        expected_output_uri=uri,
+        expected_grid_models={expected_hash: ["m"]},
+        allow_hashless_legacy_grids=policy,
+    )
+
+
+def test_ambiguous_legacy_grid_alias_requires_live_segmenter_evidence(tmp_path):
+    import zarr
+
+    uri = _make_output(tmp_path / "out")
+    root = zarr.open_group(
+        uri.removeprefix("file://"), mode="r+", use_consolidated=False
+    )
+    group = root["grids"]["mpp1_px224"]
+    header = dict(group.attrs["raw2features"])
+    header["grid_hash"] = "legacy-otsu-hash"
+    header["segmentation"] = {"segmenter": "otsu"}
+    group.attrs["raw2features"] = header
+    kwargs = {
+        "expected_grid_models": {"current-nuclear-hash": ["m"]},
+        "compatible_grid_hashes": {"current-nuclear-hash": ("legacy-otsu-hash",)},
+        "compatible_grid_segmenters": {
+            "current-nuclear-hash": {"legacy-otsu-hash": "nuclear"}
+        },
+    }
+
+    assert not validate_store_models(uri, ["m"], **kwargs)
+
+    header["segmentation"] = {"segmenter": "nuclear"}
+    group.attrs["raw2features"] = header
+    assert validate_store_models(uri, ["m"], **kwargs)
+
+
 def test_is_complete_binds_receipt_to_source_and_requested_output(tmp_path):
     rec_dir = str(tmp_path / "rec")
     uri = _make_output(tmp_path / "out")
@@ -289,9 +359,7 @@ def test_is_complete_binds_receipt_to_source_and_requested_output(tmp_path):
         ),
     )
 
-    assert not is_complete(
-        rec_dir, "s", "h", expected_source_uri="file:///other"
-    )
+    assert not is_complete(rec_dir, "s", "h", expected_source_uri="file:///other")
     assert not is_complete(
         rec_dir,
         "s",
@@ -305,9 +373,7 @@ def test_is_complete_binds_receipt_to_source_and_requested_output(tmp_path):
     receipt["slide_id"] = "copied-from-another-slide"
     with open(os.path.join(rec_dir, "s.json"), "w", encoding="utf-8") as fh:
         json.dump(receipt, fh)
-    assert not is_complete(
-        rec_dir, "s", "h", expected_source_uri="file:///x"
-    )
+    assert not is_complete(rec_dir, "s", "h", expected_source_uri="file:///x")
 
 
 def test_is_complete_checks_live_store_source_binding(tmp_path):
@@ -336,9 +402,7 @@ def test_is_complete_checks_live_store_source_binding(tmp_path):
     header["source"] = {"uri": "file:///different"}
     root[GRIDS][key].attrs["raw2features"] = header
 
-    assert not is_complete(
-        rec_dir, "s", "h", expected_source_uri="file:///x"
-    )
+    assert not is_complete(rec_dir, "s", "h", expected_source_uri="file:///x")
 
 
 def test_is_complete_canonicalises_rotated_remote_credentials(tmp_path):
@@ -381,9 +445,7 @@ def test_corrupt_or_non_object_receipt_is_incomplete(tmp_path):
     path = rec_dir / "s.json"
     path.write_text('{"status": "complete"')
     assert read_receipt(str(rec_dir), "s") is None
-    assert not is_complete(
-        str(rec_dir), "s", "h", expected_source_uri="file:///x"
-    )
+    assert not is_complete(str(rec_dir), "s", "h", expected_source_uri="file:///x")
 
     path.write_text("[]")
     assert read_receipt(str(rec_dir), "s") is None

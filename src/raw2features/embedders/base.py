@@ -144,6 +144,10 @@ class ModelSpec:
     # exists, else the arXiv DataCite DOI (10.48550/arXiv.*); None only for open-weights
     # releases with no publication. Flows into the output store's model provenance.
     doi: str | None = None
+    # Resolved strategy contract for a derived multiplex output. Ordinary registry
+    # models leave this unset, preserving their v0.1 fingerprints byte-for-byte. Kept
+    # last so adding it does not shift any pre-existing positional constructor fields.
+    multiplex: dict[str, Any] | None = None
 
     @property
     def extract_px(self) -> int:
@@ -199,6 +203,21 @@ class Embedder(ABC):
             self.spec.std,
             self.spec.interpolation,
         )
+
+    @property
+    def transform_input_dtype(self) -> str:
+        """Host-patch contract accepted by :meth:`transform_batch`.
+
+        Every built-in RGB embedder currently consumes HWC ``uint8`` patches.  A
+        plugin whose transform genuinely consumes normalized floating-point input
+        may override this with ``"float32_0_1"``.  Multiplex adapters consult this
+        explicit seam instead of assuming that quantizing to uint8 is universally
+        valid.  It is intentionally not part of ordinary brightfield fingerprints,
+        preserving their existing output identity; a multiplex strategy records the
+        resolved value in its own contract.
+        """
+
+        return "uint8"
 
     @abstractmethod
     def load(

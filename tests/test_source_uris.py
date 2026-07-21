@@ -19,6 +19,8 @@ from raw2features.core.uris import (
     is_qualified_uri,
     is_remote_uri,
     join_uri_path,
+    redact_metadata_credentials,
+    redact_metadata_uri_credentials,
     redact_uri_credentials,
     source_uri,
 )
@@ -40,6 +42,38 @@ from raw2features.readers.base import WSISource
 def test_unauthenticated_remote_source_uris_are_preserved_verbatim(uri):
     assert is_remote_uri(uri)
     assert source_uri(uri) == uri
+
+
+def test_untrusted_plugin_metadata_is_recursively_credential_free():
+    sentinel = "R2F_PLUGIN_SECRET"
+    safe = redact_metadata_credentials(
+        {
+            "checkpoint": {
+                "url": (
+                    f"https://user:{sentinel}@weights.example/model.pt?"
+                    f"part=1&token={sentinel}"
+                ),
+                "api_key": sentinel,
+            },
+            "records": [{"source": f"s3://bucket/x?X-Amz-Signature={sentinel}"}],
+        }
+    )
+    assert sentinel not in repr(safe)
+    assert safe["checkpoint"]["url"] == (
+        "https://weights.example/model.pt?part=1"
+    )
+    assert safe["checkpoint"]["api_key"] == "<redacted>"
+
+
+def test_semantic_metadata_keys_survive_uri_only_redaction():
+    safe = redact_metadata_uri_credentials(
+        {
+            "constructor": {"token": "cls", "signature": "mean_pool"},
+            "url": "https://weights.example/model.pt?part=1&token=SECRET",
+        }
+    )
+    assert safe["constructor"] == {"token": "cls", "signature": "mean_pool"}
+    assert safe["url"] == "https://weights.example/model.pt?part=1"
 
 
 @pytest.mark.parametrize(

@@ -59,7 +59,7 @@ read and decide on. raw2features makes no commercial-use determination.
 | `seal_univ2` ⚠ | seal | 1536 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
 | `kronos` | kronos | 384 | 224 | -¹² | n/a | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/KRONOS) · [GH](https://github.com/mahmoodlab/KRONOS) · [paper](https://arxiv.org/abs/2506.03373) |
 
-⚠ **SEAL is experimental in v0.1.1 and is outside the exact-weight pinning
+⚠ **SEAL is experimental in v0.2.0 and is outside the exact-weight pinning
 guarantee.** raw2features pins and SHA-256 verifies the SEAL LoRA adapter, freezes
 the adapter constructor, and records its composite identity. The pinned upstream
 factory still downloads the frozen CONCH/UNI2-h base from mutable HEAD, however, so

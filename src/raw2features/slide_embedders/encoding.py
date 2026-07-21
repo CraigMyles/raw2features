@@ -22,6 +22,34 @@ class SlideEncoding:
     provenance: dict
 
 
+def slide_output_key(group, slide_model: str, patch_model: str) -> str:
+    """Storage key for a slide output, preserving multiplex coexistence.
+
+    Historical brightfield/native outputs remain ``slide/<slide_model>`` exactly.
+    Strategy-derived multiplex patch arrays can coexist on one geometry grid, so a
+    model-agnostic pool is qualified by that cohort-stable effective patch key and
+    cannot overwrite a pool derived from another marker/aggregation recipe.
+    """
+
+    try:
+        fingerprint = dict(group["features"][patch_model].attrs).get(
+            "output_fingerprint"
+        )
+        payload = fingerprint.get("payload", {})
+        strategy_derived = (
+            payload.get("loader", {}).get("family") == "multiplex_strategy"
+        )
+    except (AttributeError, KeyError, TypeError):
+        strategy_derived = False
+    if not strategy_derived:
+        return slide_model
+    if "/" in patch_model:
+        raise ValueError(
+            f"multiplex patch model key {patch_model!r} is not a safe zarr path segment"
+        )
+    return f"{slide_model}__{patch_model}"
+
+
 def _validated_patch_fingerprint(group, patch_model: str) -> dict:
     """Return a committed, complete patch-output fingerprint.
 
@@ -93,11 +121,13 @@ def slide_embedding_is_complete(
     *,
     patch_model: str | None = None,
     device: str = "cpu",
+    output_name: str | None = None,
 ) -> bool:
     """Return whether ``slide/<model>`` is valid for the requested patch model."""
-    if "slide" not in group or slide_model not in group["slide"]:
+    stored_name = output_name or slide_model
+    if "slide" not in group or stored_name not in group["slide"]:
         return False
-    array = group["slide"][slide_model]
+    array = group["slide"][stored_name]
     attrs = dict(array.attrs)
     stored_patch_model = attrs.get("patch_encoder")
     if attrs.get("role") != "slide_embedding" or not stored_patch_model:
@@ -146,7 +176,7 @@ def slide_embedding_is_complete(
         return False
 
     header = dict(group.attrs.get("raw2features", {}))
-    mirrored = header.get("slide_embeddings", {}).get(slide_model, {})
+    mirrored = header.get("slide_embeddings", {}).get(stored_name, {})
     if not isinstance(mirrored, dict):
         return False
     if mirrored.get("patch_encoder") != stored_patch_model:
@@ -348,26 +378,32 @@ def write_slide_embedding(
     slide_model: str,
     vector: np.ndarray,
     provenance: dict,
+    *,
+    output_name: str | None = None,
 ) -> None:
     """Replace ``slide/<model>`` with one vector and refresh grid metadata."""
+    stored_name = output_name or slide_model
+    stored_provenance = dict(provenance)
+    if stored_name != slide_model:
+        stored_provenance["slide_encoder"] = slide_model
     slide_group = group.require_group("slide")
-    if slide_model in slide_group:
-        del slide_group[slide_model]
+    if stored_name in slide_group:
+        del slide_group[stored_name]
 
     vector_2d = np.asarray(vector, dtype=np.float32).reshape(1, -1)
     array = slide_group.create_array(
-        slide_model,
+        stored_name,
         shape=vector_2d.shape,
         chunks=vector_2d.shape,
         dtype="float32",
     )
     array[:] = vector_2d
     array.attrs["role"] = "slide_embedding"
-    for key, value in provenance.items():
+    for key, value in stored_provenance.items():
         array.attrs[key] = value
 
     header = dict(group.attrs.get("raw2features", {}))
     slide_metadata = dict(header.get("slide_embeddings", {}))
-    slide_metadata[slide_model] = dict(provenance)
+    slide_metadata[stored_name] = stored_provenance
     header["slide_embeddings"] = slide_metadata
     group.attrs["raw2features"] = header

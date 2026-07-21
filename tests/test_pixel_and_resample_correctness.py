@@ -86,6 +86,15 @@ def test_resample_patch_downscale_and_noop():
     assert same is patch  # exact-size read is a no-op (no needless resample)
 
 
+@pytest.mark.parametrize("dtype", [np.uint16, np.float32])
+def test_resample_patch_preserves_single_named_channel_axis_and_dtype(dtype):
+    patch = np.arange(32 * 32, dtype=dtype).reshape(32, 32, 1)
+    out = resample_patch(patch, 17)
+
+    assert out.shape == (17, 17, 1)
+    assert out.dtype == dtype
+
+
 # -- C: full-array + all-zero-tail validation ------------------------------
 def test_validate_output_rejects_unwritten_tail(tmp_path):
     n, dim = 300, 8  # tail (rows 256-299) is beyond the old 256-row window

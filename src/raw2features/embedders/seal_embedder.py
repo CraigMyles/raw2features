@@ -6,7 +6,7 @@ for inference still means: build the frozen base + merge the LoRA. We use SEAL's
 image-only loader (``ModelMixin.get_img_model``) - the gene/omics model is not loaded.
 Output dim = the base encoder's (512 for CONCH, 1536 for UNI2-h).
 
-SEAL is **experimental in raw2features v0.1.1**. The LoRA adapter is revision-pinned,
+SEAL is **experimental in raw2features v0.2.0**. The LoRA adapter is revision-pinned,
 SHA-256 verified, and loaded with a frozen constructor contract, but SEAL's upstream
 factory still fetches the frozen CONCH/UNI2-h base from mutable Hugging Face HEAD. The
 persisted composite fingerprint records that limitation explicitly; SEAL is outside the
@@ -92,7 +92,7 @@ class SealEmbedder(Embedder):
 
         # Resolve and verify the adapter before either deserialising it or paying to
         # construct its large frozen base. The base itself remains upstream-managed
-        # and unpinned, which is why SEAL is marked experimental in v0.1.1.
+        # and unpinned, which is why SEAL is marked experimental in v0.2.0.
         ckpt_path = download_pinned_hf_file(
             f"hf-hub:{_SEAL_REPO}",
             self.spec.weights_filename or f"seal_{backbone}_vision.pth",

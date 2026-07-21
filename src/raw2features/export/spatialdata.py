@@ -32,6 +32,7 @@ in the optional ``[spatialdata]`` extra, so importing raw2features never require
 
 from __future__ import annotations
 
+import json
 import os
 
 import numpy as np
@@ -88,7 +89,7 @@ def _marker_field(entry: dict):
     KRONOS records it under ``kronos_marker``; a future multiplex model may use another
     ``*_marker`` key. Falls back through the known names so the table stays generic.
     """
-    for k in ("marker", "kronos_marker"):
+    for k in ("marker", "kronos_marker", "canonical_name", "source_name"):
         if k in entry:
             return entry[k]
     for k in entry:
@@ -114,8 +115,10 @@ def _panel_dataframe(panel: dict):
             rows.append(
                 {
                     "model": model,
-                    "channel": e.get("channel"),
-                    "channel_index": e.get("channel_index"),
+                    "channel": e.get("channel", e.get("source_name")),
+                    "channel_index": e.get(
+                        "channel_index", e.get("source_index")
+                    ),
                     "marker": _marker_field(e),
                     "marker_id": e.get("marker_id"),
                 }
@@ -143,25 +146,66 @@ def _panel_summary(panel: dict) -> dict:
     }
 
 
-def _uns_safe_header(header: dict) -> dict:
-    """Header copy whose multiplex panel ``mapping`` is columnarised for anndata.
+def _columnarize_records(value):
+    """Recursively convert record lists to columns that AnnData can round-trip."""
 
-    anndata's zarr writer turns a list-of-dicts into an array of stringified dict reprs;
-    converting each model's ``mapping`` to a dict-of-lists keeps it as plain arrays that
-    round-trip and stay reconstructable. Shallow-copies (model cards stay untouched).
+    if isinstance(value, dict):
+        return {key: _columnarize_records(item) for key, item in value.items()}
+    if isinstance(value, list) and value and all(
+        isinstance(item, dict) for item in value
+    ):
+        keys = list(dict.fromkeys(key for item in value for key in item))
+        return {
+            key: [_columnarize_records(item.get(key)) for item in value]
+            for key in keys
+        }
+    if isinstance(value, list):
+        return [_columnarize_records(item) for item in value]
+    return value
+
+
+def _uns_safe_header(header: dict) -> dict:
+    """Copy multiplex records into an AnnData-safe recursive columnar form.
+
+    AnnData's zarr writer turns a list of dictionaries into stringified reprs. This
+    preserves top-level panel mappings, nested normalization bounds, and the mirrored
+    model strategy/fingerprint records as reconstructable arrays without changing
+    ordinary brightfield model headers.
     """
     panel = header.get("panel")
     if not panel:
         return header
     safe_panel = {}
     for model, p in panel.items():
-        p = dict(p or {})
-        mapping = p.get("mapping")
-        if isinstance(mapping, list) and mapping and isinstance(mapping[0], dict):
-            keys = list(mapping[0].keys())
-            p["mapping"] = {k: [e.get(k) for e in mapping] for k in keys}
-        safe_panel[model] = p
-    return {**header, "panel": safe_panel}
+        safe_panel[model] = _columnarize_records(dict(p or {}))
+    result = {**header, "panel": safe_panel}
+    models = header.get("models")
+    if isinstance(models, dict):
+        safe_models = dict(models)
+        for model, metadata in models.items():
+            if isinstance(metadata, dict) and metadata.get("multiplex") is not None:
+                # The fingerprint digest authenticates the exact nested payload.
+                # Columnarising its record lists would mutate that payload while
+                # retaining the old digest, making the exported contract invalid.
+                # Canonical JSON is AnnData-safe, lossless, and directly verifiable;
+                # only the separate human-readable multiplex metadata is reshaped.
+                fingerprint = metadata.get("output_fingerprint")
+                readable = {
+                    key: value
+                    for key, value in metadata.items()
+                    if key != "output_fingerprint"
+                }
+                safe_metadata = _columnarize_records(readable)
+                if fingerprint is not None:
+                    safe_metadata["output_fingerprint"] = json.dumps(
+                        fingerprint,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    )
+                safe_models[model] = safe_metadata
+        result["models"] = safe_models
+    return result
 
 
 def _coordinate_systems(sx, sy, translation):

@@ -7,9 +7,17 @@ selection, missing-store errors) is exercised without it.
 
 from __future__ import annotations
 
+import json
+from dataclasses import replace
+
 import numpy as np
 import pytest
 
+from raw2features.embedders.fingerprint import (
+    patch_output_fingerprint,
+    valid_output_fingerprint,
+)
+from raw2features.embedders.model_registry import get_spec
 from raw2features.export.spatialdata import export_spatialdata
 from raw2features.sinks.zarr_sink import ZarrSink
 
@@ -220,6 +228,107 @@ _PANEL = {
         "vocabulary": "MahmoodLab/kronos marker_metadata.csv@abc123",
     }
 }
+
+
+def test_channelwise_panel_mapping_is_queryable_without_losing_positions():
+    pytest.importorskip("pandas")
+    from raw2features.export.spatialdata import _panel_dataframe
+
+    frame = _panel_dataframe(
+        {
+            "uni__channelwise_mean_0123456789abcdef": {
+                "mapping": [
+                    {
+                        "source_index": 3,
+                        "source_name": "DAPI",
+                        "canonical_name": "DAPI",
+                    },
+                    {
+                        "source_index": 1,
+                        "source_name": "CD3",
+                        "canonical_name": "CD3",
+                    },
+                ]
+            }
+        }
+    )
+
+    assert frame["channel"].tolist() == ["DAPI", "CD3"]
+    assert frame["channel_index"].tolist() == [3, 1]
+    assert frame["marker"].tolist() == ["DAPI", "CD3"]
+
+
+def test_channelwise_panel_audit_lists_are_anndata_safe():
+    from raw2features.export.spatialdata import _uns_safe_header
+
+    base_fingerprint = patch_output_fingerprint(get_spec("uni"), "fp32")
+    fingerprint = patch_output_fingerprint(
+        replace(
+            get_spec("uni"),
+            multiplex={
+                "strategy": "channelwise",
+                "contract_version": 1,
+                "base_output_fingerprint": base_fingerprint,
+                "aggregation": {"name": "mean"},
+                "markers": [
+                    {"source_index": 0, "source_name": "DAPI"},
+                    {"source_index": 1, "source_name": "CD3"},
+                ],
+            },
+        ),
+        "fp32",
+    )
+
+    header = {
+        "panel": {
+            "derived": {
+                "source_channels": [
+                    {"source_index": 0, "source_name": "DAPI"},
+                    {"source_index": 1, "source_name": "CD3"},
+                ],
+                "excluded": [{"source_index": 1, "source_name": "CD3"}],
+                "normalization": {
+                    "resolved": [
+                        {"source_index": 0, "low": 1.0, "high": 99.0},
+                        {"source_index": 1, "low": 2.0, "high": 98.0},
+                    ]
+                },
+            }
+        },
+        "models": {
+            "derived": {
+                "output_fingerprint": fingerprint,
+                "multiplex": {
+                    "markers": [
+                        {"source_index": 0, "source_name": "DAPI"},
+                        {"source_index": 1, "source_name": "CD3"},
+                    ]
+                }
+            }
+        },
+    }
+    panel = _uns_safe_header(header)["panel"]["derived"]
+    assert panel["source_channels"] == {
+        "source_index": [0, 1],
+        "source_name": ["DAPI", "CD3"],
+    }
+    assert panel["excluded"] == {
+        "source_index": [1],
+        "source_name": ["CD3"],
+    }
+    assert panel["normalization"]["resolved"] == {
+        "source_index": [0, 1],
+        "low": [1.0, 2.0],
+        "high": [99.0, 98.0],
+    }
+    safe_model = _uns_safe_header(header)["models"]["derived"]
+    assert safe_model["multiplex"]["markers"] == {
+        "source_index": [0, 1],
+        "source_name": ["DAPI", "CD3"],
+    }
+    exported_fingerprint = json.loads(safe_model["output_fingerprint"])
+    assert exported_fingerprint == fingerprint
+    assert valid_output_fingerprint(exported_fingerprint)
 
 
 def test_export_surfaces_multiplex_marker_panel(tmp_path):

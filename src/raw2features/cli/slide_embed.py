@@ -71,6 +71,7 @@ def slide_embed(
         encode_slide_embedding,
         resolve_slide_grid,
         slide_embedding_is_complete,
+        slide_output_key,
         write_slide_embedding,
     )
     from raw2features.slide_embedders.model_registry import (
@@ -114,12 +115,18 @@ def slide_embed(
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc
 
+        # Strategy-derived multiplex pools are patch-qualified so several marker
+        # recipes can coexist on the same grid without replacing one another.
+        output_name = slide_output_key(
+            group, slide_model_name, selected_patch_model
+        )
         # Skip only an output produced from the requested patch model.
         if not force and slide_embedding_is_complete(
             group,
             slide_model_name,
             patch_model=selected_patch_model,
             device=device,
+            output_name=output_name,
         ):
             typer.echo(
                 f"{slide_model_name} [{selected_grid}]: already complete (skipping)"
@@ -151,6 +158,7 @@ def slide_embed(
             slide_model_name,
             encoding.vector,
             encoding.provenance,
+            output_name=output_name,
         )
         typer.echo(
             f"{slide_model_name} [{selected_grid}]: done  "

@@ -3,11 +3,11 @@
 Notable changes to raw2features, newest first. This project follows
 [Semantic Versioning](https://semver.org).
 
-## [0.1.1] - 2026-07-16
+## [0.2.0] - Unreleased
 
-This is a focused correctness, reproducibility, and interoperability release. It keeps
-the v0.1 store layout and geometry identity while making resume decisions stricter and
-multi-grid workflows fully additive.
+This release extends named-channel multiplex support with a `channelwise` strategy, adds
+four patch encoders, and includes a set of correctness and release-safety fixes. The v0.1
+store layout and existing brightfield workflows remain unchanged.
 
 ### Correctness and reproducibility
 
@@ -33,11 +33,21 @@ multi-grid workflows fully additive.
 
 ### Models and interoperability
 
+- Add a pluggable multiplex-strategy layer and a built-in `channelwise` strategy for
+  applying registered RGB patch encoders to named-channel multiplex tissue images. It
+  records positional channel identity (including a strict metadata-file fallback), marker
+  selection and order, normalization, RGB conversion, base-model identity, mean/concat
+  aggregation, and model-agnostic slide pooling without changing brightfield outputs.
+- Bind native multiplex outputs to the complete effective positional panel. Nuclear
+  masking accepts one unambiguous nuclear channel or a recognized same-stain group, such
+  as DNA1/DNA2 or repeated DAPI channels. It averages each multi-channel group in float32
+  and binds every physical index into grid identity; `--no-seg` remains supported.
 - Add pinned, forward-validated H0-mini, KEEP, OpenMidnight, and OpenPath patch encoders,
   with their licenses, access requirements, preprocessing, and weight hashes recorded.
 - Correct cached OME-Zarr reads for noncanonical spatial axis order. The reader accepts
   x/y in either order (with an optional channel axis) and warns whenever another
-  non-singleton axis is reduced to index zero.
+  non-singleton axis is reduced to index zero. Unnamed `omero.channels` entries now
+  retain their physical positions instead of shifting later marker identities.
 - Refresh the development lock to current `ngff-zarr`/`ome-zarr` releases while retaining
   the existing declared compatibility floor.
 - Choose the float-pixel `[0,1]` versus `[0,255]` convention once per opened slide instead
@@ -56,11 +66,15 @@ multi-grid workflows fully additive.
 
 ### Compatibility and migration
 
-- Existing v0.1 stores remain readable; the embeddings schema and geometry-only
-  `grid_hash` are unchanged.
+- Existing v0.1 stores remain readable; the store layout/schema and model-independent
+  grid-identity contract are unchanged. Multiplex nuclear masking now binds the resolved
+  physical nuclear-channel indices. Averaging a recognized same-stain group is an
+  intentional value change from v0.1 and therefore creates a new grid. Compatible
+  historical native-multiplex grids remain appendable only when the original OME panel
+  proves that the v0.1 selector used the same single physical channel.
 - The first request for a model output created before fingerprints were introduced will
   recompute that model in place. The old header is deliberately not treated as proof that
-  pre-v0.1.1 revision pins were enforced.
+  pre-v0.2.0 revision pins were enforced.
 - Plain local output IDs remain basename-based for v0.1 compatibility. Source comparison
   prevents accidental reuse, and manifest preflight rejects duplicate derived IDs.
 - Credentials already persisted by v0.1.0 are not rewritten by this release and should be
@@ -102,4 +116,4 @@ What 0.1.0 provides:
   harness, and six runnable tutorial notebooks.
 
 [0.1.0]: https://github.com/CraigMyles/raw2features/releases/tag/v0.1.0
-[0.1.1]: https://github.com/CraigMyles/raw2features/compare/v0.1.0...v0.1.1
+[0.2.0]: https://github.com/CraigMyles/raw2features/compare/v0.1.0...v0.2.0

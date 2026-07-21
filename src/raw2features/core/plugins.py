@@ -1,6 +1,7 @@
 """Plugin discovery for the swappable seams.
 
-Each seam (readers, segmenters, patchers, embedders, sinks, slide_embedders)
+Each seam (readers, segmenters, patchers, embedders, sinks, slide_embedders,
+multiplex_strategies)
 is resolved by name from two sources, in order:
 
 1. An in-process registry populated by the ``@register`` decorator (used by
@@ -21,7 +22,15 @@ from typing import Any
 # group name -> {plugin name -> object/class}
 _REGISTRY: dict[str, dict[str, Any]] = {}
 
-SEAMS = ("readers", "segmenters", "patchers", "embedders", "sinks", "slide_embedders")
+SEAMS = (
+    "readers",
+    "segmenters",
+    "patchers",
+    "embedders",
+    "sinks",
+    "slide_embedders",
+    "multiplex_strategies",
+)
 
 
 def register(seam: str, name: str):

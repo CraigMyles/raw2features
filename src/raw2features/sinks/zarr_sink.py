@@ -14,6 +14,7 @@ import json
 import os
 import secrets
 import stat
+import unicodedata
 
 import numpy as np
 
@@ -236,6 +237,29 @@ class ZarrSink(Sink):
         else:
             # use_consolidated=False: read live metadata (a prior run consolidated it).
             root = zarr.open_group(path, mode="r+", use_consolidated=False)
+            # Validate shared source metadata before deleting or rebuilding a target
+            # grid.
+            rh = dict(root.attrs.get("raw2features", {}))
+            rh.setdefault("schema_version", header.get("schema_version"))
+            if "source" not in rh and "source" in header:
+                rh["source"] = header["source"]
+            elif "source" in header:
+                source_update = {
+                    name: header["source"][name]
+                    for name in (
+                        "channel_names",
+                        "channel_names_source",
+                        "omero_channel_names",
+                    )
+                    if name in header["source"]
+                }
+                if source_update:
+                    rh["source"] = self._merge_source_metadata(
+                        rh.get("source", {}), source_update
+                    )
+            for k in ("provenance", "segmentation", "thumbnail"):
+                if k not in rh and k in header:
+                    rh[k] = header[k]
             rebuild = _unappendable_grid_to_rebuild(
                 root,
                 grid,
@@ -254,11 +278,6 @@ class ZarrSink(Sink):
                 actual_grid = rebuild
             else:
                 actual_grid = _select_grid_label(root, grid, header.get("grid_hash"))
-            rh = dict(root.attrs.get("raw2features", {}))
-            rh.setdefault("schema_version", header.get("schema_version"))
-            for k in ("source", "provenance", "segmentation", "thumbnail"):
-                if k not in rh and k in header:
-                    rh[k] = header[k]
             grids = dict(rh.get("grids", {}))
             grids[actual_grid] = _grids_index_entry(header, model_dims, n_patches)
             rh["grids"] = grids
@@ -321,6 +340,8 @@ class ZarrSink(Sink):
         key: str | None = None,
         new_model_dims: dict[str, int],
         new_model_meta: dict | None = None,
+        new_panel_meta: dict | None = None,
+        new_source_meta: dict | None = None,
         replace_models: list[str] | tuple[str, ...] | set[str] = (),
     ) -> int:
         """Open an existing store's grid ``r+`` to add feature arrays, no clobber.
@@ -331,7 +352,10 @@ class ZarrSink(Sink):
         recreated; callers use that only after the old output fails its current model
         contract. Coords/grid/mask and unrelated feature arrays are left untouched.
         ``key=None`` targets the sole grid. Returns the grid's patch count. Pass empty
-        ``new_model_dims`` to open for slide-only work.
+        ``new_model_dims`` to open for slide-only work. ``new_panel_meta`` is merged by
+        model key alongside ``new_model_meta``. ``new_source_meta`` may add or fill the
+        effective positional channel metadata in both grid and root headers, but cannot
+        relabel an already named physical channel.
         """
         import zarr
 
@@ -345,6 +369,16 @@ class ZarrSink(Sink):
         root = zarr.open_group(path, mode="r+", use_consolidated=False)
         g = open_grid(root, key)
         actual_key = key if key is not None else grid_keys(root)[0]
+        gh = dict(g.attrs.get("raw2features", {}))
+        rh = None
+        if new_source_meta:
+            gh["source"] = self._merge_source_metadata(
+                gh.get("source", {}), new_source_meta
+            )
+            rh = dict(root.attrs.get("raw2features", {}))
+            rh["source"] = self._merge_source_metadata(
+                rh.get("source", {}), new_source_meta
+            )
         feats = g["features"]
         existing = list(feats.keys())
         self._dtype = feats[existing[0]].dtype if existing else "float16"
@@ -371,16 +405,81 @@ class ZarrSink(Sink):
             a.attrs["role"] = "features"
             a.attrs["model"] = model
             added.append(model)
-        if new_model_meta:
-            gh = dict(g.attrs.get("raw2features", {}))
-            gh.setdefault("models", {}).update(new_model_meta)
+        if new_model_meta or new_panel_meta or new_source_meta:
+            if new_model_meta:
+                models = dict(gh.get("models", {}))
+                models.update(new_model_meta)
+                gh["models"] = models
+            if new_panel_meta:
+                panel = dict(gh.get("panel", {}))
+                panel.update(new_panel_meta)
+                gh["panel"] = panel
             g.attrs["raw2features"] = gh
+            if rh is not None:
+                root.attrs["raw2features"] = rh
         if added:
             self._update_root_models(root, actual_key, list(feats.keys()))
         self._root = root
         self._group = g
         self._active_key = actual_key
         return n
+
+    @staticmethod
+    def _merge_source_metadata(existing: dict, update: dict) -> dict:
+        """Fill positional channel metadata without changing an established label."""
+
+        merged = dict(existing or {})
+        new_names = update.get("channel_names")
+        if new_names is None:
+            return merged
+        new_names = ["" if value is None else str(value) for value in new_names]
+        old_names = merged.get("channel_names")
+        if old_names is None:
+            merged.update(update)
+            merged["channel_names"] = new_names
+            return merged
+        old_names = ["" if value is None else str(value) for value in old_names]
+        if len(old_names) > len(new_names):
+            raise ValueError(
+                "stored source channel metadata has more positional entries than "
+                f"the effective physical panel ({len(old_names)} > {len(new_names)})"
+            )
+        old_names.extend([""] * (len(new_names) - len(old_names)))
+
+        def identity(value: str) -> str:
+            return unicodedata.normalize("NFKC", value).strip().casefold()
+
+        completed = []
+        filled = False
+        for index, (old_name, new_name) in enumerate(
+            zip(old_names, new_names, strict=True)
+        ):
+            old_identity = identity(old_name)
+            new_identity = identity(new_name)
+            if old_identity and old_identity != new_identity:
+                raise ValueError(
+                    "stored source channel metadata conflicts at physical C index "
+                    f"{index}: {old_name!r} != {new_name!r}"
+                )
+            if old_identity:
+                completed.append(old_name)
+            else:
+                completed.append(new_name)
+                filled = filled or bool(new_identity)
+        merged["channel_names"] = completed
+        if filled:
+            merged["channel_names_source"] = update.get("channel_names_source")
+        else:
+            merged.setdefault(
+                "channel_names_source", update.get("channel_names_source")
+            )
+        if (
+            "omero_channel_names" in update
+            and "omero_channel_names" not in merged
+            and update["omero_channel_names"] != completed
+        ):
+            merged["omero_channel_names"] = update["omero_channel_names"]
+        return merged
 
     @staticmethod
     def _drop_slide_dependents(group, patch_models: set[str]) -> None:
@@ -475,13 +574,21 @@ class ZarrSink(Sink):
         slide_model: str,
         vector: np.ndarray,
         provenance: dict,
+        *,
+        output_name: str | None = None,
     ) -> None:
         """Write a single slide-level vector to the grid's ``slide/<model>/``."""
         if self._group is None:
             raise RuntimeError("sink not created; call create() first")
         from raw2features.slide_embedders.encoding import write_slide_embedding
 
-        write_slide_embedding(self._group, slide_model, vector, provenance)
+        write_slide_embedding(
+            self._group,
+            slide_model,
+            vector,
+            provenance,
+            output_name=output_name,
+        )
 
     def write_qc(
         self,

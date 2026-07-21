@@ -43,15 +43,15 @@ store too.
   level such that embeddings are comparable across slides and
   datasets.
 - **Modular implementation.** Reader, segmenter, patcher, patch-embedder,
-  slide-embedder, and sink implementations are plugin seams exposed through Python
-  entry points. Entry points add implementations/families; the CLI's patch-model names
-  come from the bundled provenance registry, while Python callers can inject external
-  embedder instances through `embed_slide(..., embedders=[...])`.
+  multiplex-strategy, slide-embedder, and sink implementations are plugin seams exposed
+  through Python entry points. Entry points add implementations/families; the CLI's
+  patch-model names come from the bundled provenance registry, while Python callers can
+  inject external embedder instances through `embed_slide(..., embedders=[...])`.
 - **FAIR & provenance-first.** Stable models' weights are pinned to an **immutable HuggingFace
   revision** (or a sha256-pinned URL), with preprocessing sourced from each
   model's card. Every output records that provenance plus a 1:1
   coords↔features mapping, so an embedding is reproducible and traceable to the exact
-  weights that made it. SEAL is explicitly experimental in v0.1.1: its adapter is
+  weights that made it. SEAL is explicitly experimental in v0.2.0: its adapter is
   pinned and verified, but its upstream factory still fetches the frozen base from a
   mutable revision; see [`MODELS.md`](docs/MODELS.md).
 
@@ -114,6 +114,8 @@ on CPU with no model-access-token. Its figures are pre-rendered on GitHub.
 **Full guide: [`docs/usage.md`](docs/usage.md)** - every command, what actually
 happens under the hood (exact MPP, decode-once fan-out, output schema), the
 rerun-safe / skip-if-complete model, thumbnails, and example SLURM cohort runs.
+Named-channel inputs, native multiplex encoders, and the `channelwise` RGB-encoder
+strategy are covered in [`docs/MODALITIES.md`](docs/MODALITIES.md).
 
 ```bash
 raw2features info slide.ome.zarr

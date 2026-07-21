@@ -31,12 +31,22 @@ from raw2features.core.uris import (
 )
 from raw2features.pipeline.runner import (
     RunConfig,
+    _validate_multiplex_slide_encoders,
     embed_slide,
     load_embedders,
+    resolve_multiplex_source_config,
     slide_id_from_path,
 )
 
-from ._validation import validate_amp, validate_batch_size, validate_geometry
+from ._validation import (
+    parse_channel_names_file,
+    parse_json_object,
+    validate_amp,
+    validate_batch_size,
+    validate_geometry,
+    validate_multiplex_percentiles,
+    validate_positive_int,
+)
 
 
 class _WorkerStartupError(RuntimeError):
@@ -91,6 +101,58 @@ def embed_many(
         None,
         "--stain-norm",
         help="Stain-normalize each patch before embedding (macenko|reinhard|vahadane).",
+    ),
+    multiplex_strategy: str | None = typer.Option(
+        None,
+        "--multiplex-strategy",
+        help="Apply a named multiplex strategy (initially: channelwise) around each "
+        "ordinary patch encoder.",
+    ),
+    multiplex_markers: list[str] = typer.Option(
+        [],
+        "--marker",
+        help="Multiplex marker to include; repeat in the required order. Default: all "
+        "named channels in source order (concat requires an explicit list).",
+    ),
+    channel_names_file: str | None = typer.Option(
+        None,
+        "--channel-names-file",
+        help="UTF-8 .txt/.csv/.tsv with exactly one ordered name per physical C-axis "
+        "position. Applies to every slide in this command and verifies any existing "
+        "labels; combine with --marker to select/order a subset.",
+    ),
+    multiplex_normalization: str = typer.Option(
+        "percentile",
+        "--multiplex-normalization",
+        help="Per-marker intensity normalization (default: percentile over a "
+        "deterministically selected whole-image pyramid level).",
+    ),
+    multiplex_percentile_low: float = typer.Option(
+        1.0,
+        "--multiplex-percentile-low",
+        help="Lower whole-image-level percentile for per-marker normalization.",
+    ),
+    multiplex_percentile_high: float = typer.Option(
+        99.0,
+        "--multiplex-percentile-high",
+        help="Upper whole-image-level percentile for per-marker normalization.",
+    ),
+    multiplex_normalization_max_side_px: int = typer.Option(
+        2048,
+        "--multiplex-normalization-max-side-px",
+        help="Longest side allowed for the deterministic whole-image normalization "
+        "level (default: 2048; larger may select a finer level and use more RAM).",
+    ),
+    multiplex_aggregation: str = typer.Option(
+        "mean",
+        "--multiplex-aggregation",
+        help="Marker embedding aggregation: mean | concat.",
+    ),
+    multiplex_params: str | None = typer.Option(
+        None,
+        "--multiplex-params",
+        help="JSON object of content parameters for a third-party multiplex strategy. "
+        "The built-in channelwise strategy uses its explicit options instead.",
     ),
     slide_encoder: list[str] = typer.Option(
         [],
@@ -179,9 +241,14 @@ def embed_many(
     """Warm worker: build the models once and embed this shard's slides."""
     validate_amp(amp)
     validate_batch_size(batch_size)
-    validate_geometry(
-        mpp=mpp, patch_size=patch_size, step=step, source_mpp=source_mpp
+    validate_geometry(mpp=mpp, patch_size=patch_size, step=step, source_mpp=source_mpp)
+    validate_positive_int(
+        multiplex_normalization_max_side_px,
+        "--multiplex-normalization-max-side-px",
     )
+    validate_multiplex_percentiles(multiplex_percentile_low, multiplex_percentile_high)
+    strategy_params = parse_json_object(multiplex_params, "--multiplex-params")
+    channel_names_override = parse_channel_names_file(channel_names_file)
     from raw2features.slide_embedders.model_registry import (
         validate_slide_encoder_names,
     )
@@ -257,7 +324,7 @@ def embed_many(
     else:
         models = list(feature_extractor)
 
-    from raw2features.embedders.model_registry import resolve_geometry
+    from raw2features.embedders.model_registry import build_embedder, resolve_geometry
 
     groups = resolve_geometry(models, mpp, patch_size, geometry_config)
     if not groups:
@@ -276,6 +343,15 @@ def embed_many(
         tissue_threshold=tissue_threshold,
         features_dtype=features_dtype,
         stain_norm=stain_norm,
+        multiplex_strategy=multiplex_strategy,
+        multiplex_markers=list(multiplex_markers),
+        multiplex_normalization=multiplex_normalization,
+        multiplex_percentile_low=multiplex_percentile_low,
+        multiplex_percentile_high=multiplex_percentile_high,
+        multiplex_normalization_max_side_px=multiplex_normalization_max_side_px,
+        multiplex_aggregation=multiplex_aggregation,
+        multiplex_strategy_params=strategy_params,
+        channel_names_override=channel_names_override,
         slide_encoders=list(slide_encoder),
         qc=list(qc),
         qc_stain_norm=qc_stain_norm,
@@ -293,6 +369,42 @@ def embed_many(
     )
     cli = sanitize_argv(sys.argv)
     device_list = cfg.device_list()
+
+    # Validate every positional panel before a warm worker loads model weights. This is
+    # especially important for one --channel-names-file applied to a whole cohort: a
+    # count or metadata conflict must not surface only after an expensive gated load.
+    try:
+        strategy = None
+        base_probes = []
+        if cfg.multiplex_strategy is not None:
+            from raw2features.multiplex import build_strategy
+
+            if len(device_list) != 1:
+                raise ValueError(
+                    "multiplex strategies are currently single-device; pass one "
+                    "--device"
+                )
+            _validate_multiplex_slide_encoders(cfg.slide_encoders)
+            strategy = build_strategy(cfg.multiplex_strategy)
+            base_probes = [build_embedder(name) for name in cfg.models]
+        for row in shard:
+            source_cfg = resolve_multiplex_source_config(
+                row["path"], _with_source_mpp(cfg, row)
+            )
+            if strategy is not None:
+                for base in base_probes:
+                    strategy.prepare(
+                        base_embedder=base,
+                        channel_names=source_cfg.resolved_channel_names,
+                        channel_count=len(source_cfg.resolved_channel_names),
+                        config=source_cfg,
+                    )
+    except (KeyError, OSError, TypeError, ValueError) as exc:
+        typer.echo(
+            redact_uri_credentials(f"Error: multiplex panel preflight failed: {exc}"),
+            err=True,
+        )
+        raise typer.Exit(1) from exc
 
     t0 = time.time()
     try:

@@ -14,6 +14,8 @@ import hashlib
 import os
 import posixpath
 import re
+from collections.abc import Mapping
+from typing import Any
 from urllib.parse import unquote, unquote_plus, urlsplit, urlunsplit
 
 _STORE_SUFFIXES = (".embeddings.zarr", ".ome.zarr", ".zarr")
@@ -198,6 +200,53 @@ def redact_uri_credentials(text: str) -> str:
     # URLs that the greedy parse necessarily treated as part of the outer value.
     redacted = _GREEDY_QUALIFIED_URI_IN_TEXT.sub(_redact_uri_match, str(text))
     return _QUALIFIED_URI_IN_TEXT.sub(_redact_uri_match, redacted)
+
+
+def redact_metadata_credentials(value: Any) -> Any:
+    """Recursively make untrusted plugin metadata safe to persist.
+
+    URI userinfo and signed/auth query values are removed from every string. Values
+    under unambiguously credential-bearing keys are replaced even when they are plain
+    tokens rather than URLs. Tuples become JSON-equivalent lists.
+    """
+
+    if isinstance(value, Mapping):
+        safe = {}
+        for key, item in value.items():
+            name = str(key)
+            normalized = re.sub(r"[-_]", "", name).casefold()
+            safe[name] = (
+                "<redacted>"
+                if normalized in _NORMALIZED_GENERIC_AUTH_QUERY_KEYS
+                else redact_metadata_credentials(item)
+            )
+        return safe
+    if isinstance(value, (list, tuple)):
+        return [redact_metadata_credentials(item) for item in value]
+    if isinstance(value, str):
+        return redact_uri_credentials(value)
+    return value
+
+
+def redact_metadata_uri_credentials(value: Any) -> Any:
+    """Recursively sanitize URI strings without interpreting semantic key names.
+
+    Model constructors and strategy contracts may legitimately use names such as
+    ``token`` or ``signature``. Those values affect output identity and must not be
+    mistaken for credentials merely because of their key. This narrower helper strips
+    credentials only when they occur inside a URI value.
+    """
+
+    if isinstance(value, Mapping):
+        return {
+            str(key): redact_metadata_uri_credentials(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [redact_metadata_uri_credentials(item) for item in value]
+    if isinstance(value, str):
+        return redact_uri_credentials(value)
+    return value
 
 
 def slide_id_from_source(source: str) -> str:

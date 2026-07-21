@@ -83,13 +83,56 @@ class WSISource(ABC):
     # -- multi-channel / multiplex (optional; brightfield readers need not) --
     @property
     def channel_names(self) -> list[str] | None:
-        """Channel/marker names for multiplex sources (e.g. CODEX), else ``None``.
+        """Positional names for named-channel multiplex sources, else ``None``.
 
         ``None`` means a plain RGB brightfield source (H&E) - the default. A
         multiplex reader returns one name per channel (the marker panel), which the
-        multiplex embedders (e.g. KRONOS) map to per-marker normalisation + IDs.
+        multiplex strategies and native multiplex embedders bind to physical channels.
+        Readers preserve unnamed positional metadata as ``""`` rather than removing
+        the slot and shifting every later marker away from its physical channel.
         """
         return None
+
+    @property
+    def has_channel_axis(self) -> bool:
+        """Whether the source exposes a positional channel axis.
+
+        Brightfield readers without a native multi-channel representation retain the
+        default ``False``. Multi-channel readers override this alongside
+        :attr:`channel_count` and :meth:`read_region_channels`.
+        """
+
+        return False
+
+    @property
+    def channel_count(self) -> int:
+        """Physical channel count, independent of optional channel-name metadata."""
+
+        return 1
+
+    @property
+    def channel_names_source(self) -> str | None:
+        """Where :attr:`channel_names` came from, when the reader can report it."""
+
+        return None
+
+    @property
+    def original_channel_names(self) -> list[str] | None:
+        """Unmodified positional names read from source metadata, when available."""
+
+        return self.channel_names
+
+    def apply_channel_names(self, channel_names: list[str]) -> None:
+        """Apply a complete positional channel-name override.
+
+        Multi-channel readers may implement this for sources whose native metadata is
+        absent or incomplete. The default fails explicitly so an override can never be
+        accepted while the reader silently continues with another panel.
+        """
+
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support channel-name overrides"
+        )
 
     def read_region_channels(self, region: Region) -> np.ndarray:
         """Native multi-channel read -> ``(h, w, C)`` in the source dtype.

@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 import posixpath
+import re
 from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any
@@ -28,6 +29,39 @@ PATCH_LOADER_CONTRACT_VERSION = 1
 SLIDE_LOADER_CONTRACT_VERSION = 1
 OUTPUT_FINGERPRINT_VERSION = 1
 OUTPUT_FINGERPRINT_ALGORITHM = "sha256"
+
+# Plain values under these unambiguous names are runtime credentials, not output
+# semantics. Ambiguous names such as ``token``, ``signature``, ``auth``, ``key``, and
+# ``secret`` are intentionally excluded because model constructors legitimately use
+# them (for example ``token='cls'``). URI query sanitization remains broader and
+# provider-aware in ``source_uri``.
+_HIGH_CONFIDENCE_CREDENTIAL_KEYS = frozenset(
+    {
+        "accesstoken",
+        "apikey",
+        "authorization",
+        "awsaccesskeyid",
+        "awssecretaccesskey",
+        "bearertoken",
+        "clientsecret",
+        "credential",
+        "credentials",
+        "googleaccessid",
+        "hftoken",
+        "idtoken",
+        "oauthtoken",
+        "password",
+        "passwd",
+        "privatekey",
+        "refreshtoken",
+        "sastoken",
+        "securitytoken",
+        "secretaccesskey",
+        "sharedaccesssignature",
+        "subscriptionkey",
+        "xapikey",
+    }
+)
 
 # Construction inputs in SEAL's pinned fork that affect the image encoder.  The
 # loader consumes this object directly as well as fingerprinting it, preventing a
@@ -152,7 +186,16 @@ def _credential_free(value: Any) -> Any:
     """Recursively remove URI credentials before hashing or persistence."""
 
     if isinstance(value, Mapping):
-        return {str(key): _credential_free(item) for key, item in value.items()}
+        safe = {}
+        for key, item in value.items():
+            name = str(key)
+            normalized = re.sub(r"[-_]", "", name).casefold()
+            safe[name] = (
+                "<redacted>"
+                if normalized in _HIGH_CONFIDENCE_CREDENTIAL_KEYS
+                else _credential_free(item)
+            )
+        return safe
     if isinstance(value, (list, tuple)):
         return [_credential_free(item) for item in value]
     if isinstance(value, str):
@@ -390,6 +433,60 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
 
 def patch_output_fingerprint(spec: ModelSpec, resolved_amp: str) -> dict[str, Any]:
     """Fingerprint the complete persisted-output contract for one patch model."""
+
+    if spec.multiplex is not None:
+        contract = deepcopy(spec.multiplex)
+        base_fingerprint = contract.pop("base_output_fingerprint", None)
+        if not valid_output_fingerprint(base_fingerprint):
+            raise ValueError(
+                f"Multiplex output {spec.name!r} has no valid base-model output "
+                "fingerprint. Bind the strategy after resolving the base encoder."
+            )
+        strategy = contract.get("strategy")
+        contract_version = contract.get("contract_version")
+        if not isinstance(strategy, str) or not strategy.strip():
+            raise ValueError(
+                f"Multiplex output {spec.name!r} has no valid strategy name."
+            )
+        if (
+            isinstance(contract_version, bool)
+            or not isinstance(contract_version, int)
+            or contract_version <= 0
+        ):
+            raise ValueError(
+                f"Multiplex output {spec.name!r} has no positive integer "
+                "strategy contract version."
+            )
+        base_amp = (
+            base_fingerprint.get("payload", {})
+            .get("output", {})
+            .get("resolved_amp")
+        )
+        if base_amp != resolved_amp:
+            raise ValueError(
+                f"Multiplex output {spec.name!r} resolved AMP {resolved_amp!r} "
+                f"does not match its base-model fingerprint ({base_amp!r})."
+            )
+        return make_output_fingerprint(
+            {
+                "kind": "patch_features",
+                "model": spec.name,
+                "loader": {
+                    "family": "multiplex_strategy",
+                    "contract_version": contract_version,
+                    "strategy": strategy,
+                },
+                "base_output_fingerprint": base_fingerprint,
+                "multiplex": contract,
+                "output": {
+                    "pooling": contract.get("aggregation", {}).get("name"),
+                    "embedding_dim": int(spec.embedding_dim),
+                    "reg_tokens": 0,
+                    "modality": "multiplex",
+                    "resolved_amp": resolved_amp,
+                },
+            }
+        )
 
     payload: dict[str, Any] = {
         "kind": "patch_features",

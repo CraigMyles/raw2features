@@ -49,6 +49,9 @@ class SlideModelSpec:
     weights_revision: str | None = None
     # Exact artifact identified by ``weights_sha256``; None for weight-free pools.
     weights_filename: str | None = None
+    # Upstream architecture where one loader family serves several compatible sizes.
+    # ``patch_dim`` supplies the constructor's input-channel width.
+    architecture: str | None = None
 
 
 class SlideEmbedder(ABC):
@@ -86,10 +89,9 @@ class SlideEmbedder(ABC):
             that use spatial position. May be ``None`` for pooling models.
         patch_size_lv0:
             Side of one patch in level-0 pixels (the store's
-            ``patching.level0_patch``) - i.e. the spacing between adjacent
-            patch coordinates at level 0. Position-aware encoders (e.g.
-            TITAN, which builds a feature grid from ``coords`` and this
-            spacing) require it; pooling models ignore it.
+            ``patching.level0_patch``). Some position-aware encoders use it with
+            ``coords`` to construct their spatial representation; pooling models
+            and encoders with a fixed upstream coordinate lattice ignore it.
 
         Returns
         -------

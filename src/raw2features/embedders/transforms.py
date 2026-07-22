@@ -1,9 +1,9 @@
 """Patch -> model-input tensor.
 
 The runner delivers patches at exactly ``patch_px`` and the target MPP. Here we
-normalise and apply the per-model resize to ``spec.input_size`` -- a no-op in the
-common case where ``patch_px == input_size``, and the model-fit step when a user
-samples at a ``patch_px`` that differs from the model's fixed input size.
+normalize and apply the per-model resize or declared centre crop to
+``spec.input_size``. This is a no-op in the common case where ``patch_px ==
+input_size`` and no crop is configured.
 """
 
 from __future__ import annotations
@@ -53,7 +53,31 @@ def to_model_tensor(patch_hwc_uint8: np.ndarray, spec: ModelSpec) -> torch.Tenso
     img = patch_hwc_uint8
     if img.ndim != 3 or img.shape[2] != 3:
         raise ValueError(f"expected HWC RGB patch, got shape {img.shape}")
-    if img.shape[0] != spec.input_size or img.shape[1] != spec.input_size:
+    if spec.crop_pct is not None:
+        if spec.crop_mode != "center":
+            raise ValueError(
+                f"unsupported crop_mode {spec.crop_mode!r}; expected 'center'"
+            )
+        if not 0 < float(spec.crop_pct) <= 1:
+            raise ValueError("crop_pct must be greater than zero and at most one")
+        resize_px = int(round(spec.input_size / float(spec.crop_pct)))
+        if resize_px < spec.input_size:
+            raise ValueError("crop_pct produced a resize smaller than input_size")
+        if img.shape[0] != resize_px or img.shape[1] != resize_px:
+            from PIL import Image
+
+            img = np.asarray(
+                Image.fromarray(img).resize(
+                    (resize_px, resize_px),
+                    _pil_resample(spec.interpolation),
+                )
+            )
+        offset = (resize_px - spec.input_size) // 2
+        img = img[
+            offset : offset + spec.input_size,
+            offset : offset + spec.input_size,
+        ]
+    elif img.shape[0] != spec.input_size or img.shape[1] != spec.input_size:
         from PIL import Image
 
         img = np.asarray(
@@ -93,11 +117,11 @@ def to_model_batch(
     if not patches_hwc_uint8:
         raise ValueError("to_model_batch requires at least one patch")
 
-    needs_resize = any(
+    needs_cpu_transform = spec.crop_pct is not None or any(
         p.shape[0] != spec.input_size or p.shape[1] != spec.input_size
         for p in patches_hwc_uint8
     )
-    if needs_resize:
+    if needs_cpu_transform:
         # Keep the (rare) resize on the CPU PIL path (model's own interpolation) for
         # exact equivalence with the per-patch transform; stack and move once. The
         # normalise is folded in.

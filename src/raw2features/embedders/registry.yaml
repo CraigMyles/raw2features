@@ -212,8 +212,11 @@ gigapath:
   family: timm
   source: "hf-hub:prov-gigapath/prov-gigapath"
   recommended_mpp: 0.5   # paper Methods state 0.5 µm/px / 20x (10.1038/s41586-024-07441-w); card silent; single-scale
+  recommended_patch_px: 256  # official tiling is 256 px at 20x, then centre-crop to 224
   embedding_dim: 1536
   input_size: 224
+  crop_pct: 0.875
+  crop_mode: center
   pooling: cls            # num_classes=0 -> forward returns the [B,1536] pooled feature
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
@@ -223,9 +226,9 @@ gigapath:
   weights_filename: "pytorch_model.bin"
   weights_revision: "eba85dd46097c3eedfcc2a3a9a930baecb6bcc19"
   doi: "10.1038/s41586-024-07441-w"
-  license: "Apache-2.0 (Prov-GigaPath; open, gated only by HF login)"
+  license: "Apache-2.0 (Prov-GigaPath; gated, model-card use terms apply)"
   gated: true
-  inference_amp: fp32      # card gives no precision recommendation -> faithful fp32
+  inference_amp: fp16      # authors' released tile-inference pipeline uses CUDA fp16 autocast
   timm_kwargs:
     num_classes: 0
     dynamic_img_size: true
@@ -234,8 +237,45 @@ gigapath:
     timm.create_model("hf-hub:prov-gigapath/prov-gigapath"). num_classes=0 -> the
     forward returns the pooled 1536-d tile embedding directly (pooling: cls is a
     pass-through for the already-pooled 2-D output). ImageNet norm, 224 px, bicubic
-    per the card. Weights are Apache-2.0 (gated only by HF login), so unlike the
-    CC-BY-NC-ND models its embeddings are unrestricted.
+    per the card, after the documented 256 px tile is centre-cropped to 224. Weights
+    are Apache-2.0; the model card separately limits intended use and excludes deployed
+    use, so users must review both the licence and access terms.
+
+gigapath_flash:
+  family: timm
+  source: "gigapath_tile_enc_dinov2s"
+  recommended_mpp: 0.5   # paper evaluates non-overlapping 256 px tiles at 20x
+  recommended_patch_px: 256
+  embedding_dim: 384
+  input_size: 224
+  crop_pct: 0.875
+  crop_mode: center
+  pooling: cls
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  interpolation: bicubic
+  transform_source_url: "https://huggingface.co/prov-gigapath/prov-gigapath-flash"
+  weights_sha256: "ea5e36c2b3593b073868f91b9016559a620f0d6752e3861cb2bb0b5312238473"
+  weights_filename: "pytorch_model.bin"
+  weights_revision: "f5c3a709ad81d3a5605bb2eb38cd5c2e53da0375"
+  doi: "10.48550/arXiv.2607.18218"
+  license: "Apache-2.0 (Prov-GigaPath-Flash; gated, research/deployment terms in model card)"
+  gated: true
+  inference_amp: fp16      # authors' released tile-inference pipeline uses CUDA fp16 autocast
+  registration_modules: ["gigapath.tile_encoder"]
+  checkpoint:
+    repo: "prov-gigapath/prov-gigapath-flash"
+    filename: "pytorch_model.bin"
+    strict: true
+  timm_kwargs:
+    num_classes: 0
+  notes: >-
+    Prov-GigaPath-Flash tile encoder, a DINOv2-small ViT-S/16 with SwiGLU and
+    LayerScale. Importing the pinned gigapath package registers the upstream
+    gigapath_tile_enc_dinov2s architecture; raw2features then downloads the immutable
+    checkpoint, verifies its SHA-256 before deserialisation, and loads it strictly.
+    The official 256 px tile at 20x is centre-cropped to the fixed 224 px input and
+    produces the pooled 384-d CLS embedding consumed by gigapath_flash_slide.
 
 conch:
   family: conch            # optional family: needs the `conch` pip extra
@@ -766,8 +806,7 @@ hipt:
   source: "vit_small_patch16_224"   # 224 base (checkpoint pos_embed=197); pos_embed is interpolated to the 256px grid at forward
   recommended_mpp: 0.5   # 20x - repo+paper (patch dirs 'extracted_mag20x_...'); 0.5 by convention; single-scale
   checkpoint:
-    repo: "JWonderLand/HIPT_unofficial"
-    filename: "vit256_small_dino.pth"
+    url: "https://media.githubusercontent.com/media/mahmoodlab/HIPT/780fafaed2e5b112bc1ed6e78852af1fe6714342/HIPT_4K/Checkpoints/vit256_small_dino.pth"
     state_dict_key: "teacher"
     strip_prefixes: ["module.", "backbone."]
     strict: false        # DINO projection-head keys are absent from the backbone
@@ -780,9 +819,9 @@ hipt:
   transform_source_url: "https://github.com/mahmoodlab/HIPT/blob/master/HIPT_4K/hipt_model_utils.py"
   weights_sha256: "6960cd5a8657dc8bb214671aa0c6dbd3f5b698e84386884955836487ddc89e24"
   weights_filename: "vit256_small_dino.pth"
-  weights_revision: "3529ea3d95a390e210768ca4db29fa7cae39ded9"
+  weights_revision: "780fafaed2e5b112bc1ed6e78852af1fe6714342"
   doi: "10.48550/arXiv.2206.02647"
-  license: "Apache-2.0 WITH Commons Clause (Mahmood Lab HIPT; non-commercial)"
+  license: "Apache-2.0 with Commons Clause (Mahmood Lab HIPT; selling the software is restricted)"
   gated: false
   inference_amp: fp32
   timm_kwargs:
@@ -794,8 +833,9 @@ hipt:
     forward, exactly as HIPT's own get_vit256 does. Loads the 'teacher' sub-dict of the ~700MB
     DINO checkpoint (strip module./backbone., strict=False -> only backbone tensors consumed).
     0.5 norm (not ImageNet), 256 px @ 0.5 µm/px.
-    Via the JWonderLand mirror, byte-identical to upstream GitHub LFS (sha256-verified before
-    load). Apache-2.0 + Commons Clause (non-commercial). Patch tower only (no ViT-4K aggregation).
+    Loaded from Mahmood Lab's official commit-pinned Git LFS asset and SHA-256 verified
+    before deserialisation. Apache-2.0 with Commons Clause; read the selling restriction
+    before use. Patch tower only (no ViT-4K aggregation).
 
 mstar:
   family: timm
@@ -1352,6 +1392,7 @@ slide_encoders:
     embedding_dim: 768
     patch_encoder: gigapath          # GigaPath tile encoder (1536-d) - already in registry
     patch_dim: 1536
+    architecture: "gigapath_slide_enc12l768d"
     gated: true
     license: "Apache-2.0 (HF card; research-only caveat in prose)"
     transform_source_url: "https://huggingface.co/prov-gigapath/prov-gigapath"
@@ -1362,12 +1403,40 @@ slide_encoders:
     notes: >-
       LongNet slide encoder over GigaPath (1536-d) patch features + level-0 coords. Load via
       gigapath.slide_encoder.create_model(ckpt, "gigapath_slide_enc12l768d", 1536,
-      global_pool=True); model.tile_size = patch_size_lv0; model(feats[1,N,1536],
-      coords[1,N,2], all_layer_embed=True)[-1] -> 768-d. Needs the [gigapath_slide] extra +
+      global_pool=True); model(feats[1,N,1536], coords[1,N,2],
+      all_layer_embed=True)[-1] -> 768-d. Needs the [gigapath_slide] extra +
       the gigapath git package (vendors torchscale; aliased) + fairscale + a flash-attn wheel
       matching your torch/ABI (no SDPA fallback) + accepted prov-gigapath/prov-gigapath gate.
-      Tested end-to-end on a Blackwell GPU. `-f gigapath
-      -s gigapath_slide`.
+      Passes stored level-0 coordinates unchanged and leaves LongNet's upstream
+      tile_size=256 intact. Tested end-to-end on a Blackwell GPU. `-f gigapath -s
+      gigapath_slide`.
+
+  # Lightweight Prov-GigaPath-Flash LongNet over the matched 384-d Flash tile
+  # features and level-0 coordinates. Uses the same loader and flash-attn stack.
+  gigapath_flash_slide:
+    family: gigapath_slide
+    source: "hf-hub:prov-gigapath/prov-gigapath-flash"
+    embedding_dim: 384
+    patch_encoder: gigapath_flash
+    patch_dim: 384
+    architecture: "gigapath_slide_enc12l384d"
+    gated: true
+    license: "Apache-2.0 (HF card; gated, research/deployment terms in model card)"
+    transform_source_url: "https://huggingface.co/prov-gigapath/prov-gigapath-flash"
+    weights_revision: "f5c3a709ad81d3a5605bb2eb38cd5c2e53da0375"
+    weights_sha256: "1539cdcb0dae4628ccdcee9910991d541a254c1647aec0a0225a20257b590cba"
+    weights_filename: "slide_encoder.pth"
+    doi: "10.48550/arXiv.2607.18218"
+    notes: >-
+      GigaPath-Flash 12-layer LongNet over matched 384-d gigapath_flash patch
+      embeddings plus level-0 coordinates. Loaded from the immutable Hugging Face
+      revision after SHA-256 verification, using
+      gigapath.slide_encoder.create_model(checkpoint,
+      "gigapath_slide_enc12l384d", 384, global_pool=True). The last mean-pooled
+      layer is a 384-d slide vector. Needs the [gigapath_slide] extra, pinned gigapath
+      package, fairscale, flash-attn, and accepted model access. Passes stored level-0
+      coordinates unchanged and leaves LongNet's upstream tile_size=256 intact. Run with
+      `-f gigapath_flash -s gigapath_flash_slide`.
 
   # CHIEF (Wang et al., Nature 2024) - gated-attention MIL over CTransPath. Weights are
   # Drive-hosted (no HF mirror); fetched by their public Drive file id + verified SHA.

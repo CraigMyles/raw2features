@@ -18,6 +18,7 @@ table below lists each model's weights licence.
 | `resnet50` | BSD-3-Clause (torchvision) | no |
 | `dinov2` | Apache-2.0 | no |
 | `gigapath` | Apache-2.0 | yes (login) |
+| `gigapath_flash` | Apache-2.0 | yes (terms acceptance) |
 | `h_optimus_0` | Apache-2.0 | yes (login) |
 | `h0_mini` | CC-BY-NC-ND-4.0 | yes (approval) |
 | `gpfm` | MIT (HF metadata) / CC-BY-NC-ND-4.0 (repo `LICENSE`) - conflict, verify | no |
@@ -63,6 +64,7 @@ below. `mean` / `max` / `meanmax` are weightless pooling baselines (MIT).
 | `prism` | CC-BY-NC-ND-4.0 | yes |
 | `madeleine` | MIT (HF card) / CC-BY-NC-ND-4.0 (GitHub `LICENSE`) - conflict, verify | yes |
 | `feather_conch_v15` / `feather_uni_v2` / `feather_uni` | CC-BY-NC-ND-4.0 | yes |
+| `gigapath_slide` / `gigapath_flash_slide` | Apache-2.0 | yes (terms acceptance) |
 | `chief` | GPL-3.0 (weights; aggregator code MIT) | no (Google Drive) |
 | `tangle` | CC-BY-NC-ND-4.0 | no (Google Drive) |
 

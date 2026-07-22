@@ -40,6 +40,16 @@ def test_conch_v1_5_extracts_larger_then_resizes():
     assert model_geometry("conch_v1_5") == (0.5, 512, "recommended")
 
 
+@pytest.mark.parametrize("name", ["gigapath", "gigapath_flash"])
+def test_gigapath_models_extract_256_then_center_crop(name):
+    spec = get_spec(name)
+    assert spec.input_size == 224
+    assert spec.recommended_patch_px == 256
+    assert spec.crop_pct == 0.875
+    assert spec.crop_mode == "center"
+    assert model_geometry(name) == (0.5, 256, "recommended")
+
+
 def test_scale_agnostic_baseline_defaults():
     assert model_geometry("resnet50") == (DEFAULT_TARGET_MPP, 224, "default")
 

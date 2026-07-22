@@ -123,6 +123,8 @@ def test_patch_fingerprint_is_canonical_and_covers_the_output_contract(monkeypat
         replace(base, timm_kwargs={"num_classes": 0, "dynamic_img_size": True}),
         replace(base, reg_tokens=4),
         replace(base, modality="multiplex"),
+        replace(base, crop_pct=0.875, crop_mode="center"),
+        replace(base, registration_modules=("example.architectures",)),
     ]
     assert all(
         patch_output_fingerprint(candidate, "bf16")["digest"] != original["digest"]
@@ -132,6 +134,50 @@ def test_patch_fingerprint_is_canonical_and_covers_the_output_contract(monkeypat
 
     monkeypatch.setattr(module, "PATCH_LOADER_CONTRACT_VERSION", 2)
     assert patch_output_fingerprint(base, "bf16")["digest"] != original["digest"]
+
+
+def test_optional_crop_and_registration_contracts_do_not_touch_other_models():
+    ordinary = patch_output_fingerprint(_spec(), "fp32")["payload"]
+    assert "crop_pct" not in ordinary["preprocessing"]
+    assert "crop_mode" not in ordinary["preprocessing"]
+    assert "registration_modules" not in ordinary["loader"]["constructor"]
+
+    configured = patch_output_fingerprint(
+        _spec(
+            crop_pct=0.875,
+            crop_mode="center",
+            registration_modules=("gigapath.tile_encoder",),
+        ),
+        "fp32",
+    )["payload"]
+    assert configured["preprocessing"]["crop_pct"] == 0.875
+    assert configured["preprocessing"]["crop_mode"] == "center"
+    assert configured["loader"]["constructor"]["registration_modules"] == [
+        "gigapath.tile_encoder"
+    ]
+    assert configured["loader"]["constructor"]["construction_package_revision"] == (
+        "9d42a60babe04359978d5ad2eb94e7b3bcf9ca39"
+    )
+
+
+def test_hipt_fingerprint_records_the_official_checkpoint_source():
+    from raw2features.embedders.model_registry import get_spec
+
+    fingerprint = patch_output_fingerprint(get_spec("hipt"), "fp32")
+    effective = fingerprint["payload"]["checkpoint"]["effective"]
+    assert effective == {
+        "repo": None,
+        "filename": "vit256_small_dino.pth",
+        "url": (
+            "https://media.githubusercontent.com/media/mahmoodlab/HIPT/"
+            "780fafaed2e5b112bc1ed6e78852af1fe6714342/HIPT_4K/Checkpoints/"
+            "vit256_small_dino.pth"
+        ),
+        "mechanism": "explicit_checkpoint",
+    }
+    assert fingerprint["payload"]["checkpoint"]["weights_revision"] == (
+        "780fafaed2e5b112bc1ed6e78852af1fe6714342"
+    )
 
 
 def test_fingerprint_never_persists_uri_credentials_and_ignores_rotation():

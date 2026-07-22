@@ -6,8 +6,9 @@ Notable changes to raw2features, newest first. This project follows
 ## [0.2.0] - Unreleased
 
 This release extends named-channel multiplex support with a `channelwise` strategy, adds
-four patch encoders, and includes a set of correctness and release-safety fixes. The v0.1
-store layout and existing brightfield workflows remain unchanged.
+several pinned patch and slide encoders, and includes a set of correctness and
+release-safety fixes. The v0.1 store layout and existing brightfield workflows remain
+unchanged.
 
 ### Correctness and reproducibility
 
@@ -44,6 +45,12 @@ store layout and existing brightfield workflows remain unchanged.
   and binds every physical index into grid identity; `--no-seg` remains supported.
 - Add pinned, forward-validated H0-mini, KEEP, OpenMidnight, and OpenPath patch encoders,
   with their licenses, access requirements, preprocessing, and weight hashes recorded.
+- Add the paired GigaPath-Flash tile and slide encoders with immutable weight and loader
+  pins, and align original GigaPath's default extraction with its released whole-slide
+  path: non-overlapping 256-pixel tiles on a 256-pixel lattice, followed by a centre crop
+  to 224, with level-0 coordinates passed unchanged to LongNet's fixed 256-pixel lattice.
+- Repair HIPT downloads by replacing the unavailable unofficial mirror with Mahmood Lab's
+  commit-pinned, SHA-verified Git LFS checkpoint and record its Commons Clause accurately.
 - Correct cached OME-Zarr reads for noncanonical spatial axis order. The reader accepts
   x/y in either order (with an optional channel axis) and warns whenever another
   non-singleton axis is reduced to index zero. Unnamed `omero.channels` entries now
@@ -72,6 +79,10 @@ store layout and existing brightfield workflows remain unchanged.
   intentional value change from v0.1 and therefore creates a new grid. Compatible
   historical native-multiplex grids remain appendable only when the original OME panel
   proves that the v0.1 selector used the same single physical channel.
+- Original GigaPath now defaults to the released 256-pixel non-overlapping extraction
+  lattice followed by a centre crop to 224. Existing 224-pixel grids remain readable and
+  distinct; an unmodified default request creates or selects the correctly keyed
+  256-pixel grid.
 - The first request for a model output created before fingerprints were introduced will
   recompute that model in place. The old header is deliberately not treated as proof that
   pre-v0.2.0 revision pins were enforced.

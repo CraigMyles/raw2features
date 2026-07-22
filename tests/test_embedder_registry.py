@@ -87,3 +87,32 @@ def test_transform_batch_resize_fallback_matches_stacked_transform():
     batched = emb.transform_batch(patches, "cpu")
     assert tuple(batched.shape) == (3, 3, 224, 224)
     assert torch.equal(stacked, batched)
+
+
+@pytest.mark.parametrize("name", ["gigapath", "gigapath_flash"])
+def test_gigapath_transform_center_crops_the_official_256_tile(name):
+    """The official 256px GigaPath tile becomes its central 224px model input."""
+    emb = build_embedder(name)
+    patch = np.zeros((256, 256, 3), dtype=np.uint8)
+    patch[16:240, 16:240] = 255
+
+    transformed = emb.transform(patch)
+
+    assert tuple(transformed.shape) == (3, 224, 224)
+    expected = torch.tensor(
+        [
+            (1.0 - mean) / std
+            for mean, std in zip(emb.spec.mean, emb.spec.std, strict=True)
+        ]
+    ).view(3, 1, 1)
+    assert torch.allclose(transformed, expected.expand_as(transformed))
+
+
+@pytest.mark.parametrize("name", ["gigapath", "gigapath_flash"])
+def test_gigapath_crop_batch_matches_individual_transform(name):
+    emb = build_embedder(name)
+    rng = np.random.RandomState(2)
+    patches = [rng.randint(0, 256, (256, 256, 3), dtype=np.uint8) for _ in range(2)]
+    stacked = torch.stack([emb.transform(patch) for patch in patches])
+    batched = emb.transform_batch(patches, "cpu")
+    assert torch.equal(stacked, batched)

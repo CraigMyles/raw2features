@@ -114,7 +114,7 @@ SEAL_FORK_REVISION = "5334490645e8410e7d8ef6978cebc4fd98f9cf9a"
 CONCH_PACKAGE_REVISION = "141cc09c7d4ff33d8eda562bd75169b457f71a62"
 KRONOS_PACKAGE_REVISION = "48979362386c8440c934954be3d88ccfa74d6f36"
 MUSK_PACKAGE_REVISION = "714b666969c1911e5efe70d991140a21030f4ef3"
-GIGAPATH_PACKAGE_REVISION = "3505f87e197d167522be491bb3f18fb5a08ca584"
+GIGAPATH_PACKAGE_REVISION = "9d42a60babe04359978d5ad2eb94e7b3bcf9ca39"
 MADELEINE_PACKAGE_REVISION = "419287dc60a57296d959840b893481019c4f0d21"
 BIOMEDCLIP_TEXT_REPO = "microsoft/BiomedNLP-BiomedBERT-base-uncased-abstract"
 BIOMEDCLIP_TEXT_REVISION = "d673b8835373c6fa116d6d8006b33d48734e305d"
@@ -423,6 +423,10 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
         },
     }
     constructor.update(family_contracts.get(spec.family, {"entrypoint": spec.family}))
+    if spec.registration_modules:
+        constructor["registration_modules"] = list(spec.registration_modules)
+    if "gigapath.tile_encoder" in spec.registration_modules:
+        constructor["construction_package_revision"] = GIGAPATH_PACKAGE_REVISION
     if spec.name == "biomedclip":
         constructor["nested_text_config"] = {
             "repo": BIOMEDCLIP_TEXT_REPO,
@@ -518,6 +522,13 @@ def patch_output_fingerprint(spec: ModelSpec, resolved_amp: str) -> dict[str, An
         },
         "composite": _seal_composite(spec) if spec.family == "seal" else None,
     }
+    if spec.crop_pct is not None:
+        payload["preprocessing"].update(
+            {
+                "crop_pct": float(spec.crop_pct),
+                "crop_mode": spec.crop_mode,
+            }
+        )
     return make_output_fingerprint(payload)
 
 
@@ -637,10 +648,12 @@ def _slide_constructor(spec) -> dict[str, Any]:
         },
         "gigapath_slide": {
             "entrypoint": "gigapath.slide_encoder.create_model",
-            "architecture": "gigapath_slide_enc12l768d",
-            "patch_dim": 1536,
+            "architecture": spec.architecture or "gigapath_slide_enc12l768d",
+            "patch_dim": int(spec.patch_dim),
             "global_pool": True,
-            "tile_size_source": "patching.level0_patch",
+            "tile_size": 256,
+            "coords_frame": "stored_level0_xy",
+            "coords_transform": "none",
             "coords_dtype": "float32",
             "features_dtype": "float32",
             "all_layer_embed": True,

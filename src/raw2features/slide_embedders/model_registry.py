@@ -61,6 +61,7 @@ def build_slide_embedder(name: str) -> SlideEmbedder:
     emb = cls()
     # Overwrite spec from registry so provenance is always registry-sourced.
     emb.spec = spec
+    emb.name = spec.name
     return emb
 
 

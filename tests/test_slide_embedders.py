@@ -150,7 +150,7 @@ def test_patch_registry_ignores_slide_encoders_section():
     assert "slide_encoders" not in patch_reg
     assert set(patch_reg) == {
         "resnet50", "dinov2", "uni", "uni2_h", "path_orchestra", "virchow2",
-        "gigapath", "conch",
+        "gigapath", "gigapath_flash", "conch",
         "conch_v1_5", "h_optimus_0", "h0_mini", "gpfm", "midnight",
         "openmidnight", "openpath",
         "ctranspath", "hibou_l", "hibou_b", "kronos", "phikon", "phikon_v2",

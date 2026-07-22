@@ -35,6 +35,15 @@ def test_every_patch_spec_is_complete_and_consistent():
         assert spec.recommended_patch_px is None or spec.recommended_patch_px > 0, (
             f"{name}: recommended_patch_px must be positive or None"
         )
+        assert spec.crop_pct is None or 0 < spec.crop_pct <= 1, (
+            f"{name}: crop_pct must be in (0, 1] or None"
+        )
+        assert spec.crop_mode in ({None} if spec.crop_pct is None else {"center"}), (
+            f"{name}: crop_mode must be 'center' exactly when crop_pct is set"
+        )
+        assert all(spec.registration_modules), (
+            f"{name}: registration_modules must not contain blank module names"
+        )
         # extract_px is always a usable patch size (falls back to input_size).
         assert spec.extract_px > 0, f"{name}: extract_px must be positive"
         # FAIR findability: a resolvable DOI, unless the model is an open-weights
@@ -87,10 +96,29 @@ def test_optional_fields_round_trip_through_loader():
     )
     assert get_spec("uni").recommended_mpp == 0.5
     assert get_spec("resnet50").recommended_mpp is None
-    # recommended_patch_px is set only where extraction px != input_size (conch_v1_5);
-    # otherwise None, and extract_px falls back to input_size.
+    # recommended_patch_px is set where extraction px differs from the fixed model
+    # input (for example CONCH v1.5 and the centre-cropped GigaPath tiles).
     assert get_spec("conch_v1_5").recommended_patch_px == 512
     assert get_spec("conch_v1_5").extract_px == 512
+    assert get_spec("gigapath").recommended_patch_px == 256
+    assert get_spec("gigapath").crop_pct == 0.875
+    assert get_spec("gigapath_flash").registration_modules == (
+        "gigapath.tile_encoder",
+    )
+    assert get_spec("gigapath_flash").checkpoint == {
+        "repo": "prov-gigapath/prov-gigapath-flash",
+        "filename": "pytorch_model.bin",
+        "strict": True,
+    }
+    assert get_spec("hipt").checkpoint.get("repo") is None
+    assert get_spec("hipt").checkpoint["url"].startswith(
+        "https://media.githubusercontent.com/media/mahmoodlab/HIPT/"
+    )
+    assert get_spec("hipt").mean == (0.5, 0.5, 0.5)
+    assert get_spec("hipt").std == (0.5, 0.5, 0.5)
+    assert "Commons Clause" in get_spec("hipt").license
+    assert get_spec("gigapath").inference_amp == "fp16"
+    assert get_spec("gigapath_flash").inference_amp == "fp16"
     assert get_spec("uni").recommended_patch_px is None
     assert get_spec("uni").extract_px == get_spec("uni").input_size == 224
     # doi is cherry-picked by the loader too -> guard it survives.

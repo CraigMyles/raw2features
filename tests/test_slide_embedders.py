@@ -182,6 +182,23 @@ def test_slide_registry_has_titan():
     assert spec.doi == "10.1038/s41591-025-03982-3"
 
 
+def test_native_multiplex_pool_keeps_legacy_slide_output_key(tmp_path):
+    from raw2features.embedders.model_registry import get_spec
+    from raw2features.slide_embedders.encoding import slide_output_key
+
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px224": (224, {"kronos": np.zeros((2, 384), np.float32)})},
+    )
+    root = zarr.open_group(path, mode="r+", use_consolidated=False)
+    group = root["grids"]["mpp0.5_px224"]
+    group["features"]["kronos"].attrs["output_fingerprint"] = (
+        patch_output_fingerprint(get_spec("kronos"), "fp32")
+    )
+
+    assert slide_output_key(group, "mean", "kronos") == "mean"
+
+
 def test_get_slide_spec_unknown_raises():
     with pytest.raises(KeyError, match="Unknown slide encoder"):
         get_slide_spec("does_not_exist")

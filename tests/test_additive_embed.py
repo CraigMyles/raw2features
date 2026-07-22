@@ -25,6 +25,7 @@ from raw2features.pipeline.runner import (
     RunConfig,
     _assert_store_source,
     _inspect_store,
+    _stored_grid_summary,
     embed_slide,
     run_slide,
 )
@@ -47,6 +48,7 @@ def _make_store(
     grid_hash="GH",
     fill=1.0,
     source="file:///source/s.zarr",
+    segmenter=None,
 ):
     """Build a minimal *.embeddings.zarr by hand (no embedding needed)."""
     os.makedirs(out_dir, exist_ok=True)
@@ -66,6 +68,8 @@ def _make_store(
     }
     if grid_hash is not None:
         header["grid_hash"] = grid_hash
+    if segmenter is not None:
+        header["segmentation"] = {"segmenter": segmenter}
     g.attrs["raw2features"] = header
     root.attrs["raw2features"] = {
         "source": {"uri": source},
@@ -127,6 +131,162 @@ def test_inspect_store_legacy_without_grid_hash_is_compatible(tmp_path):
     key, n, valid = _inspect_store(p, "anything", ["a"])
     assert key is not None  # legacy store: coords are authoritative
     assert valid == ["a"]
+
+
+def test_inspect_store_reuses_native_multiplex_pre_v011_grid_identity(tmp_path):
+    """KRONOS used nuclear execution but persisted the default Otsu hash in v0.1."""
+
+    native = RunConfig(
+        models=["kronos"],
+        resolved_channel_names=["DAPI", "CD3"],
+        resolved_nuclear_channel_indices=[0],
+        resolved_original_channel_names=["DAPI", "CD3"],
+    )
+    legacy_otsu = RunConfig(models=["uni"]).grid_hash()
+    path = _make_store(
+        str(tmp_path / "out"),
+        models=(("kronos", 4),),
+        grid_hash=legacy_otsu,
+        segmenter="nuclear",
+    )
+
+    key, n_patches, valid = _inspect_store(
+        path,
+        native.grid_hash(),
+        ["kronos"],
+        compatible_grid_hashes=native.compatible_legacy_grid_hashes(),
+        compatible_grid_segmenters=native.compatible_legacy_grid_segmenters(),
+    )
+
+    assert key == "mpp1_px64"
+    assert n_patches == 12
+    assert valid == ["kronos"]
+
+
+def test_inspect_store_rejects_unsafe_native_nuclear_legacy_hash(tmp_path):
+    """A nuclear header cannot prove which physical channel v0.1 thresholded."""
+
+    native = RunConfig(
+        models=["kronos"],
+        resolved_channel_names=["", "DAPI", "CD3"],
+        resolved_nuclear_channel_indices=[1],
+        resolved_original_channel_names=["", "DAPI", "CD3"],
+    )
+    legacy_nuclear = native.legacy_grid_hash()
+    path = _make_store(
+        str(tmp_path / "out"),
+        models=(("kronos", 4),),
+        grid_hash=legacy_nuclear,
+        segmenter="nuclear",
+    )
+
+    key, n_patches, valid = _inspect_store(
+        path,
+        native.grid_hash(),
+        ["kronos"],
+        compatible_grid_hashes=native.compatible_legacy_grid_hashes(),
+        compatible_grid_segmenters=native.compatible_legacy_grid_segmenters(),
+    )
+
+    assert key is None
+    assert n_patches == 0
+    assert valid == []
+
+
+def test_inspect_and_summary_reject_unsafe_native_hashless_grid(tmp_path):
+    """No hash means the legacy physical nuclear-channel binding is unknowable."""
+
+    native = RunConfig(
+        models=["kronos"],
+        resolved_channel_names=["", "DAPI", "CD3"],
+        resolved_nuclear_channel_indices=[1],
+        resolved_original_channel_names=["", "DAPI", "CD3"],
+    )
+    path = _make_store(
+        str(tmp_path / "out"),
+        models=(("kronos", 4),),
+        grid_hash=None,
+        segmenter="nuclear",
+    )
+    policy = native.allows_hashless_legacy_grid()
+
+    assert not policy
+    assert _inspect_store(
+        path,
+        native.grid_hash(),
+        ["kronos"],
+        compatible_grid_hashes=native.compatible_legacy_grid_hashes(),
+        compatible_grid_segmenters=native.compatible_legacy_grid_segmenters(),
+        allow_hashless_legacy=policy,
+    ) == (None, 0, [])
+    assert (
+        _stored_grid_summary(
+            path,
+            [native],
+            allow_hashless_legacy_grids={native.grid_hash(): policy},
+        )
+        == {}
+    )
+
+
+def test_inspect_store_requires_nuclear_evidence_for_native_nuclear_legacy_hash(
+    tmp_path,
+):
+    native = RunConfig(
+        models=["kronos"],
+        resolved_channel_names=["DAPI", "CD3"],
+        resolved_nuclear_channel_indices=[0],
+        resolved_original_channel_names=["DAPI", "CD3"],
+    )
+    legacy_nuclear = native.legacy_grid_hash()
+    path = _make_store(
+        str(tmp_path / "out"),
+        models=(("kronos", 4),),
+        grid_hash=legacy_nuclear,
+        segmenter="otsu",
+    )
+
+    key, n_patches, valid = _inspect_store(
+        path,
+        native.grid_hash(),
+        ["kronos"],
+        compatible_grid_hashes=native.compatible_legacy_grid_hashes(),
+        compatible_grid_segmenters=native.compatible_legacy_grid_segmenters(),
+    )
+
+    assert key is None
+    assert n_patches == 0
+    assert valid == []
+
+
+def test_inspect_store_rejects_brightfield_grid_with_same_native_legacy_hash(
+    tmp_path,
+):
+    native = RunConfig(
+        models=["kronos"],
+        resolved_channel_names=["DAPI", "CD3"],
+        resolved_nuclear_channel_indices=[0],
+        resolved_original_channel_names=["DAPI", "CD3"],
+    )
+    legacy_otsu = RunConfig(models=["uni"]).grid_hash()
+    path = _make_store(
+        str(tmp_path / "out"),
+        models=(("kronos", 4),),
+        grid_hash=legacy_otsu,
+        segmenter="otsu",
+    )
+
+    key, n_patches, valid = _inspect_store(
+        path,
+        native.grid_hash(),
+        ["kronos"],
+        compatible_grid_hashes=native.compatible_legacy_grid_hashes(),
+        compatible_grid_segmenters=native.compatible_legacy_grid_segmenters(),
+    )
+
+    assert key is None
+    assert n_patches == 0
+    assert valid == []
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")

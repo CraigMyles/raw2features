@@ -1,8 +1,9 @@
 """raw2features - read OME-Zarr WSIs and emit patch-level FM embeddings.
 
 The storage backend (reader) and model implementation are independently swappable
-via six plugin seams: readers, segmenters, patchers, embedders, sinks, and
-slide_embedders (see ``raw2features.core.plugins.SEAMS``). Third parties add an
+via seven plugin seams: readers, segmenters, patchers, embedders, sinks,
+slide_embedders, and multiplex_strategies (see ``raw2features.core.plugins.SEAMS``).
+Third parties add an
 implementation through the matching ``raw2features.<seam>`` entry-point group.
 For embedders, that entry point is a loader family used by the packaged model
 registry; it does not add a new CLI ``--model`` name. Programmatic callers can pass
@@ -25,7 +26,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 __all__ = [
     "__version__",

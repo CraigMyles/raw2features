@@ -41,11 +41,12 @@ OME-Zarr  ──reader──▶  segmenter ──▶  patcher ──▶  embedde
 | **segmenter** | `otsu` (or `--no-seg`) | low-res tissue mask so only tissue patches are kept |
 | **patcher** | `grid` | tiles a regular grid at an **exact** target MPP |
 | **embedder** | `resnet50` (repeatable) | patch → feature vector; one or many, run together |
+| **multiplex_strategy** | none | optional named-channel adaptation before an RGB patch encoder |
 | **slide_embedder** | none | patch-feature matrix → optional slide-level vector |
 | **sink** | `zarr` | writes `coords`/`grid_index`/`mask`/`features/<model>` + provenance |
 
 List what's installed for any component: `raw2features list embedders` (or `readers`,
-`segmenters`, `patchers`, `sinks`, `slide_embedders`).
+`segmenters`, `patchers`, `sinks`, `slide_embedders`, `multiplex_strategies`).
 
 ---
 
@@ -76,7 +77,7 @@ on another (e.g. an x86 cluster). Verify with `raw2features version`.
 | `raw2features export-h5 <store.embeddings.zarr> <out_dir>` | export features to HDF5 (one `.h5` per model); needs the `[h5]` extra |
 | `raw2features validate-store <store.embeddings.zarr>` | check a store conforms to the embeddings-store spec |
 | `raw2features models` | list the model registry (name, dim, gated, source) |
-| `raw2features list <component>` | list installed plugins for a component type (readers, segmenters, patchers, embedders, sinks, slide_embedders) |
+| `raw2features list <component>` | list installed plugins for a component type (readers, segmenters, patchers, embedders, sinks, slide_embedders, multiplex_strategies) |
 | `raw2features version` | print the version |
 
 Every option below is also visible via `raw2features <command> --help`.
@@ -150,7 +151,7 @@ Any token passed on the command line is redacted from stored command provenance.
 | `--qc` | none | per-patch QC producer(s) writing `grids/<key>/qc/<tool>/` (e.g. `grandqc`); needs the producer's extra (`raw2features[grandqc]`) |
 | `--qc-stain-norm` | off | normalize the QC input first (`macenko`\|`reinhard`\|`vahadane`; `vahadane` needs `raw2features[stain]`) - for a stain outside the QC model's domain |
 | `--device` | `auto` | `auto` (best of cuda→mps→cpu) \| `cuda` \| `mps` \| `cpu` |
-| `--devices` | = `--device` | opt-in in-process multi-GPU, e.g. `cuda:0,cuda:1`; shards this slide's patches across them and gathers in coord order (output identical to one device). See _In-process multi-GPU_ in §6. |
+| `--devices` | = `--device` | opt-in in-process multi-GPU, e.g. `cuda:0,cuda:1`; shards this slide's patches across them and gathers in coord order (output identical to one device). Multi-device execution is not supported with `--multiplex-strategy`; see _In-process multi-GPU_ in §6. |
 | `--batch-size` | `256` | patches per forward pass (lower it on small GPUs) |
 | `--amp` | `auto` | precision: `auto` (each model's card precision) \| `fp32` \| `bf16` \| `fp16` |
 | `--snap-to-level` | off | read a pyramid level natively (no resample); MPP = that level |
@@ -225,6 +226,100 @@ byte-like convention, otherwise the slide is treated as normalized. This bounded
 avoids scanning an entire WSI at open. `read_region_channels` remains native-dtype and
 unscaled for multiplex models.
 
+### RGB encoders on named-channel multiplex tissue images
+
+`--multiplex-strategy channelwise` lets a registered RGB patch encoder process an
+OME-Zarr image with a `c` axis and positionally matching channel names:
+
+```bash
+raw2features embed multiplex_slide.ome.zarr multiplex_out \
+  -m uni --multiplex-strategy channelwise \
+  --marker CD3 --marker CK --marker DAPI \
+  --multiplex-aggregation mean -s mean
+```
+
+Each selected channel is processed independently. raw2features resolves a normalization
+for that channel, repeats the normalized single-channel patch across RGB, and applies the
+encoder's registered preprocessing and pooling (for example CLS for UNI or
+CLS+mean-patch for Virchow2). The marker vectors are combined with `mean` (default) or
+ordered `concat`; `concat` requires an explicit marker order. Without an explicit
+selection, every physical channel must have a unique name and all channels are used in
+source order. If metadata contains unnamed positions, supply a complete
+`--channel-names-file` or explicitly select the named markers to exclude those positions.
+Selected names must resolve unambiguously. No channel name has implicit inclusion or
+exclusion semantics for embedding. Nuclear marker names are resolved separately when
+segmentation is enabled.
+
+`--multiplex-normalization percentile` is the default. It records each selected channel's
+1st and 99th percentiles from the first image-pyramid level whose longest side is at most
+2048 pixels. Set alternative bounds with `--multiplex-percentile-low` and
+`--multiplex-percentile-high`. This is a bounded-memory, reproducible raw2features rule
+rather than a platform-specific calibration. The level limit can be changed with
+`--multiplex-normalization-max-side-px`; a larger value may choose a finer level and use
+more memory. If no pyramid level fits the cap, raw2features asks for a coarser level or a
+higher cap instead of silently scanning level 0. `--multiplex-normalization dtype`
+instead maps the source dtype range to `[0,1]`; floating-point sources must already be
+finite in `[0,1]`. Percentiles describe the selected pyramid level, so spatial
+downsampling can smooth extrema relative to level 0; the exact level and measured values
+are fingerprinted. The selected markers and physical indices, order,
+normalization values and source level, RGB conversion, base-model fingerprint and
+pooling, aggregation, and output dimension are stored in the grid's model/panel metadata
+and output fingerprint.
+
+The RGB vision-encoder baselines evaluated in the
+[public KRONOS paper](https://arxiv.org/html/2506.03373) provide structural inspiration.
+This strategy adapts ordinary RGB encoders rather than implementing the marker-aware
+KRONOS architecture. Every marker is normalized independently, repeated to RGB, embedded
+independently, then aggregated with a fully recorded deterministic recipe.
+
+Channel identity normally comes from `omero.channels`. If those labels are absent or
+incomplete, provide a complete positional panel without rewriting the source:
+
+```bash
+raw2features embed multiplex_slide.ome.zarr multiplex_out \
+  -m uni --multiplex-strategy channelwise \
+  --channel-names-file channel_names.tsv \
+  --marker CD3 --marker CK --marker DAPI
+```
+
+The UTF-8 `.txt`, `.csv`, or `.tsv` file contains exactly one unique name for every
+physical C-axis position, in order. A conventional one-column header is optional. Any
+existing non-empty OME labels must agree; conflicts and channel-count mismatches fail
+before model loading or output mutation. The file defines physical channel identity,
+while repeated `--marker` options select and order a subset. Only the resolved ordered
+panel and ordered marker request affect request identity; the file path and serialization
+do not. Store provenance also records whether effective labels came from OME metadata or
+a channel-names file and, when they differ, preserves the original OME labels. As with
+other non-secret arguments, the recorded CLI invocation can include the file path. One
+file applies to every slide in an `embed-many` invocation, so heterogeneous panels should
+use separate runs.
+
+Multiplex runs use nuclear-channel tissue masking when segmentation is enabled. They
+require one unambiguous nuclear channel or a recognized same-stain group, such as
+DNA1/DNA2 or repeated DAPI channels. A multi-channel group is averaged in float32 before
+thresholding. This differs from v0.1's first-match behaviour and is bound into a new grid
+identity rather than reusing the old mask.
+`--no-seg` is fully supported and tiles the complete image, which is useful for
+segmentation-free analyses or panels without a suitable nuclear channel; it can also
+retain more background and require more compute.
+
+Patch geometry remains configurable. If an extracted patch does not match the encoder's
+registered input size, raw2features resizes it before model preprocessing. Smaller,
+cell-scale fields are therefore mechanically supported, but resizing does not add image
+detail and the changed physical field of view should be validated for the intended task.
+
+Strategy-derived outputs use a cohort-stable effective key under `features/`.
+Model-agnostic slide poolers (`mean`, `max`, `meanmax`) accept them, while learned slide
+encoders tied to another patch model are rejected. The first implementation processes one
+device per slide.
+
+The strategy is a plugin (`raw2features.multiplex_strategies`), with separate
+panel/config preparation and slide-specific binding phases. Future versions may add
+marker-to-R/G/B mappings or learned channel adapters if there is demand; either can use
+the same panel-binding and fingerprint contract. Third-party strategies can accept a
+JSON object through `--multiplex-params`; the built-in `channelwise` strategy uses its
+explicit options and does not accept additional strategy parameters.
+
 ### Segmentation
 
 The default `otsu` segmenter runs Otsu-on-saturation + morphology on a low-res
@@ -249,6 +344,10 @@ portable. `--devices` is an **opt-in** runtime flag that spreads work across sev
 devices in one process; it never changes the embeddings (it is excluded from the
 config hash), so a store built with it is identical to a single-device one and
 resumes interchangeably.
+
+Multi-device `--devices` execution does not currently support `--multiplex-strategy`.
+Strategy-derived multiplex runs use one device per slide; prefer `--device` for that
+selection.
 
 - **`embed` (one slide) - patch-parallel, latency mode.** `embed … --devices
   cuda:0,cuda:1` shards the slide's patches into contiguous blocks, embeds each
@@ -335,6 +434,12 @@ reader, models (order-independent), segmenter / --no-seg, --mpp, --patch-size,
 --stain-norm, --snap-to-level, --mpp-tolerance, --allow-upsample, --amp
 ```
 
+For multiplex requests, the hash also covers the strategy and its parameters, ordered
+marker selection, normalization recipe and pyramid-level limit, aggregation, the resolved
+positional channel names and the resolved physical nuclear-channel indices when masking
+is enabled. The `--channel-names-file` path and serialization are not hashed; their
+parsed effective names are.
+
 Runtime-only knobs do **not** change the hash:
 `--device`, `--devices`, `--batch-size`, `--read-workers`, `--read-block`,
 `--compile`, `--emit-geojson`, `--emit-thumbnail`, `--thumbnail-mpp`, `--max-px`,
@@ -352,6 +457,10 @@ only when its slide ID, credential-free source, requested output target, and the
 actual store's root/grid source provenance all agree. **Pass `--out-dir` and the same
 content-affecting flags you pass to `embed`**, or the check is not target-aware (or
 the config hash will not match).
+
+For library callers, `verify` also recognizes the direct single-grid receipt written by
+the public `run_slide` primitive. Multi-grid requests use `embed_slide` and its whole-run
+receipt.
 
 ```bash
 raw2features verify slide.zarr --receipts-dir receipts/ --out-dir embeddings/ -m uni -m resnet50 --mpp 1.0 --quiet
@@ -491,7 +600,7 @@ Notes:
     ├── grid_index/             # (N,2) int32  (row,col) on the tiling grid
     ├── mask/                   # (n_rows,n_cols) uint8  fraction of each cell that is tissue; /255 for [0,1] (omitted with --no-seg)
     ├── features/<model>/       # (N,dim) float16  one array per extractor
-    └── slide/<model>/          # (1,dim) float32  optional slide-level vectors
+    └── slide/<output-key>/     # (1,dim) float32  optional slide-level vectors
 
 <slide_id>.patches.geojson          # optional (--emit-geojson): per-patch polygons for QuPath
 <slide_id>.thumbnail.png            # optional (--emit-thumbnail / thumbnail cmd)
@@ -516,13 +625,16 @@ pixel extent), any embedding is invertible to the exact slide region
 **Each grid's `.zattrs["raw2features"]`** records the full, self-describing header:
 `schema_version`, `provenance` (version, CLI, git SHA, host, GPU), `thumbnail` (if emitted),
 `source` (uri, ngff_version, reader, mpp_level0, dimensions/downsamples, source axes,
-per-axis physical scale, and source translation/origin),
+per-axis physical scale, source translation/origin, and for multiplex sources the
+effective positional channel names, their source, and any differing original OME labels),
 `patching` (target/achieved MPP, patch_px, read_level, read_px, resample, level0_patch,
-level0_step, n_patches, grid_shape, `coords_convention: level0_xy`), `segmentation`, and
+level0_step, n_patches, grid_shape, `coords_convention: level0_xy`), `segmentation`
+(including the resolved nuclear channel binding when used), top-level `panel`, and
 per-model `models.<name>` (source, embedding_dim, input_size, pooling, mean, std,
-`transform_source_url`, license, gated, weights_sha256). The **root** `.zattrs` carries the
-shared `source`/`provenance` plus a `grids` index (`key → {mpp, patch_px, n_patches,
-models, grid_hash}`) for discovery without opening each grid.
+`transform_source_url`, license, gated, weights pins, output fingerprint, and any
+multiplex contract). The **root** `.zattrs` carries the shared `source`/`provenance` plus a
+`grids` index (`key → {mpp, patch_px, n_patches, models, grid_hash}`) for discovery without
+opening each grid.
 
 Read it back:
 

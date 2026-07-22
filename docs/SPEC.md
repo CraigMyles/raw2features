@@ -16,9 +16,10 @@ The keywords MUST, SHOULD and MAY are used as in RFC 2119.
 
 ## Stability
 
-raw2features is alpha (`0.x`); this format ships with it on **one version line** - package
-`0.x`, format `0.x`, schema `0.x` all move together (so today's store says
-`schema_version: "0.1"`). To let readers depend on the format now during the 0.x line, the stable parts are scoped explicitly:
+raw2features is alpha (`0.x`), but the package release and store schema are versioned
+independently. Package v0.2.0 continues to write `schema_version: "0.1"` because this
+release does not change the established read contract or layout. To let readers depend on
+the format now, the stable parts are scoped explicitly:
 
 - **Stable (the read contract).** Patch sets live under `grids/<key>/`, each a complete,
   self-describing grid carrying its header under that group's `raw2features` attr; **within
@@ -26,7 +27,7 @@ raw2features is alpha (`0.x`); this format ships with it on **one version line**
   `coords` are level-0 `(x, y)` pixels carrying `units = "level0_px"`; and a reader **MUST
   tolerate keys/arrays it does not recognise**. Code written against these will keep
   working across `0.x`.
-- **Still revisable during `0.x`.** The exact on-disk array layout, the set of header
+- **Still revisable during schema `0.x`.** The exact on-disk array layout, the set of header
   keys, and the coordinate *convention* (e.g. if/when the store grows a richer, physical
   coordinate frame - see [Coordinates](#coordinates--relocatability)) may change between
   `0.x` releases. Each such change bumps `schema_version` and ships an updated JSON Schema
@@ -98,7 +99,7 @@ Under each `grids/<key>/`:
 |---|---|---|---|
 | `grid_index` | (N, 2) | int32 | `(row, col)` of each patch in the regular grid. |
 | `mask` | (rows, cols) | uint8 | Fraction of each grid cell that is tissue (the mean of the segmentation mask over the cell), stored as `0-255` - divide by 255 for the `[0,1]` value. Index a kept patch's cell via `grid_index[i]`. Absent when tiling without segmentation. |
-| `slide/<model>` | (1, dim) | float32 | A slide-level vector (e.g. from a slide encoder or pooling), derived from this grid's features. |
+| `slide/<output-key>` | (1, dim) | float32 | A slide-level vector derived from this grid's features. Ordinary outputs use the encoder name; a model-agnostic pool over a strategy-derived multiplex array uses `<pool>__<effective-patch-key>` so several recipes can coexist. |
 
 ## Optional QC layer (per grid)
 
@@ -152,7 +153,14 @@ A JSON object; the normative definition is the packaged JSON Schema (see
   anisotropy), and `level0_translation_um` (the source's level-0 translation/origin in
   µm, or `null` when it carries none). These are recorded **values**, not an NGFF
   transform object; they let a consumer re-express `coords` in the source's physical
-  frame (see [Coordinates](#coordinates--relocatability)).
+  frame (see [Coordinates](#coordinates--relocatability)). For a named-channel
+  multiplex source, optional `channel_names` records the complete effective positional
+  C-axis mapping and `channel_names_source` says whether it came from
+  `ome_zarr_omero_channels` or a user-supplied channel-names file. When that file fills
+  incomplete metadata, `omero_channel_names` preserves the original positional labels,
+  including blank entries. The structured source and channel-name fields do not include
+  the file path. As with other non-secret command arguments, `provenance.cli` retains the
+  invocation and can therefore include that path.
 - `patching` - **this grid's** geometry: `target_mpp`, `achieved_mpp`, `patch_px`,
   `level0_patch` (patch side in level-0 px), `level0_step`, `read_level`, `step_out_px`,
   `n_patches`, `grid_shape` (`[rows, cols]`), `coords_convention` (`"level0_xy"`).
@@ -175,19 +183,38 @@ A JSON object; the normative definition is the packaged JSON Schema (see
   loader-contract version. Composite models include every component (SEAL records its
   pinned adapter and its experimental, upstream-unpinned base separately). The same
   record is written on `features/<model>` only after every feature row succeeds; that
-  array attribute is the completion commit marker.
-- `grid_hash` - a hash of the patch geometry only. Two grids with the same `grid_hash`
-  share an identical grid, so feature arrays from different runs are row-comparable.
-  Model identity deliberately remains separate: a changed output fingerprint replaces
-  only that model array without renaming or rebuilding the grid.
+  array attribute is the completion commit marker. A strategy-derived multiplex output
+  additionally records its strategy name/version and complete resolved marker,
+  normalization, input-conversion, pooling, and aggregation recipe. Its fingerprint
+  embeds the complete base-encoder output fingerprint, binding the derived output
+  transitively to the exact base weights and preprocessing. The readable model header
+  mirrors this under `base_model` and `multiplex`. A native multiplex model instead adds
+  a `multiplex_panel` binding containing its contract version, physical C axis/count, and
+  complete effective positional channel list.
+- `grid_hash` - a hash of patch-grid construction only: geometry plus any tissue-mask
+  inputs that can change the retained coordinates. For multiplex nuclear segmentation,
+  that includes the resolved physical nuclear-channel index or same-stain index group and
+  combination rule, while unrelated marker names remain model-output identity. Two grids
+  with the same `grid_hash` share an identical grid, so feature arrays from different
+  runs are row-comparable. Model identity deliberately remains separate: a changed output
+  fingerprint replaces only that model array without renaming or rebuilding the grid.
 - `provenance` - `raw2features_version`, `created_utc`, `cli`, `git_sha`, `host`, `arch`,
   `platform`, `python`, and `gpu` when applicable. Secret option values and credentials
   embedded in URIs are redacted from `cli`.
 
 Optional grid keys: `segmentation` (segmenter name + parameters), `thumbnail` (thumbnail
-metadata when one was written), `slide_embeddings` (provenance for any `slide/<model>`).
+metadata when one was written), `slide_embeddings` (provenance for any
+`slide/<output-key>`), and `panel`. `panel` is keyed by effective model name and is
+model/strategy-specific. `channelwise` records the physical count, complete positional
+source list, selected order, exclusions, and resolved normalization. Native encoders may
+instead record their model-specific kept/dropped mapping and vocabulary audit; their
+output fingerprint still binds the complete effective source panel. Readers retain blank
+metadata entries at their physical positions. A strategy that selects every channel
+requires a unique effective name at every position; an explicit marker selection may
+exclude unnamed positions, and a validated positional channel-names file can fill absent
+or incomplete labels.
 
-Each `slide/<model>` array carries an analogous `output_fingerprint`, mirrored in
+Each `slide/<output-key>` array carries an analogous `output_fingerprint`, mirrored in
 `slide_embeddings`. It includes the selected patch array's fingerprint, so replacing
 patch features invalidates any derived slide vector, and records the effective fp16/fp32
 slide-forward precision for the resolved device. Fingerprint fields are optional in
@@ -235,11 +262,12 @@ source is remote or read-only.
 
 ## Versioning
 
-`schema_version` is `MAJOR.MINOR` and tracks the 0.x release line (one version line -
-package, format and schema move together). Adding optional arrays or header keys is a
-MINOR bump; removing or repurposing anything is a MAJOR bump. Each version ships its
-JSON Schema as `embeddings_store-<version>.schema.json`. Readers MUST check
-`schema_version`, MUST ignore unknown keys/arrays, and SHOULD warn on an unknown MAJOR.
+`schema_version` is `MAJOR.MINOR` and is independent of the package version. It changes
+when the normative store contract changes, not for every package release or newly emitted
+optional extension key. Backward-compatible schema changes increment MINOR; removing or
+repurposing part of the read contract increments MAJOR. Each schema version ships its JSON
+Schema as `embeddings_store-<version>.schema.json`. Readers MUST check `schema_version`,
+MUST ignore unknown keys/arrays, and SHOULD warn on an unknown MAJOR.
 
 ## Conformance
 

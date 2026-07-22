@@ -1,9 +1,10 @@
 #!/usr/bin/env python
-"""Convert a CODEX / multiplex multi-channel TIFF to a multi-channel OME-Zarr (NGFF).
+"""Convert a multiplex multi-channel TIFF to a multi-channel OME-Zarr (NGFF).
 
 Marker names (one per channel) are written as ``omero.channels[].label`` so the
-raw2features channel-aware reader can surface them for the multiplex (KRONOS) path. A
-spatial pyramid is built so low-res nuclear-channel segmentation is cheap.
+raw2features channel-aware reader can surface them to multiplex strategies and native
+multiplex models. A spatial pyramid is built so low-resolution normalization and
+nuclear-channel masking are efficient.
 
 Usage::
 
@@ -13,8 +14,8 @@ Usage::
 ``--markers`` is a JSON file: either a bare list of channel names, or an object with a
 ``raw_markers`` / ``channels`` / ``markers`` key. The channel count must match the TIFF.
 
-Needs the ``[kronos]`` extra (tifffile + imagecodecs):
-``pip install "raw2features[kronos]"``.
+Needs the OME-Zarr reader stack plus TIFF codecs:
+``pip install "raw2features[zarr]" tifffile imagecodecs``.
 """
 
 from __future__ import annotations

@@ -156,6 +156,8 @@ class OmeZarrReader(WSISource):
         self._ngff_version: str | None = None
         self._ome_version: str | None = None  # NGFF 0.5+ keeps version in `ome`
         self._channel_names: list[str] | None = None
+        self._original_channel_names: list[str] | None = None
+        self._channel_names_source: str | None = None
         # Self-description of the source coordinate frame (captured as plain VALUES
         # so a coordinate-systems emitter is a re-encode, not a
         # re-extraction). axes = the NGFF axis order; axis_units = per-axis unit
@@ -265,6 +267,12 @@ class OmeZarrReader(WSISource):
         ]
         self._float_to_uint8_scale = self._infer_float_to_uint8_scale(self._arrays[0])
         self._channel_names = self._read_omero_channels(ms_path)
+        self._original_channel_names = (
+            list(self._channel_names) if self._channel_names is not None else None
+        )
+        self._channel_names_source = (
+            "ome_zarr_omero_channels" if self._channel_names is not None else None
+        )
         self._warn_plane_collapse(self._arrays[0].shape)  # type: ignore[attr-defined]
         self._chunk_cache.clear()
         self._open = True
@@ -367,6 +375,95 @@ class OmeZarrReader(WSISource):
         return list(self._channel_names) if self._channel_names else None
 
     @property
+    def channel_names_source(self) -> str | None:
+        return self._channel_names_source
+
+    @property
+    def original_channel_names(self) -> list[str] | None:
+        return (
+            list(self._original_channel_names)
+            if self._original_channel_names is not None
+            else None
+        )
+
+    def apply_channel_names(self, channel_names: list[str]) -> None:
+        """Fill missing positional names without silently relabelling a channel.
+
+        The supplied panel must cover the complete physical C axis. Existing non-empty
+        ``omero.channels`` labels remain authoritative and must agree after Unicode,
+        whitespace, and case normalization; absent/blank entries may be supplied.
+        """
+
+        import unicodedata
+
+        if not self._open:
+            raise RuntimeError(
+                "reader is not open; use `with OmeZarrReader(path) as r:`"
+            )
+        if not self.has_channel_axis:
+            raise ValueError(
+                "--channel-names-file requires an OME-Zarr source with a C axis"
+            )
+        names = [str(value).strip() for value in channel_names]
+        if len(names) != self.channel_count:
+            raise ValueError(
+                "channel-name override must contain exactly one name per physical "
+                f"channel: file has {len(names)} names but C={self.channel_count}"
+            )
+        if any(not name for name in names):
+            raise ValueError("channel-name override contains an empty channel name")
+
+        declared = list(self._channel_names or [])
+        if len(declared) > self.channel_count:
+            raise ValueError(
+                "OME-Zarr omero.channels has more entries than the physical C axis "
+                f"({len(declared)} > {self.channel_count})"
+            )
+
+        def identity(value: str) -> str:
+            return unicodedata.normalize("NFKC", value).strip().casefold()
+
+        identities = [identity(name) for name in names]
+        if len(set(identities)) != len(identities):
+            raise ValueError(
+                "channel-name override must use a unique name for every physical "
+                "channel (disambiguate repeated assays, for example DAPI_cycle1)"
+            )
+        for index, existing in enumerate(declared):
+            if identity(existing) and identity(existing) != identity(names[index]):
+                raise ValueError(
+                    "channel-name override conflicts with OME-Zarr metadata at "
+                    f"C index {index}: {existing!r} != {names[index]!r}"
+                )
+        self._channel_names = names
+        self._channel_names_source = "channel_names_file"
+
+    @property
+    def has_channel_axis(self) -> bool:
+        """Whether the source declares a positional NGFF channel axis."""
+
+        return "c" in self._dims
+
+    @property
+    def channel_count(self) -> int:
+        """Number of source channels, independent of ``omero`` label metadata.
+
+        Multiplex strategy binding compares this physical C-axis extent with the
+        positional ``channel_names`` metadata before selecting markers. Keeping the
+        values separate makes an incomplete ``omero.channels`` block detectable
+        instead of silently treating its metadata length as the image channel count.
+        A source without a C axis is a single-channel plane.
+        """
+
+        if "c" not in self._dims:
+            return 1
+        if not self._arrays:
+            raise RuntimeError(
+                "reader is not open; use `with OmeZarrReader(path) as r:`"
+            )
+        return int(self._arrays[0].shape[self._dims.index("c")])  # type: ignore[attr-defined]
+
+    @property
     def ngff_version(self) -> str | None:
         return self._ngff_version
 
@@ -447,7 +544,15 @@ class OmeZarrReader(WSISource):
         return np.ascontiguousarray(block)
 
     def _read_omero_channels(self, ms_path: str) -> list[str] | None:
-        """Marker/channel names from NGFF ``omero.channels`` labels, or None (RGB)."""
+        """Positional names from NGFF ``omero.channels``, or ``None`` when absent.
+
+        Every metadata entry occupies one slot, including an unnamed entry (stored as
+        ``""``). Dropping unnamed entries would shift every later label away from its
+        physical C-axis index and could silently assign pixels to the wrong marker.
+        Strategy binding validates the metadata length, selected names, and duplicate
+        identities against :attr:`channel_count`; this reader only preserves the
+        source's positional metadata faithfully.
+        """
         import zarr
 
         try:
@@ -455,8 +560,15 @@ class OmeZarrReader(WSISource):
         except Exception:  # noqa: BLE001 - no omero block -> plain RGB source
             return None
         channels = (attrs.get("omero") or {}).get("channels") or []
-        names = [c.get("label") or c.get("name") for c in channels]
-        names = [n for n in names if n]
+        names: list[str] = []
+        for channel in channels:
+            if not isinstance(channel, dict):
+                names.append("")
+                continue
+            value = channel.get("label")
+            if value is None or value == "":
+                value = channel.get("name")
+            names.append("" if value is None else str(value))
         return names or None
 
     # -- internals -----------------------------------------------------------

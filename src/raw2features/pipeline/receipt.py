@@ -16,9 +16,9 @@ from dataclasses import asdict, dataclass, field
 from raw2features.core.uris import source_uri
 
 # The embeddings-store format version, written into every store header and fed into the
-# config hash. Tracks the 0.x release line while the format is alpha (one version line:
-# package 0.x == format 0.x == schema 0.x). Bumps with each release that changes the
-# format; the matching JSON Schema ships under schema/embeddings_store-<version>.json
+# config hash. It is independent of the package version and changes only when the
+# normative store contract changes; package v0.2.0 therefore continues to write schema
+# 0.1. The matching JSON Schema ships under schema/embeddings_store-<version>.json.
 SCHEMA_VERSION = "0.1"
 
 
@@ -297,14 +297,19 @@ def validate_store_models(
     expected_model_contracts: dict[str, dict] | None = None,
     expected_grid_models: dict[str, list[str]] | None = None,
     compatible_grid_hashes: dict[str, tuple[str, ...]] | None = None,
+    compatible_grid_segmenters: dict[str, dict[str, str]] | None = None,
+    allow_hashless_legacy_grids: dict[str, bool] | None = None,
 ) -> bool:
     """True iff the requested model outputs are complete in their requested grids.
 
     ``expected_grid_models`` binds each requested model set to its authoritative full
     ``grid_hash``.  A valid same-named model in another grid must not satisfy that
-    requirement.  ``compatible_grid_hashes`` retains the explicitly-supported legacy
-    AMP hashes.  A hashless store is accepted only for the unambiguous case of one
-    requested grid and one stored grid.
+    requirement. ``compatible_grid_hashes`` retains explicitly-supported legacy
+    identities. ``compatible_grid_segmenters`` can require live segmentation evidence
+    for an otherwise ambiguous alias. A hashless store is accepted only for the
+    unambiguous one-grid case, when its per-grid policy permits it, and, when evidence
+    is required, a matching live header. Missing policy entries retain the historical
+    permissive fallback for API compatibility.
 
     When no per-grid mapping is supplied, the historical cross-grid union behaviour is
     retained for API compatibility.  Production resume/verify callers supply the map.
@@ -349,6 +354,9 @@ def validate_store_models(
             )
             used: set[str] = set()
             for expected_hash, requested in expected_grid_models.items():
+                segmenter_requirements = (compatible_grid_segmenters or {}).get(
+                    expected_hash, {}
+                )
                 candidates = tuple(
                     dict.fromkeys(
                         (
@@ -363,15 +371,41 @@ def validate_store_models(
                 # current grid; the current one must win instead of making the
                 # receipt permanently ambiguous.
                 for candidate in candidates:
+                    required_segmenter = segmenter_requirements.get(candidate)
                     matches = [
                         key
                         for key in keys
-                        if key not in used and stored_hashes[key] == candidate
+                        if key not in used
+                        and stored_hashes[key] == candidate
+                        and (
+                            required_segmenter is None
+                            or (
+                                dict(
+                                    root[GRIDS][key].attrs.get("raw2features", {})
+                                ).get("segmentation")
+                                or {}
+                            ).get("segmenter")
+                            == required_segmenter
+                        )
                     ]
                     if matches:
                         break
-                if not matches and sole_hashless:
-                    matches = [keys[0]]
+                hashless_allowed = (allow_hashless_legacy_grids or {}).get(
+                    expected_hash, True
+                )
+                if not matches and sole_hashless and hashless_allowed:
+                    required = set(segmenter_requirements.values())
+                    if not required or (
+                        len(required) == 1
+                        and (
+                            dict(
+                                root[GRIDS][keys[0]].attrs.get("raw2features", {})
+                            ).get("segmentation")
+                            or {}
+                        ).get("segmenter")
+                        == next(iter(required))
+                    ):
+                        matches = [keys[0]]
                 if len(matches) != 1:
                     return False
                 key = matches[0]
@@ -422,6 +456,8 @@ def is_complete(
     expected_model_contracts: dict[str, dict] | None = None,
     expected_grid_models: dict[str, list[str]] | None = None,
     compatible_grid_hashes: dict[str, tuple[str, ...]] | None = None,
+    compatible_grid_segmenters: dict[str, dict[str, str]] | None = None,
+    allow_hashless_legacy_grids: dict[str, bool] | None = None,
 ) -> bool:
     """True iff a request-bound, output-validated ``complete`` receipt exists.
 
@@ -468,4 +504,6 @@ def is_complete(
         expected_model_contracts=expected_model_contracts,
         expected_grid_models=expected_grid_models,
         compatible_grid_hashes=compatible_grid_hashes,
+        compatible_grid_segmenters=compatible_grid_segmenters,
+        allow_hashless_legacy_grids=allow_hashless_legacy_grids,
     )

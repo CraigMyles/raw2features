@@ -11,7 +11,15 @@ from raw2features.core.provenance import sanitize_argv
 from raw2features.pipeline.runner import RunConfig, embed_slide
 from raw2features.viz import DEFAULT_THUMBNAIL_MPP
 
-from ._validation import validate_amp, validate_batch_size, validate_geometry
+from ._validation import (
+    parse_channel_names_file,
+    parse_json_object,
+    validate_amp,
+    validate_batch_size,
+    validate_geometry,
+    validate_multiplex_percentiles,
+    validate_positive_int,
+)
 
 
 def embed(
@@ -59,6 +67,58 @@ def embed(
         help="Stain-normalize each patch BEFORE embedding: macenko|reinhard|vahadane. "
         "Changes the "
         "features -- use separate output dirs for with/without-norm experiments.",
+    ),
+    multiplex_strategy: str | None = typer.Option(
+        None,
+        "--multiplex-strategy",
+        help="Apply a named multiplex strategy (initially: channelwise) around each "
+        "ordinary patch encoder.",
+    ),
+    multiplex_markers: list[str] = typer.Option(
+        [],
+        "--marker",
+        help="Multiplex marker to include; repeat in the required order. Default: all "
+        "named channels in source order (concat requires an explicit list).",
+    ),
+    channel_names_file: str | None = typer.Option(
+        None,
+        "--channel-names-file",
+        help="UTF-8 .txt/.csv/.tsv with exactly one ordered name per physical C-axis "
+        "position. Supplies missing labels and verifies existing labels; combine "
+        "with --marker to select or order a subset.",
+    ),
+    multiplex_normalization: str = typer.Option(
+        "percentile",
+        "--multiplex-normalization",
+        help="Per-marker intensity normalization (default: percentile over a "
+        "deterministically selected whole-image pyramid level).",
+    ),
+    multiplex_percentile_low: float = typer.Option(
+        1.0,
+        "--multiplex-percentile-low",
+        help="Lower whole-image-level percentile for per-marker normalization.",
+    ),
+    multiplex_percentile_high: float = typer.Option(
+        99.0,
+        "--multiplex-percentile-high",
+        help="Upper whole-image-level percentile for per-marker normalization.",
+    ),
+    multiplex_normalization_max_side_px: int = typer.Option(
+        2048,
+        "--multiplex-normalization-max-side-px",
+        help="Longest side allowed for the deterministic whole-image normalization "
+        "level (default: 2048; larger may select a finer level and use more RAM).",
+    ),
+    multiplex_aggregation: str = typer.Option(
+        "mean",
+        "--multiplex-aggregation",
+        help="Marker embedding aggregation: mean | concat.",
+    ),
+    multiplex_params: str | None = typer.Option(
+        None,
+        "--multiplex-params",
+        help="JSON object of content parameters for a third-party multiplex strategy. "
+        "The built-in channelwise strategy uses its explicit options instead.",
     ),
     device: str = typer.Option(
         "auto", "--device", help="auto | cuda | mps | cpu (auto = best available)"
@@ -165,9 +225,14 @@ def embed(
     """
     validate_amp(amp)
     validate_batch_size(batch_size)
-    validate_geometry(
-        mpp=mpp, patch_size=patch_size, step=step, source_mpp=source_mpp
+    validate_geometry(mpp=mpp, patch_size=patch_size, step=step, source_mpp=source_mpp)
+    validate_positive_int(
+        multiplex_normalization_max_side_px,
+        "--multiplex-normalization-max-side-px",
     )
+    validate_multiplex_percentiles(multiplex_percentile_low, multiplex_percentile_high)
+    strategy_params = parse_json_object(multiplex_params, "--multiplex-params")
+    channel_names_override = parse_channel_names_file(channel_names_file)
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
@@ -215,6 +280,15 @@ def embed(
         tissue_threshold=tissue_threshold,
         features_dtype=features_dtype,
         stain_norm=stain_norm,
+        multiplex_strategy=multiplex_strategy,
+        multiplex_markers=list(multiplex_markers),
+        multiplex_normalization=multiplex_normalization,
+        multiplex_percentile_low=multiplex_percentile_low,
+        multiplex_percentile_high=multiplex_percentile_high,
+        multiplex_normalization_max_side_px=multiplex_normalization_max_side_px,
+        multiplex_aggregation=multiplex_aggregation,
+        multiplex_strategy_params=strategy_params,
+        channel_names_override=channel_names_override,
         snap_to_level=snap_to_level,
         mpp_tolerance=mpp_tolerance,
         allow_upsample=allow_upsample,

@@ -56,7 +56,7 @@ def list_plugins(
     component: str = typer.Argument(
         ...,
         help="Component type to list: readers, segmenters, patchers, embedders, "
-        "sinks, slide_embedders.",
+        "sinks, slide_embedders, multiplex_strategies.",
     ),
 ) -> None:
     """List the available plugins of a given component type."""

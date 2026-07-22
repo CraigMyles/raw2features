@@ -17,7 +17,12 @@ from raw2features.embedders.fingerprint import (
     valid_output_fingerprint,
 )
 from raw2features.pipeline.receipt import validate_model, validate_store_models
-from raw2features.pipeline.runner import RunConfig, embed_slide, run_slide
+from raw2features.pipeline.runner import (
+    RunConfig,
+    embed_slide,
+    expected_model_contracts,
+    run_slide,
+)
 from raw2features.sinks.zarr_sink import ZarrSink
 from raw2features.slide_embedders.encoding import slide_embedding_is_complete
 
@@ -27,6 +32,30 @@ try:
     _TORCH = True
 except ImportError:
     _TORCH = False
+
+
+def test_native_multiplex_output_fingerprint_binds_the_positional_panel():
+    first = RunConfig(
+        models=["kronos"],
+        no_seg=True,
+        resolved_channel_names=["CD3", "DAPI"],
+        device="cpu",
+    )
+    second = replace(first, resolved_channel_names=["DAPI", "CD3"])
+
+    first_fingerprint = expected_model_contracts(first)["kronos"][
+        "output_fingerprint"
+    ]
+    second_fingerprint = expected_model_contracts(second)["kronos"][
+        "output_fingerprint"
+    ]
+    assert first_fingerprint["digest"] != second_fingerprint["digest"]
+    assert first_fingerprint["payload"]["multiplex_panel"] == {
+        "binding_contract_version": 1,
+        "channel_axis": "c",
+        "physical_channel_count": 2,
+        "effective_channel_names": ["CD3", "DAPI"],
+    }
 
 
 def _spec(**overrides) -> ModelSpec:
@@ -137,6 +166,56 @@ def test_fingerprint_never_persists_uri_credentials_and_ignores_rotation():
         },
     }
     assert not valid_output_fingerprint({**left, "payload": leaked_payload})
+
+
+def test_semantic_constructor_keys_are_not_mistaken_for_credentials():
+    cls_token = _spec(timm_kwargs={"token": "cls", "signature": "cls_pool"})
+    mean_token = replace(
+        cls_token, timm_kwargs={"token": "mean", "signature": "mean_pool"}
+    )
+
+    first = patch_output_fingerprint(cls_token, "fp32")
+    second = patch_output_fingerprint(mean_token, "fp32")
+
+    assert first["digest"] != second["digest"]
+    assert first["payload"]["loader"]["constructor"]["timm_kwargs"] == {
+        "token": "cls",
+        "signature": "cls_pool",
+    }
+    assert second["payload"]["loader"]["constructor"]["timm_kwargs"] == {
+        "token": "mean",
+        "signature": "mean_pool",
+    }
+
+
+def test_unambiguous_plaintext_credentials_are_redacted_from_fingerprints():
+    first = _spec(
+        timm_kwargs={
+            "api_key": "SECRET_A",
+            "credentials": "PRIVATE_A",
+            "token": "cls",
+        }
+    )
+    second = replace(
+        first,
+        timm_kwargs={
+            "api_key": "SECRET_B",
+            "credentials": "PRIVATE_B",
+            "token": "cls",
+        },
+    )
+
+    left = patch_output_fingerprint(first, "fp32")
+    right = patch_output_fingerprint(second, "fp32")
+
+    assert left == right
+    assert "SECRET" not in repr(left)
+    assert "PRIVATE" not in repr(left)
+    assert left["payload"]["loader"]["constructor"]["timm_kwargs"] == {
+        "api_key": "<redacted>",
+        "credentials": "<redacted>",
+        "token": "cls",
+    }
 
 
 def test_auto_amp_resolves_and_grid_hash_stays_geometry_only():

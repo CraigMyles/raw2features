@@ -28,6 +28,7 @@ from .base import Embedder
 if TYPE_CHECKING:  # pragma: no cover
     import torch
 
+
 def _to_unit_interval(arr: np.ndarray, dtype) -> np.ndarray:
     """Scale a multiplex stack to ``[0, 1]`` by its source dtype.
 
@@ -226,15 +227,17 @@ class KronosEmbedder(Embedder):
                 kept.append(name)
                 # Explicit, retrievable record of how this source channel was identified
                 # to KRONOS: original name + position -> KRONOS marker name + id.
-                mapping.append({
-                    "channel": name,
-                    "channel_index": i,
-                    "kronos_marker": canonical,
-                    "marker_id": int(mid),
-                })
+                mapping.append(
+                    {
+                        "channel": name,
+                        "channel_index": i,
+                        "kronos_marker": canonical,
+                        "marker_id": int(mid),
+                    }
+                )
             else:
                 dropped.append(name)
-                if key is not None:  # a named marker (not a blank/empty cycle) missed
+                if key:  # a named marker (not a blank/empty cycle) missed
                     unmatched.append(name)
         if not idx:
             raise ValueError("no channels matched the KRONOS marker vocabulary")

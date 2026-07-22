@@ -136,12 +136,17 @@ def resample_patch(patch_hwc: np.ndarray, out_px: int) -> np.ndarray:
     import cv2
 
     interp = cv2.INTER_AREA if out_px < max(h, w) else cv2.INTER_LINEAR
-    # cv2.resize handles at most 4 channels; multiplex stacks (C>4) resize per channel
-    # (the equal-size fast path above means native-MPP reads never reach here).
-    if patch_hwc.ndim == 3 and patch_hwc.shape[2] > 4:
+    # cv2.resize handles at most 4 channels and drops the trailing singleton axis
+    # for HWC C=1. Multiplex stacks outside the safe 2..4 range therefore resize per
+    # channel so both channel identity and the HWC contract survive exact-MPP reads.
+    if patch_hwc.ndim == 3 and patch_hwc.shape[2] not in {2, 3, 4}:
         return np.stack(
-            [cv2.resize(patch_hwc[:, :, c], (out_px, out_px), interpolation=interp)
-             for c in range(patch_hwc.shape[2])],
+            [
+                cv2.resize(
+                    patch_hwc[:, :, c], (out_px, out_px), interpolation=interp
+                )
+                for c in range(patch_hwc.shape[2])
+            ],
             axis=-1,
         )
     return cv2.resize(patch_hwc, (out_px, out_px), interpolation=interp)

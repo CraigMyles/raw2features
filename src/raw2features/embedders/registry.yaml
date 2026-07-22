@@ -1084,7 +1084,7 @@ plip:
 # frozen base. Needs the [seal] extra + the backbone's own package + both gates. seal_embedder.py.
 seal_conch:
   family: seal
-  experimental: true       # adapter pinned+verified; frozen base is upstream-managed HEAD in v0.1.1
+  experimental: true       # adapter pinned+verified; frozen base is upstream-managed HEAD in v0.2.0
   source: "conch"          # SEAL backbone key; checkpoint seal_conch_vision.pth in MahmoodLab/SEAL
   recommended_mpp: 0.5   # CONCH convention (unsourced); SEAL keeps the base's scale
   embedding_dim: 512       # CONCH base dim, unchanged by the LoRA
@@ -1102,7 +1102,7 @@ seal_conch:
   gated: true
   inference_amp: fp32
   notes: >-
-    EXPERIMENTAL in v0.1.1: the SEAL adapter is revision-pinned and SHA-256 verified, but the
+    EXPERIMENTAL in v0.2.0: the SEAL adapter is revision-pinned and SHA-256 verified, but the
     upstream SEAL factory still downloads the frozen CONCH base from mutable HEAD, so this model
     is outside the exact-weight pinning guarantee. SEAL-CONCH (MahmoodLab) -- CONCH ViT-B/16 + a
     spatial-transcriptomics LoRA, 512-d. The HF
@@ -1114,7 +1114,7 @@ seal_conch:
 
 seal_univ2:
   family: seal
-  experimental: true       # adapter pinned+verified; frozen base is upstream-managed HEAD in v0.1.1
+  experimental: true       # adapter pinned+verified; frozen base is upstream-managed HEAD in v0.2.0
   source: "univ2"          # checkpoint seal_univ2_vision.pth
   recommended_mpp: 0.5   # UNI2-h convention (unsourced)
   embedding_dim: 1536      # UNI2-h base dim
@@ -1132,7 +1132,7 @@ seal_univ2:
   gated: true
   inference_amp: fp32
   notes: >-
-    EXPERIMENTAL in v0.1.1: the SEAL adapter is revision-pinned and SHA-256 verified, but the
+    EXPERIMENTAL in v0.2.0: the SEAL adapter is revision-pinned and SHA-256 verified, but the
     upstream SEAL factory still downloads the frozen UNI2-h base from mutable HEAD, so this model
     is outside the exact-weight pinning guarantee. SEAL-UNIv2 (MahmoodLab) -- UNI2-h ViT-H/14 +
     a spatial-transcriptomics LoRA, 1536-d. Same

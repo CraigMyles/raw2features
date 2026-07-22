@@ -8,7 +8,7 @@
 #        Workflow: release.yml   Environment: pypi
 #      (A *pending* publisher lets the very first release create the project on PyPI.)
 #   2. Cut a release whose tag matches the version in pyproject.toml, e.g.:
-#        gh release create v0.1.1 --generate-notes
+#        gh release create v0.2.0 --generate-notes
 #      This workflow then builds the sdist + wheel and uploads them automatically.
 name: Release
 

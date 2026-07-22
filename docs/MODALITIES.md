@@ -1,87 +1,94 @@
-# Modalities - brightfield (H&E) + multiplex (spatial proteomics)
+# Brightfield and named-channel multiplex tissue images
 
-raw2features is **H&E-first**, but the same pipeline also handles a second modality:
-**multiplex** imaging (CODEX / Phenocycler / spatial proteomics), via marker-aware
-encoders like KRONOS. H&E runs are completely unchanged.
+raw2features supports RGB brightfield images and named-channel multiplex tissue images.
+Multiplex sources use native `(H, W, C)` reads and preserve positional channel identity.
+Registered RGB encoders can be applied through a multiplex strategy, while native
+multiplex encoders consume the channel stack directly. Ordinary brightfield execution is
+unchanged.
 
-## How a model declares its modality
-Each registry entry carries `modality: brightfield` (default) or `modality: multiplex`.
-The runner reads the modality off the requested embedders and routes the per-slide path:
+## Execution paths
 
-| stage | brightfield (H&E) | multiplex |
-|---|---|---|
-| reader | `read_region` → RGB `[H,W,3]` uint8 | `read_region_channels` → native `[H,W,C]` + `channel_names` |
-| segmenter | `otsu` (saturation), `canny`, … | `nuclear` - Otsu on the DAPI/Hoechst channel |
-| embedder | RGB transform → `[B,3,H,W]` | per-marker norm → `[B,M,H,W]` + marker ids |
+Each registry model declares `modality: brightfield` (the default) or
+`modality: multiplex`. A strategy wraps a brightfield model without changing its registry
+entry.
 
-## Multiplex data → OME-Zarr
-Multiplex slides are usually OME-TIFF / TIFF stacks. Convert to a channel-named OME-Zarr:
+| stage | brightfield | `channelwise` RGB strategy | native multiplex encoder |
+|---|---|---|---|
+| reader | `read_region` → RGB `[H,W,3]` uint8 | `read_region_channels` → native `[H,W,C]` | `read_region_channels` → native `[H,W,C]` |
+| channel identity | none | selected positional names | positional names resolved by the model |
+| segmentation | `otsu`, `canny`, … | one nuclear channel, a recognized same-stain group, or `--no-seg` | one nuclear channel, a recognized same-stain group, or `--no-seg` |
+| embedding | one RGB input per patch | one RGB input per selected marker, then mean/concat | model-specific marker stack |
+
+Panel binding happens before receipt or store completion checks. Native multiplex
+fingerprints bind the complete effective positional panel; `channelwise` fingerprints
+bind the selected physical channel identities and order (all channels when default
+selection is used). The full effective panel remains in source/panel provenance. When
+nuclear masking is enabled, the resolved physical nuclear-channel index or same-stain
+index group is also part of grid identity.
+
+## Channel metadata
+
+The preferred source of channel identity is `omero.channels` in the OME-Zarr metadata.
+The reader preserves unnamed entries as empty positional slots rather than shifting later
+labels onto the wrong pixels.
+
+For a source whose labels are absent or incomplete, pass `--channel-names-file` with a
+complete ordered panel. UTF-8 `.txt`, `.csv`, and `.tsv` files are accepted, with one
+unique name per physical C-axis position. Existing non-empty OME labels are treated as
+assertions and must agree with the supplied name at the same index. The override is
+in-memory only and never rewrites the source. Identity uses only the resolved names.
+Provenance also records whether effective names came from OME metadata or the supplied
+file and preserves any differing original OME labels. See
+[usage.md](usage.md#rgb-encoders-on-named-channel-multiplex-tissue-images) for examples
+and marker-selection rules.
+
+## Converting a multiplex TIFF
+
+Multiplex images are often supplied as OME-TIFF or TIFF channel stacks. The included
+conversion helper accepts a `(C,Y,X)` TIFF and writes a multiscale OME-Zarr with one
+`omero.channels[].label` per channel:
 
 ```bash
-pip install "raw2features[kronos]"
-python scripts/codex_to_omezarr.py SLIDE.tif SLIDE.ome.zarr --markers markers.json --mpp 0.5
+pip install "raw2features[zarr]" tifffile imagecodecs
+python scripts/codex_to_omezarr.py SLIDE.tif SLIDE.ome.zarr \
+  --markers markers.json --mpp 0.5
 ```
 
-`markers.json` is a list (or `{"raw_markers": [...]}`) of one marker name per channel. The
-names are written to `omero.channels[].label`; the reader surfaces them as `channel_names`.
+`markers.json` is a list, or an object containing `raw_markers`, `channels`, or `markers`.
+The converter requires one name per channel. Prefer a domain converter that preserves all
+available OME metadata when one is available; this helper is intentionally small.
 
-## KRONOS - the first multiplex model
-`kronos` (MahmoodLab **KRONOSv1**) is a panel-agnostic spatial-proteomics encoder. Needs
-the `[kronos]` extra (the public `kronos` package). ViT-S/16 → **384-d** patch embedding.
+## RGB encoders through `channelwise`
 
-- **Marker matching - your panel → KRONOS's vocabulary.** KRONOS doesn't ship a
-  name-resolver, only a vocabulary: the **public** `marker_metadata.csv` (175 markers,
-  each with a marker id + per-marker mean/std). Mapping *your* channels to it is the
-  pipeline's job (`Embedder.set_panel`), and KRONOS is panel-agnostic - it embeds whatever
-  subset of its vocabulary your slide carries. Each `channel_name` is matched: exact name →
-  common **synonyms** (`pancytokeratin`→`CYTOKERATIN`, `granzymeb`→`GZMB`) → a **CD-number**
-  in a compound name (`cla_cd162`→`CD162`); `hoechst*`/`dapi` → DAPI; blank/empty cycles
-  drop silently.
-- **The mapping is recorded in the store.** The header's
-  `panel.kronos` block records the full per-channel resolution under `mapping` - each kept
-  channel as `{channel, channel_index, kronos_marker, marker_id}` (e.g.
-  `pancytokeratin → CYTOKERATIN (id 322)`) - plus `kept` / `dropped` / `unmatched` and a
-  `vocabulary` pointer pinned to the exact `marker_metadata.csv` revision. The SpatialData
-  export (`INTEROP.md`) surfaces this same map as a tidy, queryable `uns["raw2features_panel"]`
-  table.
-- **Unmatched named channels are surfaced.** A *named* marker that
-  doesn't resolve (genuinely outside KRONOS's vocabulary, or a synonym we don't yet know)
-  is dropped, **warned** about (with the `matched/total` coverage), and listed in
-  `panel.kronos.unmatched`. (Zero matches is a hard error; partial panels are fine.) If an
-  unmatched marker *is* a KRONOS marker under another name, add it to `_resolve_marker`'s
-  synonym map.
-- Run it like any model:
+`channelwise` normalizes selected channels independently, repeats each single-channel
+patch across RGB, runs the registered RGB encoder and pooling, then combines the marker
+vectors with mean or ordered concatenation. It records the effective panel, normalization
+level and values, RGB conversion, base-model output fingerprint, pooling, aggregation,
+and output dimension. Model-agnostic slide poolers can consume the result.
 
-  ```bash
-  raw2features embed SLIDE.ome.zarr OUT -m kronos --mpp 0.5
-  ```
+This makes it possible to compare models such as UNI or Virchow2 on named-channel data
+without representing them as native multiplex models. The strategy's assumptions and
+full CLI contract are documented in [usage.md](usage.md#rgb-encoders-on-named-channel-multiplex-tissue-images).
 
-  The runner detects the multiplex modality and routes the `nuclear` segmenter + native
-  N-channel reads automatically.
+## Native multiplex encoders
 
-**Performance.** A multiplex patch is an M-marker stack (~M× the tokens of a single-channel
-ViT). The `kronos` family uses **torch SDPA (flash attention) by default** - no xFormers,
-fully portable - which on an A100 (M=41) runs at **~41 patches/s in ~1.3 GB at batch 8**,
-vs ~20 p/s / 26 GB with KRONOS's upstream naive-attention fallback (it materialises the full
-8k×8k attention matrix). Memory is low and predictable, so the default `--batch-size`
-fits comfortably; lower it only on small GPUs or very large panels. (Opt out via the
-registry `sdpa: false`.) Validated full-slide on GPU against real CODEX multiplex data - a
-56-channel panel (44 markers matched, the rest empty/blank cycles) → 28 tissue patches →
-`(28, 384)`, all finite.
+Native multiplex models use the same positional-panel plumbing but consume the marker
+stack directly. The current built-in example, `kronos`, maps effective source names to
+its pinned marker vocabulary, records the kept/dropped physical mapping, and binds the
+complete effective panel into its output fingerprint before resume. Installation and
+model-specific license/access details are in [MODELS.md](MODELS.md) and
+[MODEL_LICENSES.md](MODEL_LICENSES.md).
 
-> KRONOS weights are **CC-BY-NC-ND** (non-commercial), like UNI / Virchow2 / CONCH - so its
-> embeddings are non-commercial too. See `MODEL_LICENSES.md`.
+```bash
+raw2features embed SLIDE.ome.zarr OUT -m kronos --mpp 0.5
+```
 
-### Marker intensity scaling
-The transform brings marker intensities to `[0,1]` **by the source dtype** (uint16 → `/65535`,
-uint8 → `/255`, float assumed already normalised), then standardises each marker with its
-`marker_mean`/`marker_std`. For the uint16 CODEX/Phenocycler case this matches KRONOS's own
-feature-extraction pipeline exactly - its loader divides by `max_value` (default `65535`) then
-applies the same per-marker `(x − mean) / std`, so the published marker statistics are defined
-on the same `[0,1]` scale. Scaling by the dtype range (rather than a hard-coded `65535`) keeps
-uint8 / pre-normalised sources correct instead of silently squashing them.
+Use `--channel-names-file` when the source lacks a complete panel, or `--no-seg` when the
+entire image should be tiled without a nuclear mask.
 
-### Adding more multiplex models
-Future marker-conditioned models (e.g. KRONOS successors) are added the same way as any
-encoder: a registry entry with `modality: multiplex` + a small family class (or reuse the
-`kronos` family). The reader / segmenter / runner routing is shared.
+## Extending multiplex support
+
+The `raw2features.multiplex_strategies` entry point separates panel/config preparation
+from slide-specific binding. Future marker-to-RGB mappings or learned channel adapters
+can use this contract if there is demand. A new native multiplex model instead declares
+`modality: multiplex` and implements the standard embedder panel-binding seam.

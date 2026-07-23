@@ -48,7 +48,9 @@ unchanged.
 - Add the paired GigaPath-Flash tile and slide encoders with immutable weight and loader
   pins, and align original GigaPath's default extraction with its released whole-slide
   path: non-overlapping 256-pixel tiles on a 256-pixel lattice, followed by a centre crop
-  to 224, with level-0 coordinates passed unchanged to LongNet's fixed 256-pixel lattice.
+  to 224. LongNet receives the stored level-0 coordinates and uses each tile's level-0
+  extent as its runtime positional divisor, normalizing raw2features' coordinate units
+  into the tile-index frame of upstream's default 256-pixel tiling.
 - Repair HIPT downloads by replacing the unavailable unofficial mirror with Mahmood Lab's
   commit-pinned, SHA-verified Git LFS checkpoint and record its Commons Clause accurately.
 - Correct cached OME-Zarr reads for noncanonical spatial axis order. The reader accepts

@@ -10,15 +10,19 @@ a matching flash-attn.
 The paired slide encoders are 12-layer LongNet models (dilated-attention ViTs).
 The original maps 1536-d GigaPath tile features to 768 dimensions; Flash maps
 384-d Flash tile features to 384 dimensions. Both are position-aware: they index
-a learned 2-D positional grid from patch ``coords`` using the authors' fixed 256-pixel
-LongNet lattice, so they need the coordinates as well as the feature matrix. Gated
-model access is required for the corresponding Hugging Face repository.
+a fixed 2-D sine-cosine positional grid from patch ``coords``. raw2features stores
+coordinates in source level-0 pixels, so it sets LongNet's runtime coordinate divisor
+to the level-0 extent of one extracted tile. This normalizes those coordinates into
+the tile-index frame of upstream's default 256-pixel tiling. The encoder therefore
+needs the coordinates and tile extent as well as the feature matrix. Gated model
+access is required for the corresponding Hugging Face repository.
 
 Load and forward follow the authors' own pipeline
 (``gigapath.pipeline.run_inference_with_slide_encoder``):
 
     from gigapath.slide_encoder import create_model
     model = create_model(ckpt, architecture, patch_dim, global_pool=True)
+    model.tile_size = patch_size_lv0          # runtime coords_to_pos divisor
     with torch.autocast("cuda", torch.float16), torch.inference_mode():
         out = model(features[1,N,D], coords[1,N,2], all_layer_embed=True)
     slide_vec = out[-1]                        # last_layer_embed -> [1, output_dim]
@@ -29,9 +33,10 @@ mean-pooled last layer. ``create_model``'s own weight download forces the repo
 HEAD with no revision, so we download the pinned commit ourselves and hand it the
 local path (keeps the weights sha-pinnable).
 
-The registry binds each slide model to its matching patch encoder. As upstream does,
-raw2features passes level-0 coordinates unchanged and leaves the model's
-``tile_size=256`` untouched.
+The registry binds each slide model to its matching patch encoder. LongNet is
+constructed with its upstream 256-pixel default, which determines its dilated-attention
+segment lengths. raw2features then passes level-0 coordinates unchanged and adapts only
+the runtime ``coords_to_pos`` divisor to that coordinate frame.
 
 Needs the ``[gigapath_slide]`` extra plus two post-install steps: the gigapath
 git package (with ``fairscale``; it vendors torchscale, which ``load`` aliases as
@@ -45,6 +50,8 @@ Paper:      Xu et al., "A whole-slide foundation model for digital pathology fro
 """
 
 from __future__ import annotations
+
+import operator
 
 import numpy as np
 
@@ -131,7 +138,7 @@ class GigapathSlideEmbedder(SlideEmbedder):
         self,
         features: np.ndarray,
         coords: np.ndarray | None = None,
-        patch_size_lv0: int | None = None,  # noqa: ARG002 - upstream fixes 256
+        patch_size_lv0: int | None = None,
     ) -> np.ndarray:
         import torch
 
@@ -142,9 +149,45 @@ class GigapathSlideEmbedder(SlideEmbedder):
                 "GigaPath's slide encoder needs patch coords (level-0 x,y) to index "
                 "its positional grid"
             )
+        if patch_size_lv0 is None:
+            raise ValueError(
+                "GigaPath's slide encoder needs patch_size_lv0 (the store's "
+                "patching.level0_patch): the level-0 extent of one extracted tile "
+                "used as its positional-grid divisor"
+            )
+        try:
+            if isinstance(patch_size_lv0, (bool, np.bool_)):
+                raise TypeError
+            tile_extent_lv0 = int(operator.index(patch_size_lv0))
+        except (TypeError, OverflowError) as exc:
+            raise ValueError("patch_size_lv0 must be a positive integer") from exc
+        if tile_extent_lv0 <= 0:
+            raise ValueError("patch_size_lv0 must be a positive integer")
+
+        coords_array = np.ascontiguousarray(coords, dtype=np.float32)
+        if coords_array.ndim != 2 or coords_array.shape[1] != 2:
+            raise ValueError("GigaPath patch coords must have shape (N, 2)")
+        if not np.isfinite(coords_array).all():
+            raise ValueError("GigaPath patch coords must contain only finite values")
+
+        slide_ngrids = int(self._model.slide_ngrids)
+        cells = np.floor(coords_array / tile_extent_lv0)
+        if np.any(cells < 0) or np.any(cells >= slide_ngrids):
+            raise ValueError(
+                "GigaPath patch coords fall outside its positional grid after "
+                f"division by patch_size_lv0={tile_extent_lv0}; each axis must map "
+                f"to a cell in [0, {slide_ngrids - 1}]"
+            )
+
+        # LongNet maps a coordinate to a grid cell with floor(coord / tile_size).
+        # Stored coordinates are source level-0 pixels, so the level-0 extent of one
+        # extracted tile is the divisor corresponding to upstream's 256-pixel
+        # target-resolution frame. Overlapping tokens may share a positional cell;
+        # LongNet still receives every token.
+        self._model.tile_size = tile_extent_lv0
 
         feat = torch.from_numpy(np.ascontiguousarray(features, dtype=np.float32))
-        coords_t = torch.from_numpy(np.ascontiguousarray(coords, dtype=np.float32))
+        coords_t = torch.from_numpy(coords_array)
         feat = feat.unsqueeze(0).to(self._device)  # [1, N, patch_dim]
         coords_t = coords_t.unsqueeze(0).to(self._device)  # [1, N, 2]
 

@@ -54,29 +54,54 @@ def test_gigapath_flash_registry_pair_is_matched_and_pinned():
         resolved_amp="fp16",
     )
     constructor = fingerprint["payload"]["loader"]["constructor"]
-    assert constructor["tile_size"] == 256
+    assert constructor["constructor_tile_size"] == 256
+    assert constructor["slide_ngrids"] == 1000
+    assert (
+        constructor["runtime_position_divisor_source"] == "patching.level0_patch"
+    )
     assert constructor["coords_frame"] == "stored_level0_xy"
     assert constructor["coords_transform"] == "none"
-    assert "tile_size_source" not in constructor
+    assert constructor["position_mapping"] == (
+        "floor(x / divisor) * slide_ngrids + floor(y / divisor) + 1"
+    )
+    assert "tile_size" not in constructor
 
 
-def test_gigapath_slide_forward_uses_authors_fixed_coordinate_frame():
+@pytest.mark.parametrize("patch_size_lv0", [256, 512])
+def test_gigapath_slide_forward_normalizes_level0_coordinate_frame(
+    patch_size_lv0,
+):
     import raw2features.slide_embedders.gigapath_slide as gigapath_slide
 
     captured: dict[str, torch.Tensor] = {}
 
     class RecordingLongNet:
-        tile_size = 256
+        tile_size = 0
+        slide_ngrids = 1000
 
         def __call__(self, features, coords, all_layer_embed=False):
             captured["features"] = features.detach().cpu().clone()
             captured["coords"] = coords.detach().cpu().clone()
+            cells = torch.floor(coords / self.tile_size)
+            captured["positions"] = (
+                cells[..., 0] * self.slide_ngrids + cells[..., 1] + 1
+            ).long()
             captured["all_layer_embed"] = all_layer_embed
             return [torch.ones((1, 384), dtype=torch.float32)]
 
-    features = np.arange(4 * 384, dtype=np.float32).reshape(4, 384)
+    features = np.arange(8 * 384, dtype=np.float32).reshape(8, 384)
     coords = np.asarray(
-        [[0, 0], [512, 0], [0, 512], [512, 512]], dtype=np.float32
+        [
+            [0, 0],
+            [patch_size_lv0 // 2, 0],
+            [patch_size_lv0 - 1, 0],
+            [patch_size_lv0, 0],
+            [patch_size_lv0 + 1, 0],
+            [2 * patch_size_lv0, 0],
+            [0, patch_size_lv0],
+            [patch_size_lv0, patch_size_lv0],
+        ],
+        dtype=np.float32,
     )
     model = RecordingLongNet()
     embedder = gigapath_slide.GigapathSlideEmbedder()
@@ -84,15 +109,63 @@ def test_gigapath_slide_forward_uses_authors_fixed_coordinate_frame():
     embedder._model = model
     embedder._device = "cpu"
 
-    output = embedder.encode(features, coords, patch_size_lv0=512)
+    output = embedder.encode(features, coords, patch_size_lv0=patch_size_lv0)
 
-    assert model.tile_size == 256
-    assert captured["features"].shape == (1, 4, 384)
-    assert captured["coords"].shape == (1, 4, 2)
+    assert model.tile_size == patch_size_lv0
+    assert captured["features"].shape == (1, 8, 384)
+    assert captured["coords"].shape == (1, 8, 2)
+    assert captured["positions"].tolist() == [
+        [1, 1, 1, 1001, 1001, 2001, 2, 1002]
+    ]
     assert captured["all_layer_embed"] is True
     np.testing.assert_array_equal(captured["features"][0].numpy(), features)
     np.testing.assert_array_equal(captured["coords"][0].numpy(), coords)
     assert output.shape == (384,)
+
+
+@pytest.mark.parametrize("patch_size_lv0", [None, 0, -256, True, 256.5])
+def test_gigapath_slide_requires_positive_integer_level0_tile_extent(
+    patch_size_lv0,
+):
+    import raw2features.slide_embedders.gigapath_slide as gigapath_slide
+
+    embedder = gigapath_slide.GigapathSlideEmbedder()
+    embedder.spec = get_slide_spec("gigapath_flash_slide")
+    embedder._model = type("LongNet", (), {"slide_ngrids": 1000})()
+    embedder._device = "cpu"
+
+    with pytest.raises(ValueError, match="patch_size_lv0|positive integer"):
+        embedder.encode(
+            np.zeros((1, 384), dtype=np.float32),
+            np.zeros((1, 2), dtype=np.float32),
+            patch_size_lv0=patch_size_lv0,
+        )
+
+
+@pytest.mark.parametrize(
+    "coords",
+    [
+        [[-1, 0]],
+        [[0, -1]],
+        [[256_000, 0]],
+        [[0, 256_000]],
+        [[np.nan, 0]],
+    ],
+)
+def test_gigapath_slide_rejects_coords_outside_positional_grid(coords):
+    import raw2features.slide_embedders.gigapath_slide as gigapath_slide
+
+    embedder = gigapath_slide.GigapathSlideEmbedder()
+    embedder.spec = get_slide_spec("gigapath_flash_slide")
+    embedder._model = type("LongNet", (), {"slide_ngrids": 1000})()
+    embedder._device = "cpu"
+
+    with pytest.raises(ValueError, match="positional grid|finite"):
+        embedder.encode(
+            np.zeros((1, 384), dtype=np.float32),
+            np.asarray(coords, dtype=np.float32),
+            patch_size_lv0=256,
+        )
 
 
 def test_timm_registration_module_is_imported_before_checkpoint_construction(

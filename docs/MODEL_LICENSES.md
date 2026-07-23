@@ -17,7 +17,7 @@ table below lists each model's weights licence.
 |---|---|---|
 | `resnet50` | BSD-3-Clause (torchvision) | no |
 | `dinov2` | Apache-2.0 | no |
-| `gigapath` | Apache-2.0 | yes (login) |
+| `gigapath` | Apache-2.0 | yes (terms acceptance) |
 | `gigapath_flash` | Apache-2.0 | yes (terms acceptance) |
 | `h_optimus_0` | Apache-2.0 | yes (login) |
 | `h0_mini` | CC-BY-NC-ND-4.0 | yes (approval) |

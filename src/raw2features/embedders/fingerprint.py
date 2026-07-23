@@ -651,9 +651,15 @@ def _slide_constructor(spec) -> dict[str, Any]:
             "architecture": spec.architecture or "gigapath_slide_enc12l768d",
             "patch_dim": int(spec.patch_dim),
             "global_pool": True,
-            "tile_size": 256,
+            "constructor_tile_size": 256,
+            "slide_ngrids": 1000,
+            "runtime_position_divisor_source": "patching.level0_patch",
             "coords_frame": "stored_level0_xy",
             "coords_transform": "none",
+            "position_mapping": (
+                "floor(x / divisor) * slide_ngrids "
+                "+ floor(y / divisor) + 1"
+            ),
             "coords_dtype": "float32",
             "features_dtype": "float32",
             "all_layer_embed": True,

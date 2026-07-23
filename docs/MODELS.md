@@ -164,7 +164,11 @@ pip install flash-attn  # slide encoders only; use a wheel/build matching torch 
    each tile to 224 px for the tile encoder. The crop discards a 16 px margin on every
    side; those margins are not seen by the encoder. Coordinates remain those of the
    original 256 px tiles. raw2features passes the stored level-0 coordinates unchanged
-   to the paired LongNet and leaves its upstream fixed 256 px positional lattice intact.
+   to the paired LongNet and sets its runtime coordinate divisor to the tile's level-0
+   extent. This normalizes raw2features' coordinate units into the tile-index frame of
+   upstream's default 256 px tiling; model construction remains at the upstream 256 px
+   default. Overlapping grids remain supported and every token reaches LongNet, although
+   origins within one full-tile cell share its tile-sized positional encoding.
 4. `gigapath` / `gigapath_flash` - the `LICENSE` file is Apache-2.0; the model cards
    additionally state "any
    deployed use case … commercial or otherwise … is out of scope" and restricts use to

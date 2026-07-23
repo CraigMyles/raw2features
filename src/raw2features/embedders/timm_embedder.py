@@ -42,6 +42,16 @@ class TimmEmbedder(Embedder):
         dtype: torch.dtype | None = None,
         compile: bool = False,
     ) -> TimmEmbedder:
+        for module in self.spec.registration_modules:
+            try:
+                importlib.import_module(module)
+            except ImportError as exc:
+                raise ImportError(
+                    f"{self.spec.name} requires the optional architecture module "
+                    f"{module!r}; install the model-specific dependencies documented "
+                    "in raw2features' model catalogue"
+                ) from exc
+
         import timm
         import torch
 

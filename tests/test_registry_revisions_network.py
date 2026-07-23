@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 import re
+import urllib.request
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -68,8 +69,10 @@ def _hf_repo(spec) -> str | None:
 def _is_non_hf_pin(spec) -> bool:
     """Identify the registry's deliberately non-Hub revision identifiers."""
     checkpoint = getattr(spec, "checkpoint", None) or {}
-    return str(spec.source).startswith("torchvision://") or (
-        bool(checkpoint.get("url")) and spec.weights_revision == "pretrained-weights"
+    revision = str(spec.weights_revision)
+    return str(spec.source).startswith("torchvision://") or bool(
+        checkpoint.get("url")
+        and (revision == "pretrained-weights" or _FULL_COMMIT.fullmatch(revision))
     )
 
 
@@ -112,7 +115,13 @@ assert _HF_PINS, "expected at least one Hugging Face registry pin"
 def _new_model_artifact_pins() -> list[_HubArtifactPin]:
     registry = load_registry()
     pins: list[_HubArtifactPin] = []
-    for name in ("h0_mini", "keep", "openmidnight", "openpath"):
+    for name in (
+        "h0_mini",
+        "keep",
+        "openmidnight",
+        "openpath",
+        "gigapath_flash",
+    ):
         spec = registry[name]
         repo = _hf_repo(spec)
         assert repo is not None, (
@@ -130,6 +139,16 @@ def _new_model_artifact_pins() -> list[_HubArtifactPin]:
                 sha256=str(spec.weights_sha256),
             )
         )
+    slide = load_slide_registry()["gigapath_flash_slide"]
+    pins.append(
+        _HubArtifactPin(
+            name=slide.name,
+            repo=_hf_repo(slide) or "",
+            revision=str(slide.weights_revision),
+            filename=str(slide.weights_filename),
+            sha256=str(slide.weights_sha256),
+        )
+    )
     return pins
 
 
@@ -220,12 +239,28 @@ def test_new_model_artifact_checksum_matches_huggingface_metadata(pin: _HubArtif
 
 
 @pytest.mark.network
+def test_hipt_official_git_lfs_pointer_matches_registry():
+    """The lightweight official pointer proves the 704 MB asset's immutable hash."""
+
+    spec = load_registry()["hipt"]
+    pointer_url = (
+        "https://raw.githubusercontent.com/mahmoodlab/HIPT/"
+        f"{spec.weights_revision}/HIPT_4K/Checkpoints/{spec.weights_filename}"
+    )
+    with urllib.request.urlopen(pointer_url, timeout=15) as response:  # noqa: S310
+        pointer = response.read().decode("ascii")
+    assert f"oid sha256:{spec.weights_sha256}" in pointer
+    assert "size 704238867" in pointer
+
+
+@pytest.mark.network
 @pytest.mark.parametrize(
     ("kind", "name", "source"),
     [
         ("patch", "seal_conch", "hf-hub:MahmoodLab/SEAL"),
         ("patch", "seal_univ2", "hf-hub:MahmoodLab/SEAL"),
         ("slide", "gigapath_slide", None),
+        ("slide", "gigapath_flash_slide", None),
     ],
 )
 def test_direct_loader_file_checksum_matches_registry(kind, name, source):

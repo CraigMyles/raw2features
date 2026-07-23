@@ -26,6 +26,7 @@ read and decide on. raw2features makes no commercial-use determination.
 | `virchow` | timm | 2560 | 224 | 0.5 | stated | Apache-2.0 | yes | [HF](https://huggingface.co/paige-ai/Virchow) · [paper](https://doi.org/10.1038/s41591-024-03141-0) |
 | `virchow2` | timm | 2560 | 224 | 0.5² | stated | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/paige-ai/Virchow2) · [paper](https://arxiv.org/abs/2408.00738) |
 | `gigapath` | timm | 1536 | 224³ | 0.5 | stated | Apache-2.0 ⁴ | yes | [HF](https://huggingface.co/prov-gigapath/prov-gigapath) · [GH](https://github.com/prov-gigapath/prov-gigapath) · [paper](https://doi.org/10.1038/s41586-024-07441-w) |
+| `gigapath_flash` | timm | 384 | 224³ | 0.5 | stated | Apache-2.0 ⁴ | yes | [HF](https://huggingface.co/prov-gigapath/prov-gigapath-flash) · [GH](https://github.com/prov-gigapath/prov-gigapath) · [paper](https://doi.org/10.48550/arXiv.2607.18218) |
 | `conch` | conch | 512 | 448 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/CONCH) · [GH](https://github.com/mahmoodlab/CONCH) · [paper](https://doi.org/10.1038/s41591-024-02856-4) |
 | `conch_v1_5` | conch_v1_5 | 768 | 448⁵ | 0.5 | mag→ | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/conchv1_5) · [GH](https://github.com/mahmoodlab/TITAN) · [paper](https://arxiv.org/abs/2411.19666) |
 | `h_optimus_0` | timm | 1536 | 224 | 0.5 | stated | Apache-2.0 | yes | [HF](https://huggingface.co/bioptimus/H-optimus-0) · [GH](https://github.com/bioptimus/releases) |
@@ -85,6 +86,7 @@ Each needs the matching patch encoder run first (`-f <patch_encoder>`).
 | `chief` | `ctranspath` (768) | 768 | GPL-3.0 ◊ | no | [GH](https://github.com/hms-dbmi/CHIEF) · [paper](https://doi.org/10.1038/s41586-024-07894-z) |
 | `tangle` | `uni` (1024) | 512 | CC-BY-NC-ND-4.0 ✦ | no | [GH](https://github.com/mahmoodlab/TANGLE) · [paper](https://arxiv.org/abs/2405.11618) |
 | `gigapath_slide` | `gigapath` (1536) | 768 | Apache-2.0 ⁴ ✪ | yes | [HF](https://huggingface.co/prov-gigapath/prov-gigapath) · [GH](https://github.com/prov-gigapath/prov-gigapath) · [paper](https://doi.org/10.1038/s41586-024-07441-w) |
+| `gigapath_flash_slide` | `gigapath_flash` (384) | 384 | Apache-2.0 ⁴ ✪ | yes | [HF](https://huggingface.co/prov-gigapath/prov-gigapath-flash) · [GH](https://github.com/prov-gigapath/prov-gigapath) · [paper](https://doi.org/10.48550/arXiv.2607.18218) |
 
 TITAN runs on CONCH v1.5 patch features, **not** UNI:
 `raw2features embed slide.ome.zarr out -f conch_v1_5 --patch-size 512 -s titan`.
@@ -110,12 +112,21 @@ re-implementation; the weights are on Google Drive (no HF mirror), fetched by th
 Drive file id and verified against a pinned SHA-256. `tangle` needs the `[tangle]` extra
 (`gdown`).
 
-✪ `gigapath_slide` needs **`flash-attn`** (no SDPA fallback). Prebuilt wheels exist for
+✪ `gigapath_slide` and `gigapath_flash_slide` need **`flash-attn`** (no SDPA fallback).
+Prebuilt wheels exist for
 x86 + torch 2.7-2.9; for torch 2.6 or aarch64 torch ≥2.10, build it from source (needs
-`nvcc`). GPU-validated with a source-built flash-attn (torch 2.12). Where flash-attn isn't installed, `gigapath_slide` is simply unavailable
-(its test skips cleanly), so the rest of the toolkit is unaffected. Needs the
+`nvcc`). GPU-validated with a source-built flash-attn (torch 2.12). Where flash-attn is
+not installed, these slide encoders are unavailable (their tests skip cleanly), so the
+rest of the toolkit is unaffected. Both need the
 `[gigapath_slide]` extra + the gigapath git package + `fairscale` + a flash-attn matching
-your torch/ABI.
+your torch/ABI. The Flash tile encoder also needs the pinned git package to register its
+architecture, but it does not itself use flash-attn:
+
+```bash
+pip install "raw2features[gigapath_slide]"
+pip install --no-deps fairscale "git+https://github.com/prov-gigapath/prov-gigapath.git@9d42a60babe04359978d5ad2eb94e7b3bcf9ca39"
+pip install flash-attn  # slide encoders only; use a wheel/build matching torch + CUDA
+```
 
 ### Legend
 
@@ -148,8 +159,18 @@ your torch/ABI.
 2. Multi-scale training - `virchow2` (2.0 / 1.0 / 0.5 / 0.25 µm/px), `midnight` (2 / 1 /
    0.5 / 0.25 µm/px), the `lunit_*` family (20× = 0.5 **and** 40× = 0.25 µm/px). `0.5` is
    one of several training scales; raw2features defaults to it.
-3. `gigapath` - tiles are 256 px at 0.5 µm/px, centre-cropped to 224 at inference.
-4. `gigapath` - the `LICENSE` file is Apache-2.0; the model card additionally states "any
+3. `gigapath` / `gigapath_flash` - the released whole-slide path extracts
+   non-overlapping 256 px tiles at 0.5 µm/px on a 256 px lattice, then centre-crops
+   each tile to 224 px for the tile encoder. The crop discards a 16 px margin on every
+   side; those margins are not seen by the encoder. Coordinates remain those of the
+   original 256 px tiles. raw2features passes the stored level-0 coordinates unchanged
+   to the paired LongNet and sets its runtime coordinate divisor to the tile's level-0
+   extent. This normalizes raw2features' coordinate units into the tile-index frame of
+   upstream's default 256 px tiling; model construction remains at the upstream 256 px
+   default. Overlapping grids remain supported and every token reaches LongNet, although
+   origins within one full-tile cell share its tile-sized positional encoding.
+4. `gigapath` / `gigapath_flash` - the `LICENSE` file is Apache-2.0; the model cards
+   additionally state "any
    deployed use case … commercial or otherwise … is out of scope" and restricts use to
    research/reproducibility. Both apply - read them and decide.
 5. Larger / different tiles - extract `conch_v1_5` at 512 px @ 20× (resized to 448:

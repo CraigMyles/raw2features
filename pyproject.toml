@@ -97,6 +97,7 @@ feather_conch_v15 = "raw2features.slide_embedders.feather:FeatherSlideEmbedder"
 feather_uni_v2 = "raw2features.slide_embedders.feather:FeatherSlideEmbedder"
 feather_uni = "raw2features.slide_embedders.feather:FeatherSlideEmbedder"
 gigapath_slide = "raw2features.slide_embedders.gigapath_slide:GigapathSlideEmbedder"
+gigapath_flash_slide = "raw2features.slide_embedders.gigapath_slide:GigapathSlideEmbedder"
 chief = "raw2features.slide_embedders.chief:CHIEFSlideEmbedder"
 tangle = "raw2features.slide_embedders.tangle:TangleSlideEmbedder"
 
@@ -158,14 +159,15 @@ prism = ["raw2features[torch,models]", "environs", "sacremoses"]
 # package (post-install, like conch):
 # pip install git+https://github.com/mahmoodlab/MADELEINE.git@419287dc60a57296d959840b893481019c4f0d21
 madeleine = ["raw2features[torch,models]"]
-# Prov-GigaPath slide encoder (LongNet over gigapath 1536-d tile features). Two post-install
-# steps (all --no-deps so they can't repin torch): the gigapath git package provides
-# slide_encoder.create_model and vendors torchscale (the embedder aliases it as top-level
-# `torchscale`, so no separate PyPI torchscale); and flash-attn is a HARD dep with no SDPA
+# Prov-GigaPath original + Flash tile/slide encoders. Two post-install steps (all
+# --no-deps so they can't repin torch): the gigapath git package registers the Flash tile
+# architecture, provides slide_encoder.create_model, and vendors torchscale (the slide
+# embedder aliases it as top-level `torchscale`); flash-attn is a HARD slide dependency
+# with no SDPA
 # fallback, so install a wheel matching your torch/ABI - or source-build it (needs nvcc; ~15-20 min). Prebuilt wheels: x86 + torch 2.7-2.9; for torch 2.6
 # or aarch64 torch >=2.10, build from source. Needs an Ampere+/Blackwell GPU + accepted
 # prov-gigapath/prov-gigapath gate (HF_TOKEN):
-#   pip install --no-deps fairscale "git+https://github.com/prov-gigapath/prov-gigapath.git@3505f87e197d167522be491bb3f18fb5a08ca584"
+#   pip install --no-deps fairscale "git+https://github.com/prov-gigapath/prov-gigapath.git@9d42a60babe04359978d5ad2eb94e7b3bcf9ca39"
 #   pip install flash-attn  (prebuilt wheel matching torch/ABI, or --no-build-isolation source build)
 gigapath_slide = ["raw2features[torch,models]"]
 # CHIEF slide encoder (Wang et al., Nature 2024): gated-attention MIL over CTransPath. Its

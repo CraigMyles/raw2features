@@ -1,11 +1,11 @@
 """``Embedder`` - the foundation-model seam, and the ``ModelSpec`` it consumes.
 
-Design note: the patcher delivers patches at *exactly* the model's
-input size and target MPP, so embedders **normalise only** - they do not apply the
-model card's eval-time Resize/CenterCrop, which would re-scale the patch and
-distort the MPP we worked to hit exactly. The normalisation mean/std are sourced
-from each model's card (recorded in the registry with ``transform_source_url``);
-we never guess them.
+Design note: the patcher delivers patches at the registry's extraction size and
+target MPP. Most embedders then normalize only. A small number of models declare a
+larger extraction tile and a source-backed resize or centre crop to their fixed input;
+that preprocessing is explicit in the model specification and output fingerprint. The
+normalization mean/std are sourced from each model's card (recorded in the registry with
+``transform_source_url``); we never guess them.
 """
 
 from __future__ import annotations
@@ -146,8 +146,16 @@ class ModelSpec:
     doi: str | None = None
     # Resolved strategy contract for a derived multiplex output. Ordinary registry
     # models leave this unset, preserving their v0.1 fingerprints byte-for-byte. Kept
-    # last so adding it does not shift any pre-existing positional constructor fields.
+    # after the pre-existing fields so it does not shift their positional constructors.
     multiplex: dict[str, Any] | None = None
+    # Optional model-specific eval crop. When set, the shared transform first resizes
+    # the square patch to ``round(input_size / crop_pct)`` and then applies
+    # ``crop_mode`` to reach ``input_size``.
+    crop_pct: float | None = None
+    crop_mode: str | None = None
+    # Optional upstream modules that register custom timm architectures. These are
+    # packaged registry values, never user-supplied runtime imports.
+    registration_modules: tuple[str, ...] = ()
 
     @property
     def extract_px(self) -> int:
@@ -202,6 +210,8 @@ class Embedder(ABC):
             self.spec.mean,
             self.spec.std,
             self.spec.interpolation,
+            self.spec.crop_pct,
+            self.spec.crop_mode,
         )
 
     @property

@@ -51,6 +51,9 @@ def load_registry() -> dict[str, ModelSpec]:
             experimental=bool(d.get("experimental", False)),
             notes=d.get("notes", ""),
             doi=d.get("doi"),
+            crop_pct=d.get("crop_pct"),
+            crop_mode=d.get("crop_mode"),
+            registration_modules=tuple(d.get("registration_modules") or ()),
         )
     return specs
 

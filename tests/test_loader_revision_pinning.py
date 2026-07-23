@@ -674,6 +674,49 @@ def test_gigapath_bad_digest_never_reaches_create_model(monkeypatch, tmp_path):
         emb.load(device="cpu")
 
 
+def test_gigapath_flash_slide_uses_the_registry_architecture(monkeypatch, tmp_path):
+    import raw2features.slide_embedders.gigapath_slide as gigapath_slide
+    from raw2features.slide_embedders.model_registry import get_slide_spec
+
+    checkpoint = tmp_path / "slide_encoder.pth"
+    checkpoint.write_bytes(b"pinned GigaPath-Flash slide weights")
+    calls = []
+    downloads = []
+
+    def create_model(*args, **kwargs):
+        calls.append((args, kwargs))
+        return _Model()
+
+    _fake_gigapath_stack(monkeypatch, create_model)
+
+    def file_download(**kwargs):
+        downloads.append(kwargs)
+        return str(checkpoint)
+
+    _fake_hub(monkeypatch, file_download=file_download)
+    emb = gigapath_slide.GigapathSlideEmbedder()
+    emb.spec = replace(
+        get_slide_spec("gigapath_flash_slide"),
+        weights_sha256=_digest(checkpoint.read_bytes()),
+    )
+    emb.load(device="cpu")
+
+    assert calls == [
+        (
+            (str(checkpoint), "gigapath_slide_enc12l384d", 384),
+            {"global_pool": True},
+        )
+    ]
+    assert downloads == [
+        {
+            "repo_id": "prov-gigapath/prov-gigapath-flash",
+            "filename": "slide_encoder.pth",
+            "revision": emb.spec.weights_revision,
+            "cache_dir": None,
+        }
+    ]
+
+
 @pytest.mark.parametrize(
     "model_name", ["quiltnet", "conch", "kronos", "seal_conch", "seal_univ2"]
 )

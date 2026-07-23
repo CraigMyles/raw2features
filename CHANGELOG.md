@@ -3,7 +3,7 @@
 Notable changes to raw2features, newest first. This project follows
 [Semantic Versioning](https://semver.org).
 
-## [0.2.0] - Unreleased
+## [0.2.0] - 2026-07-23
 
 This release extends named-channel multiplex support with a `channelwise` strategy, adds
 several pinned patch and slide encoders, and includes a set of correctness and

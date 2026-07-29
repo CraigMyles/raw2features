@@ -139,19 +139,23 @@ Any token passed on the command line is redacted from stored command provenance.
 | `-m, --model` | `resnet50` | model name; **repeatable** for multi-model (`-f`/`--feature-extractor` are aliases) |
 | `--mpp` | per-model | target µm/px; default = each model's **recommended** MPP (0.5 for most pathology FMs, 1.0 for scale-agnostic). A value overrides the scale while retaining each model's recommended patch size; combine it with `--patch-size` to force one shared grid |
 | `--source-mpp` | source metadata | level-0 source µm/px override for an uncalibrated OME-Zarr whose spatial axes declare no physical unit; normally leave unset |
-| `--patch-size` | per-model | patch side in px; default = each model's recommended size (224 / 448 CONCH / 512 conch_v1_5). A value overrides the size; combine it with `--mpp` to force one shared grid |
+| `--patch-size` | per-model | patch side in px; default = each model's recommended size (224 for most / 256 KRONOS2 / 448 CONCH / 512 conch_v1_5). A value overrides the size; combine it with `--mpp` to force one shared grid |
 | `--step` | = patch | stride in output px; `< patch` gives overlap |
 | `--no-seg` | off | tile the whole slide (skip tissue masking) |
 | `--segmenter` | `otsu` | tissue segmenter to use |
 | `--tissue-threshold` | `0.1` | keep a grid cell if ≥ this fraction is tissue |
 | `--features-dtype` | `float16` | stored feature dtype |
 | `--stain-norm` | off | stain-normalize each patch before embedding (`macenko`\|`reinhard`\|`vahadane`; `vahadane` needs `raw2features[stain]`); **changes the features** - use separate output dirs for with/without-norm experiments |
+| `--multiplex-strategy` | none | adapt an ordinary RGB model to a named-channel multiplex source; built-in: `channelwise` |
+| `--marker` | all source channels | select a multiplex marker; repeat to set the subset and order for a native model or strategy |
+| `--channel-names-file` | source metadata | complete positional `.txt`, `.csv`, or `.tsv` panel when OME channel labels are absent or incomplete |
+| `--kronos2-additional-markers` | none | complete KRONOS2 novel-marker CSV; conditionally loads the pinned BioLinkBERT text encoder |
 | `--config FILE` | none | YAML extraction plan (`extractions:` list of `{model, mpp?, patch_px?}`); supersedes `-m`/`--mpp`/`--patch-size`. The same model may repeat (one grid each - the MPP-ablation case) |
 | `-s, --slide-encoder` | none | slide-level encoder(s) run after patch embedding (e.g. `titan`); reads patch features from the store, no WSI re-read. Repeatable. |
 | `--qc` | none | per-patch QC producer(s) writing `grids/<key>/qc/<tool>/` (e.g. `grandqc`); needs the producer's extra (`raw2features[grandqc]`) |
 | `--qc-stain-norm` | off | normalize the QC input first (`macenko`\|`reinhard`\|`vahadane`; `vahadane` needs `raw2features[stain]`) - for a stain outside the QC model's domain |
 | `--device` | `auto` | `auto` (best of cuda→mps→cpu) \| `cuda` \| `mps` \| `cpu` |
-| `--devices` | = `--device` | opt-in in-process multi-GPU, e.g. `cuda:0,cuda:1`; shards this slide's patches across them and gathers in coord order (output identical to one device). Multi-device execution is not supported with `--multiplex-strategy`; see _In-process multi-GPU_ in §6. |
+| `--devices` | = `--device` | opt-in in-process multi-GPU, e.g. `cuda:0,cuda:1`; shards this slide's patches across them and gathers in coord order (output identical to one device). Patch-parallel multi-device execution is not supported with multiplex strategies or native multiplex models; see _In-process multi-GPU_ in §6. |
 | `--batch-size` | `256` | patches per forward pass (lower it on small GPUs) |
 | `--amp` | `auto` | precision: `auto` (each model's card precision) \| `fp32` \| `bf16` \| `fp16` |
 | `--snap-to-level` | off | read a pyramid level natively (no resample); MPP = that level |
@@ -320,6 +324,75 @@ the same panel-binding and fingerprint contract. Third-party strategies can acce
 JSON object through `--multiplex-params`; the built-in `channelwise` strategy uses its
 explicit options and does not accept additional strategy parameters.
 
+### Native multiplex encoders
+
+Native multiplex encoders consume selected marker channels together rather than
+converting each channel to RGB. Run KRONOS2 after installing its optional stack and
+accepting the gated institutional-access terms:
+
+```bash
+pip install "raw2features[all,kronos2]"
+hf auth login
+
+raw2features embed multiplex_slide.ome.zarr multiplex_out \
+  -m kronos2 --marker CD3 --marker CD8 --marker DAPI
+```
+
+`kronos2` is a marker-aware ViT-B/16 that returns a 768-dimensional CLS vector in fp32.
+Its default patch is 256 pixels. A custom `--patch-size` is accepted only when it is a
+multiple of 16. Marker names are matched exactly after the model's
+separator-insensitive normalization; KRONOSv1 aliases and compound-name fallbacks are
+not applied. `--marker` selects physical channels and fixes their order before
+completion checks. The full source panel, selected indices, model-resolved names, and
+order remain in provenance and the output fingerprint.
+
+The released vocabulary contains DAPI and DRAQ5 but not Hoechst or DNA1/DNA2 labels.
+Those common CODEX nuclear stains are not silently aliased. Exclude one from the
+encoder with an explicit `--marker` list while still allowing nuclear segmentation to
+use it, or register it through `--kronos2-additional-markers` with dataset-specific
+statistics. When DAPI is absent and DRAQ5 is selected, raw2features follows the upstream
+example by passing DRAQ5 as `preferred_dapi`, which applies the model's DAPI
+normalization statistics; the recorded policy is not configurable in v0.2.1.
+
+Upstream recommends batches of at least eight for reproducibility. raw2features uses
+fixed eight-sample forward microbatches and pads a shorter final microbatch before
+discarding the padded outputs. This runtime contract is recorded. The global
+`--batch-size` may be left unchanged; it does not override this internal cap. Bitwise
+equality across different hardware is not promised. The `[kronos2]` extra installs the
+authors' pinned x86-64 Linux reference stack and is validated with Python 3.12. The
+pinned Torch release does not support Python 3.14. `--compile` is not supported for
+KRONOS2 in v0.2.1; use the validated eager path.
+
+The released KRONOS2 repository includes 288 usable marker-metadata entries, 268 marked
+as pretraining markers, and stores their text vectors in the checkpoint. Normal
+inference therefore never downloads BioLinkBERT. To register a marker outside that
+released metadata, supply a complete CSV:
+
+```bash
+raw2features embed multiplex_slide.ome.zarr multiplex_out \
+  -m kronos2 --marker NovelMarker --marker DAPI \
+  --kronos2-additional-markers additional_markers.csv
+```
+
+Every CSV row requires `marker_name`, `marker_full_name`, `compartment`, `family`,
+`family_desc`, `mean`, and `std`. The mean and standard deviation must be finite, with a
+positive standard deviation. `compartment` and `family` must exactly reuse categories
+from KRONOS2's pinned marker metadata, and a novel name must not collide with that
+vocabulary under the model's separator-insensitive matching.
+
+Statistics are supplied in the scaled intensity domain consumed by KRONOS2: uint8
+values divided by 255, wider unsigned integers divided by 65535, or floating values
+divided by 400. Signed-integer sources are rejected. raw2features does not estimate
+these dataset statistics. The option loads the separately pinned BioLinkBERT model,
+about 1.33 GB, only for novel-marker text vectors. The canonical CSV content, intensity
+statistics, BioLinkBERT revision, and text-encoding recipe are included in the model
+fingerprint.
+
+Run native multiplex and ordinary RGB encoders in separate commands so each receives the
+correct source-channel representation. An additive second command can still append its
+features to an existing matching grid. Native multiplex patch execution uses one device
+per slide; `embed-many --devices` can distribute different slides across devices.
+
 ### Segmentation
 
 The default `otsu` segmenter runs Otsu-on-saturation + morphology on a low-res
@@ -345,9 +418,9 @@ devices in one process; it never changes the embeddings (it is excluded from the
 config hash), so a store built with it is identical to a single-device one and
 resumes interchangeably.
 
-Multi-device `--devices` execution does not currently support `--multiplex-strategy`.
-Strategy-derived multiplex runs use one device per slide; prefer `--device` for that
-selection.
+Multi-device patch-parallel `embed --devices` execution does not currently support
+multiplex strategies or native multiplex models. A multiplex run uses one device per
+slide. `embed-many --devices` may still distribute distinct slides across devices.
 
 - **`embed` (one slide) - patch-parallel, latency mode.** `embed … --devices
   cuda:0,cuda:1` shards the slide's patches into contiguous blocks, embeds each
@@ -434,9 +507,11 @@ reader, models (order-independent), segmenter / --no-seg, --mpp, --patch-size,
 --stain-norm, --snap-to-level, --mpp-tolerance, --allow-upsample, --amp
 ```
 
-For multiplex requests, the hash also covers the strategy and its parameters, ordered
-marker selection, normalization recipe and pyramid-level limit, aggregation, the resolved
-positional channel names and the resolved physical nuclear-channel indices when masking
+For multiplex requests, the hash also covers the ordered physical marker selection and
+resolved positional channel names. Strategy-derived requests additionally cover their
+normalization recipe, pyramid-level limit, aggregation, and other strategy parameters.
+Native model parameters, including KRONOS2 additional-marker metadata, are covered when
+present. The resolved physical nuclear-channel indices enter grid identity when masking
 is enabled. The `--channel-names-file` path and serialization are not hashed; their
 parsed effective names are.
 

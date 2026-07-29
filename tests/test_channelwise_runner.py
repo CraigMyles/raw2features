@@ -643,4 +643,4 @@ def test_channelwise_rejects_learned_slide_encoder_before_embedding(
 )
 def test_brightfield_rejects_orphaned_multiplex_options(kwargs):
     with pytest.raises(ValueError, match="require multiplex_strategy"):
-        RunConfig(models=["mock"], **kwargs)
+        RunConfig(models=["resnet50"], **kwargs)

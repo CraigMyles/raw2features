@@ -15,16 +15,15 @@ entry.
 | stage | brightfield | `channelwise` RGB strategy | native multiplex encoder |
 |---|---|---|---|
 | reader | `read_region` → RGB `[H,W,3]` uint8 | `read_region_channels` → native `[H,W,C]` | `read_region_channels` → native `[H,W,C]` |
-| channel identity | none | selected positional names | positional names resolved by the model |
+| channel identity | none | selected positional names | selected positional names resolved by the model |
 | segmentation | `otsu`, `canny`, … | one nuclear channel, a recognized same-stain group, or `--no-seg` | one nuclear channel, a recognized same-stain group, or `--no-seg` |
 | embedding | one RGB input per patch | one RGB input per selected marker, then mean/concat | model-specific marker stack |
 
-Panel binding happens before receipt or store completion checks. Native multiplex
-fingerprints bind the complete effective positional panel; `channelwise` fingerprints
-bind the selected physical channel identities and order (all channels when default
-selection is used). The full effective panel remains in source/panel provenance. When
-nuclear masking is enabled, the resolved physical nuclear-channel index or same-stain
-index group is also part of grid identity.
+Panel binding happens before receipt or store completion checks. Native multiplex and
+`channelwise` fingerprints bind the selected physical channel identities and order; the
+complete effective panel remains in source/panel provenance. When nuclear masking is
+enabled, the resolved physical nuclear-channel index or same-stain index group is also
+part of grid identity.
 
 ## Channel metadata
 
@@ -73,18 +72,49 @@ full CLI contract are documented in [usage.md](usage.md#rgb-encoders-on-named-ch
 ## Native multiplex encoders
 
 Native multiplex models use the same positional-panel plumbing but consume the marker
-stack directly. The current built-in example, `kronos`, maps effective source names to
-its pinned marker vocabulary, records the kept/dropped physical mapping, and binds the
-complete effective panel into its output fingerprint before resume. Installation and
-model-specific license/access details are in [MODELS.md](MODELS.md) and
-[MODEL_LICENSES.md](MODEL_LICENSES.md).
+stack directly. `kronos` and `kronos2` map effective source names to their pinned marker
+metadata, record the physical mapping, and bind the selected indices and order into the
+output fingerprint before resume. Repeated `--marker` options select and order a subset;
+without them, the source channels are offered to the model in physical order.
+Installation and model-specific license/access details are in
+[MODELS.md](MODELS.md) and [MODEL_LICENSES.md](MODEL_LICENSES.md).
 
 ```bash
 raw2features embed SLIDE.ome.zarr OUT -m kronos --mpp 0.5
+raw2features embed SLIDE.ome.zarr OUT -m kronos2 \
+  --marker CD3 --marker CD8 --marker DAPI
 ```
 
 Use `--channel-names-file` when the source lacks a complete panel, or `--no-seg` when the
 entire image should be tiled without a nuclear mask.
+
+KRONOS2 performs exact separator-insensitive marker matching and does not reuse
+KRONOSv1's biological aliases. Its released metadata contains 288 usable entries, of
+which 268 are marked as pretraining markers. Their text vectors are already stored in
+the checkpoint, so BioLinkBERT is neither downloaded nor run.
+
+The released KRONOS2 vocabulary includes DAPI and DRAQ5, but not Hoechst or
+DNA1/DNA2 labels found in many CODEX panels. raw2features does not silently map those
+stains to DAPI. A Hoechst channel may be excluded from the encoder with an explicit
+`--marker` list while still being used by nuclear segmentation, which always sees the
+complete source panel. To include it in the KRONOS2 marker stack, register it as a novel
+marker with statistics computed for the relevant dataset.
+
+For a marker outside the released metadata, pass a complete CSV through
+`--kronos2-additional-markers`. Each row requires `marker_name`, `marker_full_name`,
+`compartment`, `family`, `family_desc`, `mean`, and `std`. The statistics describe the
+marker after KRONOS2's published dtype scaling (uint8 / 255, wider unsigned integers /
+65535, or floating values / 400) and are supplied by the user; signed integers are
+rejected and raw2features does not infer cohort statistics. Novel names must not collide
+with the pinned vocabulary, while `compartment` and `family` must reuse its categories
+exactly. This optional path downloads the separately pinned BioLinkBERT model to create
+the marker text vector. The CSV content, statistics, and text-model identity become part
+of the output fingerprint.
+
+Following the published inference example, raw2features passes DRAQ5 as
+`preferred_dapi` when DAPI is absent. The upstream preprocessor therefore applies its
+DAPI normalization statistics to that selected DRAQ5 channel. This policy is recorded
+in provenance and is not configurable in v0.2.1.
 
 ## Extending multiplex support
 

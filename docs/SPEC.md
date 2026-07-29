@@ -17,7 +17,7 @@ The keywords MUST, SHOULD and MAY are used as in RFC 2119.
 ## Stability
 
 raw2features is alpha (`0.x`), but the package release and store schema are versioned
-independently. Package v0.2.0 continues to write `schema_version: "0.1"` because this
+independently. Package v0.2.x continues to write `schema_version: "0.1"` because this
 release does not change the established read contract or layout. To let readers depend on
 the format now, the stable parts are scoped explicitly:
 

@@ -1,6 +1,6 @@
 [project]
 name = "raw2features"
-version = "0.2.0"
+version = "0.2.1"
 description = "Read OME-Zarr whole-slide images and emit patch- and slide-level foundation-model embeddings - storage backend and model independently swappable."
 readme = "README.md"
 authors = [{ name = "Craig Myles", email = "me@craig.im" }]
@@ -74,6 +74,7 @@ conch_v1_5 = "raw2features.embedders.conch_v1_5_embedder:ConchV1_5Embedder"
 transformers = "raw2features.embedders.transformers_embedder:TransformersEmbedder"
 dino_teacher = "raw2features.embedders.dino_teacher_embedder:DinoTeacherEmbedder"
 kronos = "raw2features.embedders.kronos_embedder:KronosEmbedder"
+kronos2 = "raw2features.embedders.kronos2_embedder:Kronos2Embedder"
 musk = "raw2features.embedders.musk_embedder:MuskEmbedder"
 open_clip = "raw2features.embedders.open_clip_embedder:OpenClipEmbedder"
 clip_hf = "raw2features.embedders.clip_hf_embedder:ClipHFEmbedder"
@@ -102,9 +103,9 @@ chief = "raw2features.slide_embedders.chief:CHIEFSlideEmbedder"
 tangle = "raw2features.slide_embedders.tangle:TangleSlideEmbedder"
 
 [project.optional-dependencies]
-# Convenience bundle: the full stack (OME-Zarr reads + segmentation + torch +
-# models) in one install - `pip install "raw2features[all]"`. Excludes the git-package
-# encoders (conch/kronos) and the export-only extras (spatialdata/h5), which stay opt-in.
+# Convenience bundle: the general OME-Zarr, image, torch, and model stack in one install
+# - `pip install "raw2features[all]"`. Special/gated model stacks (including
+# conch/kronos/kronos2) and export-only extras (spatialdata/h5) stay opt-in.
 all = ["raw2features[zarr,image,torch,models,stain]"]
 # OME-Zarr reading: ngff-zarr/ome-zarr for metadata, zarr-python 3 for hot reads.
 zarr = ["zarr>=3.1", "numcodecs>=0.15", "ngff-zarr>=0.13", "ome-zarr>=0.10", "fsspec[http]>=2024.0"]
@@ -139,6 +140,23 @@ hibou = ["transformers<5"]
 # KRONOS multiplex (spatial proteomics): CODEX TIFF-conversion deps (the v1 git package
 # is installed separately - see above).
 kronos = ["raw2features[torch,models]", "tifffile>=2024", "imagecodecs"]
+# KRONOS2 is distributed as a gated Transformers custom-code snapshot. Its authors
+# publish this exact stack for reproducible inference, so the model-specific extra
+# deliberately pins it rather than silently substituting newer attention kernels.
+# xFormers is part of that reference path on Linux; the upstream code has a slower,
+# more memory-intensive fallback elsewhere. BioLinkBERT is not loaded for published
+# markers. The reference stack is validated on Python 3.12; its pinned Torch release
+# does not provide Python 3.14 wheels.
+kronos2 = [
+    "torch==2.6.0",
+    "xformers==0.0.29.post3; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "transformers==4.56.0",
+    "timm==1.0.19",
+    "huggingface-hub>=0.28.1,<1.0",
+    "omegaconf>=2.3",
+    "pandas>=2.2.2",
+    "safetensors>=0.4",
+]
 # MUSK vision-language (BEiT3) image tower: its runtime imports (the git package itself
 # declares no deps, so it can't downgrade torch/timm; install it separately - see above).
 musk = ["raw2features[torch,models]", "fairscale", "open_clip_torch"]

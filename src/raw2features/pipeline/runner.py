@@ -106,6 +106,77 @@ def _models_need_nuclear(models: list[str], specs: dict | None = None) -> bool:
     return _registered_models_need_nuclear(missing)
 
 
+def _native_multiplex_model_names(
+    models: list[str], specs: dict | None = None
+) -> list[str]:
+    """Return requested native multiplex model names in request order."""
+
+    provided = specs or {}
+    native: list[str] = []
+    for name in models:
+        spec = provided.get(name)
+        if spec is None:
+            try:
+                spec = get_spec(name)
+            except KeyError:
+                continue
+        if getattr(spec, "modality", "brightfield") == "multiplex":
+            native.append(name)
+    return native
+
+
+def _validate_native_patch_geometry(
+    cfg: RunConfig, specs: dict | None = None
+) -> None:
+    """Reject a native model's unsupported patch geometry before store mutation."""
+
+    provided = specs or {}
+    for name in cfg.models:
+        spec = provided.get(name)
+        if spec is None:
+            try:
+                spec = get_spec(name)
+            except KeyError:
+                continue
+        if getattr(spec, "family", "") != "kronos2":
+            continue
+        from raw2features.embedders.kronos2_embedder import KRONOS2_FORWARD_CONTRACT
+
+        stride = int(KRONOS2_FORWARD_CONTRACT["upstream_patch_stride_px"])
+        if cfg.patch_px % stride:
+            raise ValueError(
+                f"KRONOS2 patch size must be divisible by {stride}; "
+                f"received {cfg.patch_px}"
+            )
+
+
+def _reject_mixed_native_and_brightfield_models(
+    models: list[str], specs: dict | None = None
+) -> None:
+    """Reject one request that would feed the same decoded patches to both modes."""
+
+    provided = specs or {}
+    modalities: dict[str, str] = {}
+    for name in models:
+        spec = provided.get(name)
+        if spec is None:
+            try:
+                spec = get_spec(name)
+            except KeyError:
+                continue
+        modalities[name] = getattr(spec, "modality", "brightfield")
+    native = [name for name, modality in modalities.items() if modality == "multiplex"]
+    brightfield = [
+        name for name, modality in modalities.items() if modality != "multiplex"
+    ]
+    if native and brightfield:
+        raise ValueError(
+            "native multiplex and brightfield patch encoders cannot be combined in "
+            f"one request (native={native}, brightfield={brightfield}). Run them "
+            "separately so each model receives the correct source-channel view."
+        )
+
+
 @dataclass
 class RunConfig:
     """Everything needed to embed one slide. Content-affecting fields feed the
@@ -200,6 +271,14 @@ class RunConfig:
     # runtime migration evidence only: effective names above determine current output,
     # while the original list lets us prove whether a v0.1 selector used the same index.
     resolved_original_channel_names: list[str] = field(default_factory=list)
+    # Ordered physical source channels selected for native multiplex embedders. Empty
+    # until source resolution; each record is {source_index, source_name}. The full
+    # resolved panel remains available for segmentation and provenance.
+    resolved_native_marker_selection: list[dict[str, Any]] = field(default_factory=list)
+    # Namespaced, finite JSON configuration for native multiplex model adapters.
+    # Example: {"kronos2": {...}}. No built-in option is silently accepted: each
+    # embedder's bind_multiplex_panel hook validates its own namespace.
+    native_multiplex_params: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         """Reject invalid geometry before hashing, model loading, or store writes."""
@@ -210,6 +289,32 @@ class RunConfig:
             self.step_px = _positive_int(self.step_px, field="step_px")
         if self.source_mpp is not None:
             self.source_mpp = _positive_float(self.source_mpp, field="source_mpp")
+        if self.amp in {"bf16", "fp16"}:
+            fixed_fp32 = []
+            for model_name in self.models:
+                try:
+                    if get_spec(model_name).family == "kronos2":
+                        fixed_fp32.append(model_name)
+                except KeyError:
+                    continue
+            if fixed_fp32:
+                raise ValueError(
+                    "KRONOS2 follows its published fp32 inference path and does not "
+                    f"accept --amp {self.amp}; use --amp auto or --amp fp32"
+                )
+        if self.compile:
+            unvalidated_compile = []
+            for model_name in self.models:
+                try:
+                    if get_spec(model_name).family == "kronos2":
+                        unvalidated_compile.append(model_name)
+                except KeyError:
+                    continue
+            if unvalidated_compile:
+                raise ValueError(
+                    "KRONOS2 does not support --compile in raw2features v0.2.1; "
+                    "use the validated eager reference path"
+                )
         if self.multiplex_strategy is not None:
             self.multiplex_strategy = self.multiplex_strategy.strip().lower() or None
         if not self.no_seg and (
@@ -221,6 +326,8 @@ class RunConfig:
             # Otsu brightfield grid whose coordinates differ.
             self.segmenter = "nuclear"
         self.multiplex_markers = [str(name).strip() for name in self.multiplex_markers]
+        if any(not name for name in self.multiplex_markers):
+            raise ValueError("multiplex marker names must be non-empty")
         self.channel_names_override = [
             str(name).strip() for name in self.channel_names_override
         ]
@@ -233,6 +340,49 @@ class RunConfig:
             "" if name is None else str(name)
             for name in self.resolved_original_channel_names
         ]
+        if not isinstance(self.resolved_native_marker_selection, list):
+            raise ValueError("resolved_native_marker_selection must be a list")
+        resolved_selection: list[dict[str, Any]] = []
+        seen_selected_indices: set[int] = set()
+        for record in self.resolved_native_marker_selection:
+            if not isinstance(record, dict) or set(record) != {
+                "source_index",
+                "source_name",
+            }:
+                raise ValueError(
+                    "resolved_native_marker_selection entries must contain exactly "
+                    "source_index and source_name"
+                )
+            index = record["source_index"]
+            name = record["source_name"]
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or index < 0
+                or not isinstance(name, str)
+            ):
+                raise ValueError(
+                    "resolved_native_marker_selection entries require a non-negative "
+                    "integer source_index and string source_name"
+                )
+            if index in seen_selected_indices:
+                raise ValueError(
+                    "resolved_native_marker_selection source indices must be unique"
+                )
+            seen_selected_indices.add(index)
+            resolved_selection.append({"source_index": index, "source_name": name})
+        self.resolved_native_marker_selection = resolved_selection
+        if self.resolved_channel_names:
+            for record in self.resolved_native_marker_selection:
+                index = record["source_index"]
+                if (
+                    index >= len(self.resolved_channel_names)
+                    or self.resolved_channel_names[index] != record["source_name"]
+                ):
+                    raise ValueError(
+                        "resolved_native_marker_selection does not match "
+                        "resolved_channel_names"
+                    )
         self.resolved_nuclear_channel_indices = list(
             self.resolved_nuclear_channel_indices
         )
@@ -265,10 +415,28 @@ class RunConfig:
             raise ValueError(
                 "multiplex_strategy_params must contain only finite JSON values"
             ) from exc
+        if not isinstance(self.native_multiplex_params, dict) or any(
+            not isinstance(key, str) or not isinstance(value, dict)
+            for key, value in self.native_multiplex_params.items()
+        ):
+            raise ValueError(
+                "native_multiplex_params must be a mapping from model names to "
+                "parameter mappings"
+            )
+        try:
+            encoded_native_params = json.dumps(
+                self.native_multiplex_params,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            self.native_multiplex_params = json.loads(encoded_native_params)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "native_multiplex_params must contain only finite JSON values"
+            ) from exc
         if self.multiplex_strategy is None:
-            orphaned = bool(
-                self.multiplex_markers or self.multiplex_strategy_params
-            ) or any(
+            strategy_orphaned = bool(self.multiplex_strategy_params) or any(
                 (
                     str(self.multiplex_normalization).lower() != "percentile",
                     self.multiplex_percentile_low != 1.0,
@@ -277,17 +445,35 @@ class RunConfig:
                     self.multiplex_normalization_max_side_px != 2048,
                 )
             )
-            if orphaned:
+            if strategy_orphaned:
                 raise ValueError(
-                    "multiplex marker/normalization/aggregation options require "
+                    "multiplex normalization/aggregation/strategy options require "
                     "multiplex_strategy (for example 'channelwise')"
                 )
+            # Preserve the ordinary-model typo guard while allowing an unknown name
+            # to be supplied later as an injected native ModelSpec. The definitive
+            # check happens in resolve_multiplex_source_config, where those external
+            # specifications are available.
+            if self.multiplex_markers or self.native_multiplex_params:
+                registered_modalities: list[str] = []
+                has_unknown = False
+                for model_name in self.models:
+                    try:
+                        registered_modalities.append(get_spec(model_name).modality)
+                    except KeyError:
+                        has_unknown = True
+                if (
+                    not has_unknown
+                    and "multiplex" not in registered_modalities
+                ):
+                    raise ValueError(
+                        "multiplex marker/native-model options require "
+                        "multiplex_strategy or a native multiplex model"
+                    )
             # Ordinary brightfield requests deliberately do not validate or hash the
             # dormant strategy defaults. Their historical identity and execution path
             # remain byte-for-byte unchanged.
             return
-        if any(not name for name in self.multiplex_markers):
-            raise ValueError("multiplex marker names must be non-empty")
         self.multiplex_normalization = str(self.multiplex_normalization).lower()
         if self.multiplex_normalization not in {"percentile", "dtype"}:
             raise ValueError(
@@ -334,6 +520,8 @@ class RunConfig:
         "multiplex_strategy_params",
         "multiplex_normalization_max_side_px",
         "resolved_channel_names",
+        "resolved_native_marker_selection",
+        "native_multiplex_params",
         "resolved_nuclear_channel_indices",
         "snap_to_level",
         "mpp_tolerance",
@@ -366,6 +554,7 @@ class RunConfig:
         include_models: bool,
         include_amp: bool = True,
         models: list[str] | None = None,
+        amp_override: str | None = None,
         segmenter_override: str | None = None,
     ) -> str:
         # Build the hashed payload from _CONTENT_FIELDS, applying the few value
@@ -373,6 +562,27 @@ class RunConfig:
         # irrelevant -- the bytes are identical to listing the dict by hand.
         payload: dict = {}
         for name in self._CONTENT_FIELDS:
+            if name == "resolved_native_marker_selection":
+                # The all-channel default is already represented by the complete
+                # resolved panel and must not perturb historical KRONOSv1 identities.
+                if (
+                    not include_models
+                    or not self.multiplex_markers
+                    or not self.resolved_native_marker_selection
+                ):
+                    continue
+            if name == "native_multiplex_params":
+                if not include_models or not self.native_multiplex_params:
+                    continue
+                selected_models = set(models if models is not None else self.models)
+                value = {
+                    model: params
+                    for model, params in self.native_multiplex_params.items()
+                    if model in selected_models
+                }
+                if value:
+                    payload[name] = value
+                continue
             if name == "resolved_channel_names":
                 # The complete panel changes model outputs/receipts, but only the
                 # resolved nuclear position below is a geometry input.
@@ -414,7 +624,12 @@ class RunConfig:
                 payload[name] = sorted(models if models is not None else self.models)
                 continue
             value = getattr(self, name)
-            if name == "segmenter":
+            if name == "amp" and amp_override is not None:
+                # Legacy-grid discovery enumerates old AMP-bearing identities even
+                # for current loaders that accept only fp32. This is a migration hash
+                # input, not a runnable request, so do not construct a RunConfig for it.
+                value = amp_override
+            elif name == "segmenter":
                 value = (
                     "none"
                     if self.no_seg
@@ -470,17 +685,20 @@ class RunConfig:
         existing compatibility families.
         """
 
+        legacy_base = replace(
+            self,
+            resolved_channel_names=[],
+            resolved_nuclear_channel_indices=[],
+        )
         amps = (self.amp, "auto", "fp32", "bf16", "fp16")
-        configs = [
-            replace(
-                self,
-                amp=value,
-                resolved_channel_names=[],
-                resolved_nuclear_channel_indices=[],
+        hashes = [
+            legacy_base._hash_payload(
+                include_models=False,
+                include_amp=True,
+                amp_override=value,
             )
             for value in amps
         ]
-        hashes = [config.legacy_grid_hash() for config in configs]
         if self._is_native_multiplex_grid_request() and not (
             self._v01_nuclear_selector_matches_current()
         ):
@@ -509,13 +727,17 @@ class RunConfig:
             self._v01_nuclear_selector_matches_current()
         ):
             return {}
+        legacy_base = replace(
+            self,
+            resolved_channel_names=[],
+            resolved_nuclear_channel_indices=[],
+        )
         nuclear_hashes = [
-            replace(
-                self,
-                amp=value,
-                resolved_channel_names=[],
-                resolved_nuclear_channel_indices=[],
-            ).legacy_grid_hash()
+            legacy_base._hash_payload(
+                include_models=False,
+                include_amp=True,
+                amp_override=value,
+            )
             for value in (self.amp, "auto", "fp32", "bf16", "fp16")
         ]
         return {
@@ -562,15 +784,6 @@ class RunConfig:
         ):
             return ()
         amps = (self.amp, "auto", "fp32", "bf16", "fp16")
-        configs = [
-            replace(
-                self,
-                amp=value,
-                resolved_channel_names=[],
-                resolved_nuclear_channel_indices=[],
-            )
-            for value in amps
-        ]
         legacy_base = replace(
             self,
             resolved_channel_names=[],
@@ -584,12 +797,13 @@ class RunConfig:
             )
         ]
         hashes.extend(
-            config._hash_payload(
+            legacy_base._hash_payload(
                 include_models=False,
                 include_amp=True,
+                amp_override=value,
                 segmenter_override="otsu",
             )
-            for config in configs
+            for value in amps
         )
         return tuple(dict.fromkeys(hashes))
 
@@ -681,7 +895,26 @@ def resolve_multiplex_source_config(
     absent or blank OME metadata, but the reader rejects conflicts with existing labels.
     """
 
-    native_multiplex = _models_need_nuclear(cfg.models, model_specs)
+    if cfg.multiplex_strategy is None:
+        _reject_mixed_native_and_brightfield_models(cfg.models, model_specs)
+    native_models = _native_multiplex_model_names(cfg.models, model_specs)
+    native_multiplex = bool(native_models)
+    unknown_param_namespaces = sorted(
+        set(cfg.native_multiplex_params) - set(native_models)
+    )
+    if unknown_param_namespaces:
+        raise ValueError(
+            "native multiplex parameters were supplied for models that are not "
+            f"requested native multiplex encoders: {unknown_param_namespaces}"
+        )
+    if (
+        cfg.multiplex_markers
+        and cfg.multiplex_strategy is None
+        and not native_multiplex
+    ):
+        raise ValueError(
+            "--marker requires a native multiplex model or --multiplex-strategy"
+        )
     if (
         cfg.channel_names_override
         and cfg.multiplex_strategy is None
@@ -730,6 +963,18 @@ def resolve_multiplex_source_config(
             raise ValueError(
                 "source OME channel metadata changed after multiplex request resolution"
             )
+        native_selection: list[dict[str, Any]] = []
+        if native_multiplex:
+            from raw2features.multiplex.panel import resolve_marker_selection
+
+            native_selection = resolve_marker_selection(names, cfg.multiplex_markers)
+            if (
+                cfg.resolved_native_marker_selection
+                and native_selection != cfg.resolved_native_marker_selection
+            ):
+                raise ValueError(
+                    "source marker selection changed after multiplex request resolution"
+                )
         nuclear_indices: list[int] = []
         if not cfg.no_seg:
             from raw2features.segmenters.nuclear import NuclearSegmenter
@@ -740,6 +985,7 @@ def resolve_multiplex_source_config(
     return replace(
         cfg,
         resolved_channel_names=names,
+        resolved_native_marker_selection=native_selection,
         resolved_nuclear_channel_indices=nuclear_indices,
         resolved_original_channel_names=original_names,
     )
@@ -1093,6 +1339,7 @@ def run_slide(
         cfg,
         model_specs=injected_specs,
     )
+    _validate_native_patch_geometry(cfg, injected_specs)
 
     import torch  # noqa: F401 - imported so a torch-less env fails clearly, here
 
@@ -1298,7 +1545,12 @@ def run_slide(
                 )
             run_contracts = {name: model_contracts[name] for name in models_to_do}
             _assert_loaded_model_contracts(
-                run_embedders, run_contracts, cfg.resolved_channel_names
+                run_embedders,
+                run_contracts,
+                cfg.resolved_channel_names,
+                selected_channels=cfg.resolved_native_marker_selection,
+                explicit_selection=bool(cfg.multiplex_markers),
+                native_model_params=cfg.native_multiplex_params,
             )
             # Modality of this run: a marker stack routes the
             # nuclear segmenter + N-channel reads; brightfield is the RGB default.
@@ -1343,7 +1595,13 @@ def run_slide(
                 if multiplex:
                     for e in run_embedders:
                         panel_meta[e.name] = redact_metadata_credentials(
-                            e.set_panel(reader.channel_names)
+                            e.bind_multiplex_panel(
+                                list(reader.channel_names or []),
+                                selected_channels=cfg.resolved_native_marker_selection,
+                                model_params=cfg.native_multiplex_params.get(
+                                    e.name, {}
+                                ),
+                            )
                         )
                 if append:
                     (
@@ -1776,7 +2034,13 @@ def resolve_run(
             models=list(group.models),
             target_mpp=group.mpp,
             patch_px=group.patch_px,
+            native_multiplex_params={
+                model: cfg.native_multiplex_params[model]
+                for model in group.models
+                if model in cfg.native_multiplex_params
+            },
         )
+        _validate_native_patch_geometry(group_cfg, model_specs)
         if not group_cfg.no_seg and _models_need_nuclear(
             list(group.models), model_specs
         ):
@@ -1881,6 +2145,9 @@ def embed_slide(
             cfg.models,
             model_specs,
             cfg.resolved_channel_names,
+            selected_channels=cfg.resolved_native_marker_selection,
+            explicit_selection=bool(cfg.multiplex_markers),
+            native_model_params=cfg.native_multiplex_params,
         )
     expected_grid_models = {
         group_cfg.grid_hash(): list(group_cfg.models) for group_cfg in group_cfgs
@@ -2071,6 +2338,9 @@ def expected_model_contracts(
         cfg.models,
         specs,
         cfg.resolved_channel_names,
+        selected_channels=cfg.resolved_native_marker_selection,
+        explicit_selection=bool(cfg.multiplex_markers),
+        native_model_params=cfg.native_multiplex_params,
     )
 
 
@@ -2079,6 +2349,10 @@ def _bind_native_multiplex_panel_contracts(
     models: list[str],
     specs: dict,
     channel_names: list[str],
+    *,
+    selected_channels: list[dict[str, Any]] | None = None,
+    explicit_selection: bool = False,
+    native_model_params: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict]:
     """Bind a positional source panel into every native multiplex fingerprint.
 
@@ -2090,6 +2364,13 @@ def _bind_native_multiplex_panel_contracts(
 
     if not channel_names:
         return dict(contracts)
+    selection = list(selected_channels or [])
+    if not selection:
+        selection = [
+            {"source_index": index, "source_name": name}
+            for index, name in enumerate(channel_names)
+        ]
+    params_by_model = dict(native_model_params or {})
     bound = {name: dict(contract) for name, contract in contracts.items()}
     for name in models:
         spec = specs.get(name) or get_spec(name)
@@ -2100,12 +2381,33 @@ def _bind_native_multiplex_panel_contracts(
             continue
         fingerprint = bound[name]["output_fingerprint"]
         payload = json.loads(json.dumps(fingerprint["payload"]))
-        payload["multiplex_panel"] = {
-            "binding_contract_version": 1,
-            "channel_axis": "c",
-            "physical_channel_count": len(channel_names),
-            "effective_channel_names": list(channel_names),
-        }
+        model_params = params_by_model.get(name, {})
+        use_v2 = (
+            getattr(spec, "family", "") == "kronos2"
+            or explicit_selection
+            or bool(model_params)
+        )
+        if use_v2:
+            payload["multiplex_panel"] = {
+                "binding_contract_version": 2,
+                "channel_axis": "c",
+                "physical_channel_count": len(channel_names),
+                "effective_channel_names": list(channel_names),
+                "selection": {
+                    "mode": "explicit" if explicit_selection else "all",
+                    "channels": json.loads(json.dumps(selection)),
+                },
+                "model_params": json.loads(json.dumps(model_params)),
+            }
+        else:
+            # Preserve the released KRONOSv1 all-channel fingerprint exactly. Its
+            # historical contract already binds the complete positional source panel.
+            payload["multiplex_panel"] = {
+                "binding_contract_version": 1,
+                "channel_axis": "c",
+                "physical_channel_count": len(channel_names),
+                "effective_channel_names": list(channel_names),
+            }
         bound[name]["output_fingerprint"] = make_output_fingerprint(payload)
     return bound
 
@@ -2182,7 +2484,14 @@ def _probe_factory_contracts(
     probe = factory(worker_devices[0])
     try:
         contracts = _expected_contracts_for_devices(cfg, probe, worker_devices)
-        _assert_loaded_model_contracts(probe, contracts, cfg.resolved_channel_names)
+        _assert_loaded_model_contracts(
+            probe,
+            contracts,
+            cfg.resolved_channel_names,
+            selected_channels=cfg.resolved_native_marker_selection,
+            explicit_selection=bool(cfg.multiplex_markers),
+            native_model_params=cfg.native_multiplex_params,
+        )
         specs = {embedder.name: embedder.spec for embedder in probe}
         return specs, contracts
     finally:
@@ -2204,7 +2513,12 @@ def _amp_label(dtype) -> str:
 
 
 def _loaded_model_contracts(
-    embedders: list, channel_names: list[str] | None = None
+    embedders: list,
+    channel_names: list[str] | None = None,
+    *,
+    selected_channels: list[dict[str, Any]] | None = None,
+    explicit_selection: bool = False,
+    native_model_params: dict[str, dict[str, Any]] | None = None,
 ) -> dict[str, dict]:
     """Derive contracts from loaded specs and their effective execution precision."""
 
@@ -2225,6 +2539,9 @@ def _loaded_model_contracts(
         [embedder.name for embedder in embedders],
         {embedder.name: embedder.spec for embedder in embedders},
         list(channel_names or []),
+        selected_channels=selected_channels,
+        explicit_selection=explicit_selection,
+        native_model_params=native_model_params,
     )
 
 
@@ -2232,10 +2549,20 @@ def _assert_loaded_model_contracts(
     embedders: list,
     expected: dict[str, dict],
     channel_names: list[str] | None = None,
+    *,
+    selected_channels: list[dict[str, Any]] | None = None,
+    explicit_selection: bool = False,
+    native_model_params: dict[str, dict[str, Any]] | None = None,
 ) -> None:
     """Fail before store mutation if loaded model copies differ from provenance."""
 
-    actual = _loaded_model_contracts(embedders, channel_names)
+    actual = _loaded_model_contracts(
+        embedders,
+        channel_names,
+        selected_channels=selected_channels,
+        explicit_selection=explicit_selection,
+        native_model_params=native_model_params,
+    )
     if set(actual) != set(expected):
         missing = sorted(set(expected) - set(actual))
         extra = sorted(set(actual) - set(expected))
@@ -2579,6 +2906,22 @@ def _group_by_transform(embedders: list) -> list[list]:
     return list(groups.values())
 
 
+def _effective_batch_size(configured: int, embedders: list) -> int:
+    """Apply every model's optional runtime batch cap to one shared patch loop."""
+
+    limits: list[int] = []
+    for embedder in embedders:
+        limit = embedder.max_batch_size
+        if limit is None:
+            continue
+        if isinstance(limit, bool) or not isinstance(limit, int) or limit <= 0:
+            raise ValueError(
+                f"{embedder.name}.max_batch_size must be a positive integer or None"
+            )
+        limits.append(limit)
+    return min([configured, *limits])
+
+
 def _embed_patches(
     reader,
     coords,
@@ -2669,7 +3012,8 @@ def _run_batches(
     """
     prof = prof or null_profiler()
     n = int(coords.shape[0])
-    starts = list(range(0, n, cfg.batch_size))
+    batch_size = _effective_batch_size(cfg.batch_size, embedders)
+    starts = list(range(0, n, batch_size))
 
     # Group models by preprocessing signature once (it is static across batches):
     # the transform is computed once per group and shared across its members.
@@ -2699,7 +3043,7 @@ def _run_batches(
                 for start in starts:
                     if stop.is_set():
                         break
-                    batch = coords[start : start + cfg.batch_size]
+                    batch = coords[start : start + batch_size]
                     with prof.stage("read"):
                         patches = _decode_batch(
                             reader,
@@ -2744,7 +3088,10 @@ def _run_batches(
                     # Computed once per group (shared signature -> identical tensor) and
                     # reused by every model in the group; embed_batch only reads it.
                     with prof.stage("transform"):
-                        batch_tensor = group[0].transform_batch(patches, device)
+                        transform_patches = group[0].select_multiplex_channels(patches)
+                        batch_tensor = group[0].transform_batch(
+                            transform_patches, device
+                        )
                     for emb in group:
                         with prof.stage("gpu"):
                             feats = (
@@ -2849,7 +3196,12 @@ def _embed_patches_multi(
             embedders = embedder_factory(device)
             if expected_contracts is not None:
                 _assert_loaded_model_contracts(
-                    embedders, expected_contracts, cfg.resolved_channel_names
+                    embedders,
+                    expected_contracts,
+                    cfg.resolved_channel_names,
+                    selected_channels=cfg.resolved_native_marker_selection,
+                    explicit_selection=bool(cfg.multiplex_markers),
+                    native_model_params=cfg.native_multiplex_params,
                 )
             collector = _FeatureCollector(hi - lo, model_dims, cfg.features_dtype)
             # Own reader per worker: per-reader chunk cache, thread-safe zarr reads.

@@ -59,6 +59,7 @@ read and decide on. raw2features makes no commercial-use determination.
 | `seal_conch` ⚠ | seal | 512 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
 | `seal_univ2` ⚠ | seal | 1536 | 224 | 0.5 | conv. | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/SEAL) · [GH](https://github.com/mahmoodlab/SEAL) · [paper](https://arxiv.org/abs/2602.14177) |
 | `kronos` | kronos | 384 | 224 | -¹² | n/a | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/KRONOS) · [GH](https://github.com/mahmoodlab/KRONOS) · [paper](https://arxiv.org/abs/2506.03373) |
+| `kronos2` | kronos2 | 768 | 256 | -¹² | n/a | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/KRONOS2) |
 
 ⚠ **SEAL is experimental in v0.2.0 and is outside the exact-weight pinning
 guarantee.** raw2features pins and SHA-256 verifies the SEAL LoRA adapter, freezes
@@ -191,7 +192,8 @@ pip install flash-attn  # slide encoders only; use a wheel/build matching torch 
     weights are "available for non-commercial academic purposes." Read both before use.
 11. `ctranspath` - pretrained at 20×, but the authors recommend **1.0 µm/px (10×)**
     downstream; raw2features defaults to 0.5. Override with `--mpp 1.0` to follow them.
-12. `kronos` - a multiplex (spatial-proteomics) encoder, not H&E; it has no single µm/px.
+12. `kronos` / `kronos2` - native multiplex encoders, not H&E encoders; neither has one
+    registered µm/px default.
     See `MODALITIES.md`.
 13. `kaiko_vitl` - kaiko.ai's earlier ViT-L (distinct from `midnight`); norm is symmetric
     `[0.5]` from the card, **not** the pretrained_cfg ImageNet default (the usual base-arch
@@ -258,6 +260,29 @@ back to **1.0 µm/px** unless run alongside a model that supplies one or given a
   SHA-256-verified safetensors file and does not execute the repository's remote code or
   construct its unused BERT text tower.
 - `kronos` - needs the `[kronos]` extra; multiplex only (see `MODALITIES.md`).
+- `kronos2` - needs the `[kronos2]` extra and accepted institutional access to the gated
+  [`MahmoodLab/KRONOS2`](https://huggingface.co/MahmoodLab/KRONOS2) repository. It loads
+  an allowlisted pinned custom-code snapshot into an app-owned runtime directory, verifies
+  the weights and marker table, and removes the upstream-added snapshot import path after
+  construction. It runs in fp32 and returns the 768-dimensional CLS token. The default
+  patch is 256 px;
+  an explicit alternative must be a multiple of the ViT patch size, 16. Marker matching
+  is exact after separator-insensitive normalization and does not apply KRONOSv1 aliases.
+  Upstream recommends batches of at least eight for reproducibility. raw2features fixes
+  its effective forward microbatch at eight and pads a shorter final microbatch before
+  slicing the output back to its original length. This runtime contract is recorded;
+  bitwise equality across different hardware is not promised. The `[kronos2]` extra
+  installs the authors' pinned Torch, xFormers, Transformers, and timm reference stack
+  on x86-64 Linux and is validated with Python 3.12. The pinned Torch release does not
+  support Python 3.14. `--compile` is not supported for KRONOS2 in v0.2.1.
+  The ordinary 288-marker path uses text embeddings already stored in the checkpoint
+  and never downloads BioLinkBERT.
+  The vocabulary includes DAPI and DRAQ5 but not Hoechst or DNA1/DNA2 labels; exclude
+  those channels explicitly or register them with dataset-specific statistics. Following
+  the upstream example, a selected DRAQ5 channel uses DAPI normalization statistics when
+  DAPI is absent; this recorded policy is not configurable in v0.2.1.
+  Supplying `--kronos2-additional-markers` enables the separately pinned BioLinkBERT path
+  for complete user-defined marker metadata and statistics.
 - `ctranspath` - custom `ConvStem` patch-embed (`embedders/convstem.py`), loaded via the
   1aurent modern-timm mirror (no pinned timm fork needed).
 - `gpfm`, `retccl`, `sp22m`, `hipt`, `lunit_bt/mocov2/swav` - built from a base timm arch +

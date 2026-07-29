@@ -177,3 +177,21 @@ def parse_json_object(value: str | None, param_hint: str) -> dict[str, Any]:
             "must be a JSON object with string keys", param_hint=param_hint
         )
     return parsed
+
+
+def parse_kronos2_additional_markers_file(path: str | None) -> dict[str, Any] | None:
+    """Parse the optional KRONOS2 marker table into its semantic model contract."""
+
+    if path is None:
+        return None
+    from raw2features.embedders.kronos2_metadata import (
+        Kronos2MarkerMetadataError,
+        parse_kronos2_additional_markers,
+    )
+
+    try:
+        return parse_kronos2_additional_markers(path)
+    except (OSError, Kronos2MarkerMetadataError) as exc:
+        raise typer.BadParameter(
+            str(exc), param_hint="--kronos2-additional-markers"
+        ) from exc

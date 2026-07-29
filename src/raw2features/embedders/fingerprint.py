@@ -297,6 +297,7 @@ def _effective_patch_checkpoint(spec: ModelSpec) -> dict[str, Any]:
             "transformers_snapshot_return_conch",
         ),
         "kronos": (repo, "pinned_local_file"),
+        "kronos2": (repo, "pinned_local_snapshot"),
         "musk": (repo, "pinned_local_file"),
         "open_clip": (repo, "pinned_local_snapshot"),
         "keep": (repo, "pinned_safetensors_local_image_wrapper"),
@@ -377,6 +378,14 @@ def _seal_composite(spec: ModelSpec) -> dict[str, Any]:
 
 
 def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
+    from .kronos2_embedder import (
+        KRONOS2_FORWARD_CONTRACT,
+        KRONOS2_MARKER_MATCHING_CONTRACT,
+        KRONOS2_MARKER_METADATA_FILENAME,
+        KRONOS2_SNAPSHOT_ALLOW_PATTERNS,
+        KRONOS2_SNAPSHOT_TOP_LEVEL_ALLOWLIST,
+    )
+
     constructor: dict[str, Any] = {
         "timm_kwargs": deepcopy(spec.timm_kwargs),
         "checkpoint_load": deepcopy(spec.checkpoint),
@@ -406,6 +415,34 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
             "sdpa": bool(spec.timm_kwargs.get("sdpa", True)),
             "marker_metadata": "marker_metadata.csv",
             "construction_package_revision": KRONOS_PACKAGE_REVISION,
+        },
+        "kronos2": {
+            "entrypoint": "transformers.AutoModel.from_pretrained",
+            "input": "app_owned_allowlisted_pinned_local_snapshot",
+            "snapshot_allow_patterns": list(KRONOS2_SNAPSHOT_ALLOW_PATTERNS),
+            "snapshot_top_level_allowlist": list(
+                KRONOS2_SNAPSHOT_TOP_LEVEL_ALLOWLIST
+            ),
+            "trust_remote_code": True,
+            "transformers_local_files_only": True,
+            "upstream_nested_download_guard": "local_directory_input",
+            "upstream_sys_path_cleanup": "remove_new_entry_after_construction",
+            "marker_metadata": {
+                "filename": KRONOS2_MARKER_METADATA_FILENAME,
+                "sha256": spec.timm_kwargs.get("marker_metadata_sha256"),
+            },
+            "marker_matching": deepcopy(KRONOS2_MARKER_MATCHING_CONTRACT),
+            "preferred_dapi_policy": "canonical_dapi_else_draq5_else_none",
+            "published_marker_text_embeddings": "checkpoint_buffer",
+            "novel_marker_registration": (
+                "explicit_additional_markers_parameter_with_conditional_contract"
+            ),
+            "forward": {
+                **deepcopy(KRONOS2_FORWARD_CONTRACT),
+                "method": "__call__",
+                "marker_names": "canonical_marker_metadata_names",
+                "result": "x_norm_clstoken",
+            },
         },
         "musk": {
             "architecture": "musk_large_patch16_384",
@@ -529,12 +566,29 @@ def patch_output_fingerprint(spec: ModelSpec, resolved_amp: str) -> dict[str, An
                 "crop_mode": spec.crop_mode,
             }
         )
+    if spec.family == "kronos2":
+        from .kronos2_embedder import KRONOS2_SCALING_CONTRACT
+
+        payload["preprocessing"]["native_multiplex"] = deepcopy(
+            KRONOS2_SCALING_CONTRACT
+        )
     return make_output_fingerprint(payload)
 
 
 def resolved_patch_amp(spec: ModelSpec, requested_amp: str, device: str) -> str:
     """Resolve requested/card AMP to the precision the forward path really uses."""
 
+    # KRONOS2's published inference contract is fixed fp32. Fail rather than silently
+    # coercing an explicit override: the raw requested AMP participates in receipt
+    # identity, so accepting an override that never executes would make completion
+    # semantics misleading.
+    if spec.family == "kronos2":
+        if requested_amp not in {"auto", "fp32"}:
+            raise ValueError(
+                "KRONOS2 follows its published fp32 inference path and does not "
+                f"accept requested AMP {requested_amp!r}; use 'auto' or 'fp32'"
+            )
+        return "fp32"
     selected = spec.inference_amp if requested_amp == "auto" else requested_amp
     # Embedder._forward_ctx enables fp16/bf16 autocast only on CUDA. Passing either
     # dtype on CPU/MPS still executes the model in fp32, so provenance must say fp32.

@@ -41,6 +41,7 @@ from raw2features.pipeline.runner import (
 from ._validation import (
     parse_channel_names_file,
     parse_json_object,
+    parse_kronos2_additional_markers_file,
     validate_amp,
     validate_batch_size,
     validate_geometry,
@@ -111,8 +112,9 @@ def embed_many(
     multiplex_markers: list[str] = typer.Option(
         [],
         "--marker",
-        help="Multiplex marker to include; repeat in the required order. Default: all "
-        "named channels in source order (concat requires an explicit list).",
+        help="Multiplex marker to include; repeat in the required order. Applies to "
+        "native multiplex models and --multiplex-strategy. Default: all source "
+        "channels (channelwise concat requires an explicit list).",
     ),
     channel_names_file: str | None = typer.Option(
         None,
@@ -120,6 +122,12 @@ def embed_many(
         help="UTF-8 .txt/.csv/.tsv with exactly one ordered name per physical C-axis "
         "position. Applies to every slide in this command and verifies any existing "
         "labels; combine with --marker to select/order a subset.",
+    ),
+    kronos2_additional_markers: str | None = typer.Option(
+        None,
+        "--kronos2-additional-markers",
+        help="Complete CSV metadata for explicitly selected markers outside KRONOS2's "
+        "released vocabulary. Applies to every slide in this command.",
     ),
     multiplex_normalization: str = typer.Option(
         "percentile",
@@ -249,6 +257,9 @@ def embed_many(
     validate_multiplex_percentiles(multiplex_percentile_low, multiplex_percentile_high)
     strategy_params = parse_json_object(multiplex_params, "--multiplex-params")
     channel_names_override = parse_channel_names_file(channel_names_file)
+    kronos2_marker_contract = parse_kronos2_additional_markers_file(
+        kronos2_additional_markers
+    )
     from raw2features.slide_embedders.model_registry import (
         validate_slide_encoder_names,
     )
@@ -323,6 +334,11 @@ def embed_many(
         models = list(dict.fromkeys(e["model"] for e in geometry_config))
     else:
         models = list(feature_extractor)
+    if kronos2_marker_contract is not None and "kronos2" not in models:
+        raise typer.BadParameter(
+            "requires `kronos2` in the requested model set",
+            param_hint="--kronos2-additional-markers",
+        )
 
     from raw2features.embedders.model_registry import build_embedder, resolve_geometry
 
@@ -351,6 +367,11 @@ def embed_many(
         multiplex_normalization_max_side_px=multiplex_normalization_max_side_px,
         multiplex_aggregation=multiplex_aggregation,
         multiplex_strategy_params=strategy_params,
+        native_multiplex_params=(
+            {"kronos2": {"additional_markers": kronos2_marker_contract}}
+            if kronos2_marker_contract is not None
+            else {}
+        ),
         channel_names_override=channel_names_override,
         slide_encoders=list(slide_encoder),
         qc=list(qc),

@@ -190,9 +190,122 @@ class Embedder(ABC):
         """
         return {}
 
+    def bind_multiplex_panel(
+        self,
+        channel_names: list[str] | None,
+        *,
+        selected_channels: list[dict[str, Any]] | None = None,
+        model_params: dict[str, Any] | None = None,
+    ) -> dict:
+        """Bind one native model to an ordered subset of a physical marker panel.
+
+        ``set_panel`` is the original compatibility seam and expects its patch tensor
+        and names to have matching, zero-based channel positions.  This wrapper keeps
+        that API intact: it records the requested physical indices, passes only the
+        selected names (in requested order) to ``set_panel``, and
+        :meth:`select_multiplex_channels` applies the same ordered slice to each full
+        source patch before the model transform runs.
+
+        Native embedders with additional model-specific panel configuration may
+        override this method.  The default refuses non-empty ``model_params`` so a
+        misspelled or unsupported option can never be silently ignored.
+        """
+
+        if model_params:
+            raise ValueError(
+                f"{self.name} does not accept native multiplex model parameters: "
+                f"{sorted(model_params)}"
+            )
+        panel = ["" if value is None else str(value) for value in (channel_names or [])]
+        if selected_channels is None:
+            selected_channels = [
+                {"source_index": index, "source_name": name}
+                for index, name in enumerate(panel)
+            ]
+
+        indices: list[int] = []
+        names: list[str] = []
+        for record in selected_channels:
+            index = record.get("source_index")
+            name = record.get("source_name")
+            if (
+                isinstance(index, bool)
+                or not isinstance(index, int)
+                or not 0 <= index < len(panel)
+                or not isinstance(name, str)
+                or panel[index] != name
+            ):
+                raise ValueError(
+                    f"{self.name} received a marker selection that does not match "
+                    "the physical source panel"
+                )
+            indices.append(index)
+            names.append(name)
+        if len(set(indices)) != len(indices):
+            raise ValueError(
+                f"{self.name} received duplicate physical marker-channel indices"
+            )
+
+        self._raw2features_multiplex_source_indices = tuple(indices)
+        summary = self.set_panel(names)
+        if not isinstance(summary, dict):
+            raise TypeError(f"{self.name}.set_panel() must return a provenance mapping")
+        if indices != list(range(len(panel))):
+            # Existing native adapters report indices relative to the names passed to
+            # set_panel. Remap those provenance records to the physical source C axis;
+            # their internal tensor indices deliberately remain local to the sliced
+            # patch.
+            summary = dict(summary)
+            mapping = summary.get("mapping")
+            if isinstance(mapping, list):
+                remapped = []
+                for row in mapping:
+                    item = dict(row)
+                    local_index = item.get("channel_index")
+                    if (
+                        isinstance(local_index, int)
+                        and not isinstance(local_index, bool)
+                        and 0 <= local_index < len(indices)
+                    ):
+                        item["channel_index"] = indices[local_index]
+                    remapped.append(item)
+                summary["mapping"] = remapped
+            summary["source_selection"] = [
+                {"source_index": index, "source_name": name}
+                for index, name in zip(indices, names, strict=True)
+            ]
+        return summary
+
+    def select_multiplex_channels(
+        self, patches_hwc: list[np.ndarray]
+    ) -> list[np.ndarray]:
+        """Apply the physical ordered selection bound by
+        :meth:`bind_multiplex_panel`.
+
+        The reader continues to return complete HWC patches so nuclear segmentation
+        and other native models see the full source panel.  Selection happens only at
+        this per-model transform boundary.
+        """
+
+        indices = getattr(self, "_raw2features_multiplex_source_indices", None)
+        if indices is None:
+            return patches_hwc
+        return [np.asarray(patch)[..., list(indices)] for patch in patches_hwc]
+
     @property
     def embedding_dim(self) -> int:
         return self.spec.embedding_dim
+
+    @property
+    def max_batch_size(self) -> int | None:
+        """Optional runtime cap for one forward/transform batch.
+
+        Most embedders leave this unset. Models whose architecture pads or expands
+        each sample to a fixed internal batch can override it; the runner then lowers
+        the user's configured batch size without changing any output identity.
+        """
+
+        return None
 
     @property
     def transform_signature(self) -> tuple:
@@ -205,7 +318,7 @@ class Embedder(ABC):
         ``input_size`` (which determines whether/how a resize happens), the
         normalisation ``mean``/``std``, and the ``interpolation`` used on resize.
         """
-        return (
+        signature = (
             self.spec.input_size,
             self.spec.mean,
             self.spec.std,
@@ -213,6 +326,19 @@ class Embedder(ABC):
             self.spec.crop_pct,
             self.spec.crop_mode,
         )
+        if self.modality == "multiplex":
+            # Native marker-aware encoders do not share preprocessing merely because
+            # the RGB-shaped registry fields happen to match.  Their panel vocabulary,
+            # selected channels, and transform implementation are model-specific.
+            return (
+                "native_multiplex",
+                self.name,
+                tuple(
+                    getattr(self, "_raw2features_multiplex_source_indices", ()) or ()
+                ),
+                *signature,
+            )
+        return signature
 
     @property
     def transform_input_dtype(self) -> str:

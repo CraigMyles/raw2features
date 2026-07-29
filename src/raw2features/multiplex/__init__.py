@@ -6,6 +6,7 @@ from .base import (
     PreparedMultiplexStrategy,
 )
 from .channelwise import ChannelwiseStrategy
+from .panel import marker_name_identity, resolve_marker_selection
 from .registry import build_strategy
 
 __all__ = [
@@ -14,4 +15,6 @@ __all__ = [
     "MultiplexStrategy",
     "PreparedMultiplexStrategy",
     "build_strategy",
+    "marker_name_identity",
+    "resolve_marker_selection",
 ]

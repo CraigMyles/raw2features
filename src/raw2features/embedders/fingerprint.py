@@ -472,7 +472,12 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
     return constructor
 
 
-def patch_output_fingerprint(spec: ModelSpec, resolved_amp: str) -> dict[str, Any]:
+def patch_output_fingerprint(
+    spec: ModelSpec,
+    resolved_amp: str,
+    *,
+    resolved_attention_backend: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Fingerprint the complete persisted-output contract for one patch model."""
 
     if spec.multiplex is not None:
@@ -567,11 +572,20 @@ def patch_output_fingerprint(spec: ModelSpec, resolved_amp: str) -> dict[str, An
             }
         )
     if spec.family == "kronos2":
-        from .kronos2_embedder import KRONOS2_SCALING_CONTRACT
+        from .kronos2_embedder import (
+            KRONOS2_SCALING_CONTRACT,
+            resolved_kronos2_attention_backend,
+        )
 
         payload["preprocessing"]["native_multiplex"] = deepcopy(
             KRONOS2_SCALING_CONTRACT
         )
+        backend = (
+            resolved_kronos2_attention_backend()
+            if resolved_attention_backend is None
+            else dict(resolved_attention_backend)
+        )
+        payload["output"]["attention_backend"] = deepcopy(backend)
     return make_output_fingerprint(payload)
 
 

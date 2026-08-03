@@ -60,6 +60,15 @@ if TYPE_CHECKING:  # pragma: no cover
 
 KRONOS2_MARKER_METADATA_FILENAME = "marker_metadata.csv"
 KRONOS2_XFORMERS_VERSION = "0.0.29.post3"
+KRONOS2_XFORMERS_ATTENTION_BACKEND: dict[str, Any] = {
+    "implementation": "xformers.ops.memory_efficient_attention",
+    "package": "xformers",
+    "package_version": KRONOS2_XFORMERS_VERSION,
+}
+KRONOS2_PYTORCH_ATTENTION_BACKEND: dict[str, Any] = {
+    "implementation": "upstream_dinov2_pytorch_attention",
+    "package": "torch",
+}
 KRONOS2_SNAPSHOT_TOP_LEVEL_ALLOWLIST = (
     "config.json",
     "configuration_kronos2.py",
@@ -351,6 +360,22 @@ def _allows_pinned_xformers(
         return False
 
 
+def resolved_kronos2_attention_backend() -> dict[str, Any]:
+    """Return the attention implementation this process will use for KRONOS2."""
+
+    if "XFORMERS_DISABLED" in os.environ or not _allows_pinned_xformers():
+        return dict(KRONOS2_PYTORCH_ATTENTION_BACKEND)
+    imported_flags = [
+        bool(module.XFORMERS_AVAILABLE)
+        for name in ("dinov2.layers.attention", "dinov2.layers.block")
+        if (module := sys.modules.get(name)) is not None
+        and hasattr(module, "XFORMERS_AVAILABLE")
+    ]
+    if imported_flags and not all(imported_flags):
+        return dict(KRONOS2_PYTORCH_ATTENTION_BACKEND)
+    return dict(KRONOS2_XFORMERS_ATTENTION_BACKEND)
+
+
 def _assert_forced_fallback_is_not_preimported_with_xformers() -> None:
     """Fail if an already-imported upstream module makes fallback unenforceable."""
 
@@ -425,7 +450,10 @@ class Kronos2Embedder(Embedder):
         # sys.path[0] for its bundled dinov2 package; remove that new entry after
         # construction so the directory is not left at the front of the caller's
         # import search path.
-        force_attention_fallback = not _allows_pinned_xformers()
+        attention_backend = resolved_kronos2_attention_backend()
+        force_attention_fallback = (
+            attention_backend != KRONOS2_XFORMERS_ATTENTION_BACKEND
+        )
         previous_xformers_disabled = os.environ.get("XFORMERS_DISABLED")
         if force_attention_fallback:
             _assert_forced_fallback_is_not_preimported_with_xformers()
@@ -453,6 +481,10 @@ class Kronos2Embedder(Embedder):
         self._model = model
         self._device = device
         self._dtype = torch.float32
+        # Resolve once more after upstream imports DINOv2. A broken xFormers binary
+        # can make upstream fall back even when the pinned distribution is installed;
+        # the loaded-model contract must record what its module actually selected.
+        self._resolved_attention_backend = resolved_kronos2_attention_backend()
         self._metadata_path = metadata
         self._load_marker_metadata(metadata)
         self._panel: dict[str, Any] | None = None

@@ -26,6 +26,8 @@ layout, geometry-only `grid_hash`, and brightfield execution path are unchanged.
 - Install the pinned xFormers reference kernel only where its release provides wheels
   (x86-64 Linux, CPython 3.11/3.12); Python 3.13 and other platforms use KRONOS2's
   enforced upstream PyTorch attention fallback instead of an unvalidated xFormers build.
+  Record the resolved attention backend in each model-output fingerprint so outputs
+  produced by the two paths cannot be silently combined during resume.
 - Extend repeated `--marker` selection and ordering to native multiplex encoders. The
   resolved physical indices and order are included in output fingerprints and panel
   provenance without changing patch-grid identity.

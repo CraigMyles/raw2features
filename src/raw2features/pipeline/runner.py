@@ -2530,9 +2530,22 @@ def _loaded_model_contracts(
             selected,
             getattr(embedder, "_device", "cpu"),
         )
+        fingerprint_kwargs = {}
+        if embedder.spec.family == "kronos2":
+            backend = getattr(embedder, "_resolved_attention_backend", None)
+            if backend is None:
+                raise RuntimeError(
+                    "Loaded KRONOS2 embedder has no resolved attention-backend "
+                    "contract. Reload the model before writing outputs."
+                )
+            fingerprint_kwargs["resolved_attention_backend"] = backend
         contracts[embedder.name] = {
             "embedding_dim": int(embedder.embedding_dim),
-            "output_fingerprint": patch_output_fingerprint(embedder.spec, effective),
+            "output_fingerprint": patch_output_fingerprint(
+                embedder.spec,
+                effective,
+                **fingerprint_kwargs,
+            ),
         }
     return _bind_native_multiplex_panel_contracts(
         contracts,

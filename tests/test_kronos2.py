@@ -23,21 +23,28 @@ from raw2features.embedders.kronos2_embedder import (
     KRONOS2_BIOLINKBERT_SOURCE,
     KRONOS2_FORWARD_CONTRACT,
     KRONOS2_MARKER_MATCHING_CONTRACT,
+    KRONOS2_PYTORCH_ATTENTION_BACKEND,
     KRONOS2_SCALING_CONTRACT,
     KRONOS2_SNAPSHOT_ALLOW_PATTERNS,
     KRONOS2_SNAPSHOT_TOP_LEVEL_ALLOWLIST,
+    KRONOS2_XFORMERS_ATTENTION_BACKEND,
     KRONOS2_XFORMERS_VERSION,
     Kronos2Embedder,
     _allows_pinned_xformers,
     _marker_match_key,
     _scaling_factor,
+    resolved_kronos2_attention_backend,
 )
 from raw2features.embedders.kronos2_metadata import (
     KRONOS2_ADDITIONAL_MARKER_COLUMNS,
     parse_kronos2_additional_markers,
 )
 from raw2features.embedders.model_registry import get_spec
-from raw2features.pipeline.runner import RunConfig, expected_model_contracts
+from raw2features.pipeline.runner import (
+    RunConfig,
+    _loaded_model_contracts,
+    expected_model_contracts,
+)
 
 
 def _digest(data: bytes) -> str:
@@ -190,6 +197,7 @@ def test_kronos2_registry_and_fingerprint_cover_the_complete_static_contract():
         "reg_tokens": 0,
         "modality": "multiplex",
         "resolved_amp": "fp32",
+        "attention_backend": resolved_kronos2_attention_backend(),
     }
     assert KRONOS2_BIOLINKBERT_SOURCE not in json.dumps(payload, sort_keys=True)
     with pytest.raises(ValueError, match="does not accept requested AMP"):
@@ -741,6 +749,70 @@ def test_only_the_pinned_reference_xformers_environment_is_allowed(
     )
 
 
+def test_resolved_attention_backend_changes_the_output_fingerprint(monkeypatch):
+    import raw2features.embedders.kronos2_embedder as module
+
+    spec = get_spec("kronos2")
+    monkeypatch.delenv("XFORMERS_DISABLED", raising=False)
+    monkeypatch.setattr(module, "_allows_pinned_xformers", lambda: True)
+
+    xformers = patch_output_fingerprint(spec, "fp32")
+    assert resolved_kronos2_attention_backend() == (KRONOS2_XFORMERS_ATTENTION_BACKEND)
+    assert xformers["payload"]["output"]["attention_backend"] == (
+        KRONOS2_XFORMERS_ATTENTION_BACKEND
+    )
+
+    monkeypatch.setenv("XFORMERS_DISABLED", "1")
+    pytorch = patch_output_fingerprint(spec, "fp32")
+    assert resolved_kronos2_attention_backend() == (KRONOS2_PYTORCH_ATTENTION_BACKEND)
+    assert pytorch["payload"]["output"]["attention_backend"] == (
+        KRONOS2_PYTORCH_ATTENTION_BACKEND
+    )
+    assert pytorch["digest"] != xformers["digest"]
+
+    # Upstream treats presence, rather than truthiness, as the disable switch.
+    monkeypatch.setenv("XFORMERS_DISABLED", "")
+    assert resolved_kronos2_attention_backend() == (KRONOS2_PYTORCH_ATTENTION_BACKEND)
+
+
+def test_resolved_backend_honours_an_already_imported_upstream_fallback(monkeypatch):
+    import raw2features.embedders.kronos2_embedder as module
+
+    monkeypatch.delenv("XFORMERS_DISABLED", raising=False)
+    monkeypatch.setattr(module, "_allows_pinned_xformers", lambda: True)
+    monkeypatch.setitem(
+        sys.modules,
+        "dinov2.layers.attention",
+        SimpleNamespace(XFORMERS_AVAILABLE=False),
+    )
+
+    assert resolved_kronos2_attention_backend() == (KRONOS2_PYTORCH_ATTENTION_BACKEND)
+
+
+def test_loaded_contract_uses_the_backend_recorded_during_model_load(monkeypatch):
+    import raw2features.embedders.kronos2_embedder as module
+
+    monkeypatch.setattr(module, "_allows_pinned_xformers", lambda: False)
+    spec = get_spec("kronos2")
+    embedder = SimpleNamespace(
+        name="kronos2",
+        spec=spec,
+        embedding_dim=spec.embedding_dim,
+        _dtype=None,
+        _device="cuda",
+        _resolved_attention_backend=KRONOS2_XFORMERS_ATTENTION_BACKEND,
+    )
+
+    fingerprint = _loaded_model_contracts([embedder])["kronos2"]["output_fingerprint"]
+    assert fingerprint["payload"]["output"]["attention_backend"] == (
+        KRONOS2_XFORMERS_ATTENTION_BACKEND
+    )
+
+    del embedder._resolved_attention_backend
+    with pytest.raises(RuntimeError, match="no resolved attention-backend"):
+        _loaded_model_contracts([embedder])
+
+
 def test_forced_fallback_rejects_an_already_imported_xformers_backend(monkeypatch):
     import raw2features.embedders.kronos2_embedder as module
 
@@ -866,6 +938,7 @@ def test_loader_verifies_both_artifacts_then_loads_only_the_local_snapshot(
         )
     ]
     assert emb._dtype is torch.float32
+    assert emb._resolved_attention_backend == KRONOS2_PYTORCH_ATTENTION_BACKEND
     assert set(emb._metadata_index) == {"dapi", "draq5"}
     assert not hasattr(emb, "_registered_additional_markers_digest")
     assert not hasattr(emb, "_novel_registration_failed")

@@ -88,6 +88,15 @@ def _arch_of(sd: dict) -> str:
     return "unetplusplus" if any(".blocks.x_" in k for k in sd) else "unet"
 
 
+# Process-level model cache, keyed by (checkpoint url, device). The pipeline builds a
+# fresh segmenter -- and therefore a fresh GrandQC -- for every slide, so without this
+# the 26.6 MB tissue checkpoint is re-read, re-verified and re-built on every slide of a
+# cohort. The modules are .eval() and only used under torch.inference_mode(), so sharing
+# one per device is safe; the device is in the key so the multi-GPU slide-parallel path
+# keeps its own copy. No eviction: a couple of tens of MB per device.
+_MODEL_CACHE: dict[tuple[str, str], tuple[object, int]] = {}
+
+
 def _load(spec: dict, device: str):
     """Download + load a GrandQC checkpoint; return ``(model, n_classes)``.
 
@@ -95,7 +104,13 @@ def _load(spec: dict, device: str):
     checkpoint, never assumed. Some GrandQC checkpoints (the artifact stage) are
     full-model pickles (smp 0.3.1 / timm 0.4.12) that cannot load here; convert once to
     a clean ``<name>.statedict.pt`` (recipe in ``docs/SEGMENTATION.md``), preferred.
+
+    Cached per ``(url, device)`` -- see :data:`_MODEL_CACHE`.
     """
+    key = (spec["url"], str(device))
+    if key in _MODEL_CACHE:
+        return _MODEL_CACHE[key]
+
     import os
 
     import torch
@@ -121,7 +136,8 @@ def _load(spec: dict, device: str):
     classes = int(sd[head].shape[0]) if head is not None else len(QC_CLASSES) + 1
     model = _build(classes, _arch_of(sd))
     model.load_state_dict(sd, strict=True)
-    return model.to(device).eval(), classes
+    _MODEL_CACHE[key] = (model.to(device).eval(), classes)
+    return _MODEL_CACHE[key]
 
 
 def _read_at_mpp(reader, model_mpp: float):
@@ -178,10 +194,16 @@ class GrandQC:
 
     def __init__(
         self, device: str = "cpu", artifact_mpp: str = "1.5",
-        stain_norm: str | None = None,
+        stain_norm: str | None = None, tissue_mpp: float | None = None,
     ) -> None:
         self.device = device
         self.artifact_mpp = str(artifact_mpp)
+        # Scale the TISSUE stage is run at. ``None`` = the checkpoint's own training
+        # scale (10 µm/px). The UNet++ is fully convolutional so a finer value works
+        # mechanically and resolves detail the 10 µm/px mask cannot (small lumens /
+        # gaps between fragments), but it is OFF-DOMAIN for the checkpoint -- verify
+        # on your own slides before trusting it cohort-wide.
+        self.tissue_mpp = tissue_mpp
         self.stain_norm = stain_norm  # None|"macenko": normalize before inference
         self._tissue = None
         self._artifact = None
@@ -212,7 +234,7 @@ class GrandQC:
 
         if self._tissue is None:
             self._tissue, _ = _load(_TISSUE, self.device)
-        img, ds = self._read(reader, _TISSUE["mpp"])
+        img, ds = self._read(reader, self.tissue_mpp or _TISSUE["mpp"])
         raster = _segment(self._tissue, img, self.device)
         mask = (raster == _TISSUE_CLASS).astype(np.float32)
         return TissueMask(mask=mask, level=0, downsample=ds)  # level-0 px per mask px

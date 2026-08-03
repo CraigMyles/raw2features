@@ -25,13 +25,21 @@ class GrandQCSegmenter(Segmenter):
 
     name = "grandqc"
 
-    def __init__(self, device: str = "auto") -> None:
+    def __init__(self, device: str = "auto", mpp: float | None = None) -> None:
         # "auto" resolves to the GPU when available; GrandQC is a UNet++ that runs on
         # three-channel (RGB) patches, so it benefits from a GPU.
         self.device = device
+        # ``mpp`` overrides the scale the tissue stage runs at. The checkpoint is
+        # trained at 10 µm/px, where one mask pixel spans 20x20 patch-grid pixels at
+        # 0.5 µm/px -- so small lumens and the gaps between tissue fragments are below
+        # its resolution and get predicted as tissue. A finer value (e.g. 2.0) sharpens
+        # the mask but runs the net off-domain; check it on your own slides.
+        self.mpp = mpp
 
     def segment(self, reader: WSISource) -> TissueMask:
         from raw2features.core.device import resolve_device
         from raw2features.qc.grandqc import GrandQC
 
-        return GrandQC(device=resolve_device(self.device)).tissue_mask(reader)
+        return GrandQC(
+            device=resolve_device(self.device), tissue_mpp=self.mpp
+        ).tissue_mask(reader)

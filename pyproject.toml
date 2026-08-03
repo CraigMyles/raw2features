@@ -61,8 +61,10 @@ otsu = "raw2features.segmenters.otsu:OtsuSegmenter"
 canny = "raw2features.segmenters.canny:CannySegmenter"
 canny_density = "raw2features.segmenters.canny_density:CannyDensitySegmenter"
 combined = "raw2features.segmenters.combined:CombinedSegmenter"
+guarded = "raw2features.segmenters.guarded:GuardedUnionSegmenter"
 nuclear = "raw2features.segmenters.nuclear:NuclearSegmenter"
 grandqc = "raw2features.segmenters.grandqc:GrandQCSegmenter"
+grandqc_veto = "raw2features.segmenters.grandqc_veto:GrandQCVetoSegmenter"
 
 [project.entry-points."raw2features.patchers"]
 grid = "raw2features.patcher.grid:GridPatcher"

@@ -17,6 +17,7 @@ weights. Runs on the same cheap low-res level as the Otsu segmenter.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -56,6 +57,16 @@ class CannySegmenter(Segmenter):
         Internal cavities (lumens / glands / fat) larger than this fraction of the
         image are kept as **background** rather than filled in; smaller holes (gaps in
         the edge map) are filled. ``1.0`` fills all holes; ``0.0`` keeps all holes open.
+    edge_filter:
+        Optional ``f(edges, img, level_mpp) -> edges`` applied to the **raw Canny edge
+        map**, before the dilate/close/contour-fill. This is the only useful place to
+        suppress an edge you do not want: once a scan-region rectangle or a slide-edge
+        ring has been *filled*, it is the outer contour and the real tissue inside it
+        becomes a ``max_hole_frac``-sized hole that gets carved back to background --
+        i.e. filtering the finished mask instead loses the tissue as well as the ring.
+        ``level_mpp`` is the microns/px of the level the edges were computed at (or
+        ``None`` when the slide has no MPP), so a filter can size itself in microns.
+        See :func:`raw2features.segmenters.grandqc_veto.scan_region_kill`.
     """
 
     name = "canny"
@@ -70,6 +81,8 @@ class CannySegmenter(Segmenter):
         close_kernel: int = 9,
         min_component_frac: float = 0.001,
         max_hole_frac: float = 0.01,
+        edge_filter: Callable[[np.ndarray, np.ndarray, float | None], np.ndarray]
+        | None = None,
     ) -> None:
         self.seg_mpp = seg_mpp
         self.blur = blur if blur % 2 == 1 else blur + 1
@@ -79,6 +92,7 @@ class CannySegmenter(Segmenter):
         self.close_kernel = close_kernel
         self.min_component_frac = min_component_frac
         self.max_hole_frac = max_hole_frac
+        self.edge_filter = edge_filter
 
     def _pick_level(self, reader: WSISource) -> int:
         return nearest_level(reader.mpp, reader.level_downsamples(), self.seg_mpp)
@@ -97,6 +111,13 @@ class CannySegmenter(Segmenter):
         lo = int(round(self.low * 255))
         hi = int(round(self.high * 255))
         edges = cv2.Canny(gray, lo, hi)
+
+        # Suppress unwanted edges HERE, while they are still thin lines -- see the
+        # ``edge_filter`` docstring for why doing it after the fill does not work.
+        if self.edge_filter is not None:
+            mpp = reader.mpp
+            level_mpp = mpp * reader.level_downsamples()[level] if mpp else None
+            edges = self.edge_filter(edges, img, level_mpp)
 
         # Connect fragments, then close outlines so they enclose fillable regions.
         if self.dilate_kernel > 0:

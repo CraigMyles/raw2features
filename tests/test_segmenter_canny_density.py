@@ -6,11 +6,10 @@ import numpy as np
 import pytest
 import zarr
 
+from conftest import build_ngff_v04
 from raw2features.readers.omezarr import OmeZarrReader
 from raw2features.segmenters.canny import CannySegmenter
 from raw2features.segmenters.canny_density import CannyDensitySegmenter
-
-from conftest import build_ngff_v04
 
 
 @pytest.fixture

@@ -1,9 +1,9 @@
 """Nuclear-channel tissue segmenter for named-channel multiplex slides.
 
 Multiplex slides have no H&E saturation/colour to threshold; instead, tissue is where
-the nuclear stain (DAPI / Hoechst) is present. This segmenter finds the nuclear marker
-channel(s) by name (via the reader's ``channel_names``), reads them at a low-res level,
-and runs Otsu + morphology - the multiplex analogue of the default
+a nuclear stain is present. This segmenter finds established DAPI/Hoechst/DNA marker
+channels by name, falling back to DRAQ5 when none is present, reads them at a low-res
+level, and runs Otsu + morphology - the multiplex analogue of the default
 Otsu-on-saturation segmenter. Pure OpenCV + numpy.
 """
 
@@ -24,16 +24,20 @@ from .base import Segmenter, TissueMask
 if TYPE_CHECKING:
     from raw2features.readers.base import WSISource
 
-_NUCLEAR_ALIASES = ("dapi", "hoechst", "hochst", "dna")
+_NUCLEAR_ALIASES = ("dapi", "hoechst", "hochst", "dna", "draq5")
 # Numbered DNA channels occur both as plain labels (``DNA1``) and as delimited
 # tokens in IMC exports (``191Ir_DNA1`` / ``Ir193_DNA2``). Keep the boundaries
 # strict so biomarkers and prose containing ``DNA`` never match.
 _DNA_NUMBERED_RE = re.compile(r"(?<![a-z])dna[\s_-]*([12])(?![a-z0-9])")
+# DRAQ5 is a distinct nuclear dye, so it is used only as a fallback when the panel
+# has no established DAPI/Hoechst/DNA match. Keep the boundaries strict enough to
+# reject products or biomarkers that merely contain this token.
+_DRAQ5_RE = re.compile(r"(?<![a-z0-9])draq[\s_-]*5(?![a-z0-9])")
 
 
 @register("segmenters", "nuclear")
 class NuclearSegmenter(Segmenter):
-    """Otsu on recognized DAPI/Hoechst/DNA channels in a multiplex slide."""
+    """Otsu on recognized nuclear-stain channels in a multiplex slide."""
 
     name = "nuclear"
 
@@ -58,13 +62,19 @@ class NuclearSegmenter(Segmenter):
         if not channel_names:
             raise ValueError(
                 "NuclearSegmenter needs a multiplex reader with channel_names "
-                "(no recognized DAPI/Hoechst/DNA channel to threshold)"
+                "(no recognized DAPI/Hoechst/DNA channel or DRAQ5 fallback "
+                "to threshold)"
             )
         matches: list[tuple[int, str]] = []
+        draq5_fallbacks: list[tuple[int, str]] = []
         for i, name in enumerate(channel_names):
             normalized = unicodedata.normalize("NFKC", str(name)).strip().casefold()
             match_kind = None
             for alias in self.nuclear_aliases:
+                if alias == "draq5":
+                    if _DRAQ5_RE.search(normalized) is not None:
+                        draq5_fallbacks.append((i, "draq5"))
+                    continue
                 if alias == "dna":
                     if normalized == "dna":
                         match_kind = "dna"
@@ -81,6 +91,8 @@ class NuclearSegmenter(Segmenter):
                     break
             if match_kind is not None:
                 matches.append((i, match_kind))
+        if not matches:
+            matches = draq5_fallbacks
         if not matches:
             raise ValueError(
                 "no nuclear channel "

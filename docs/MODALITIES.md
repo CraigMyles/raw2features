@@ -88,6 +88,11 @@ raw2features embed SLIDE.ome.zarr OUT -m kronos2 \
 Use `--channel-names-file` when the source lacks a complete panel, or `--no-seg` when the
 entire image should be tiled without a nuclear mask.
 
+Nuclear masking prefers recognized DAPI, Hoechst, or DNA channels. If none is present,
+it uses DRAQ5 as a fallback. Repeated acquisitions of the selected stain are averaged;
+DAPI takes precedence over DRAQ5 rather than mixing the two dyes. The resolved physical
+indices and combination are recorded in grid identity.
+
 KRONOS2 performs exact separator-insensitive marker matching and does not reuse
 KRONOSv1's biological aliases. Its released metadata contains 288 usable entries, of
 which 268 are marked as pretraining markers. Their text vectors are already stored in

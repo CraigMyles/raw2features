@@ -19,6 +19,13 @@ layout, geometry-only `grid_hash`, and brightfield execution path are unchanged.
   optional extra installs the authors' pinned x86-64 Linux reference stack. Only the
   required pinned custom-code modules enter an app-owned runtime snapshot, and the
   upstream-added import path is removed after model construction.
+- Use DRAQ5 as the nuclear-segmentation fallback when a multiplex panel has no
+  recognized DAPI, Hoechst, or DNA stain. Existing panels containing DAPI retain their
+  DAPI binding, and repeated DRAQ5 acquisitions are averaged with their physical indices
+  recorded in grid identity.
+- Install the pinned xFormers reference kernel only where its release provides wheels
+  (x86-64 Linux, CPython 3.11/3.12); Python 3.13 and other platforms use KRONOS2's
+  enforced upstream PyTorch attention fallback instead of an unvalidated xFormers build.
 - Extend repeated `--marker` selection and ordering to native multiplex encoders. The
   resolved physical indices and order are included in output fingerprints and panel
   provenance without changing patch-grid identity.

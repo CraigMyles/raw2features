@@ -92,12 +92,14 @@ hf auth login
 ```
 
 Request access to [`MahmoodLab/KRONOS2`](https://huggingface.co/MahmoodLab/KRONOS2)
-with the institutional account required by its gate. On x86-64 Linux, the extra installs
-the authors' pinned Torch/xFormers/Transformers/timm reference stack; raw2features
-validates this path on Python 3.12. The KRONOS2 extra is not available on Python 3.14
-because the pinned Torch release does not support it. Normal use of the released marker
-vocabulary does not download BioLinkBERT; that conditional download occurs only when a
-complete novel-marker CSV is supplied. See
+with the institutional account required by its gate. On x86-64 Linux with CPython 3.11
+or 3.12, the extra installs the authors' pinned Torch/xFormers/Transformers/timm
+reference stack; raw2features validates this path on Python 3.12. Python 3.13 and other
+platforms use the upstream PyTorch attention fallback, which is slower and may use more
+memory. The KRONOS2 extra is not available on Python 3.14 because the pinned Torch
+release does not support it. Normal use of the released marker vocabulary does not
+download BioLinkBERT; that conditional download occurs only when a complete novel-marker
+CSV is supplied. See
 [MODALITIES.md](docs/MODALITIES.md) for marker selection and registration.
 
 **Development** (from a clone, with [uv](https://docs.astral.sh/uv/)):

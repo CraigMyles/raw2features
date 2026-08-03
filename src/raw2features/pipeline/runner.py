@@ -2694,7 +2694,8 @@ def _segment(reader, cfg: RunConfig, segmenter_name: str | None = None):
     """Return (tissue, seg_meta); (None, none-meta) when segmentation is off.
 
     ``segmenter_name`` overrides ``cfg.segmenter`` (multiplex slides route to the
-    ``nuclear`` segmenter, which thresholds the DAPI/Hoechst channel).
+    ``nuclear`` segmenter, which thresholds an established DAPI/Hoechst/DNA
+    channel or a DRAQ5 fallback).
     """
     if cfg.no_seg:
         return None, {"segmenter": "none"}

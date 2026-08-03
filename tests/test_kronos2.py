@@ -26,7 +26,9 @@ from raw2features.embedders.kronos2_embedder import (
     KRONOS2_SCALING_CONTRACT,
     KRONOS2_SNAPSHOT_ALLOW_PATTERNS,
     KRONOS2_SNAPSHOT_TOP_LEVEL_ALLOWLIST,
+    KRONOS2_XFORMERS_VERSION,
     Kronos2Embedder,
+    _allows_pinned_xformers,
     _marker_match_key,
     _scaling_factor,
 )
@@ -156,6 +158,24 @@ def test_kronos2_registry_and_fingerprint_cover_the_complete_static_contract():
         "method": "__call__",
         "marker_names": "canonical_marker_metadata_names",
         "result": "x_norm_clstoken",
+    }
+    assert constructor["forward"]["attention_backend_policy"] == {
+        "selection": (
+            "pinned_xformers_in_reference_environment_else_forced_fallback"
+        ),
+        "pinned_reference": {
+            "implementation": "xformers.ops.memory_efficient_attention",
+            "package_version": KRONOS2_XFORMERS_VERSION,
+            "install_environment": "linux_x86_64_cpython_3_11_or_3_12",
+        },
+        "fallback": {
+            "implementation": "upstream_dinov2_pytorch_attention",
+            "condition": (
+                "outside_reference_environment_or_xformers_unavailable_or_disabled"
+            ),
+            "enforcement": "temporary_XFORMERS_DISABLED_during_construction",
+            "preimport_conflict": "fail_closed",
+        },
     }
     assert constructor["marker_metadata"] == {
         "filename": "marker_metadata.csv",
@@ -691,8 +711,51 @@ def test_forward_uses_padded_fixed_eight_row_microbatches(n_rows):
         assert final_rows[valid:] == [final_rows[valid - 1]] * (8 - valid)
 
 
+@pytest.mark.parametrize(
+    ("system", "machine", "implementation", "python_version", "version", "expected"),
+    [
+        ("Linux", "x86_64", "CPython", (3, 11), KRONOS2_XFORMERS_VERSION, True),
+        ("Linux", "AMD64", "CPython", (3, 12), KRONOS2_XFORMERS_VERSION, True),
+        ("Linux", "x86_64", "CPython", (3, 13), KRONOS2_XFORMERS_VERSION, False),
+        ("Linux", "aarch64", "CPython", (3, 12), KRONOS2_XFORMERS_VERSION, False),
+        ("Darwin", "x86_64", "CPython", (3, 12), KRONOS2_XFORMERS_VERSION, False),
+        ("Linux", "x86_64", "PyPy", (3, 12), KRONOS2_XFORMERS_VERSION, False),
+        ("Linux", "x86_64", "CPython", (3, 12), "0.0.30", False),
+    ],
+)
+def test_only_the_pinned_reference_xformers_environment_is_allowed(
+    monkeypatch, system, machine, implementation, python_version, version, expected
+):
+    import raw2features.embedders.kronos2_embedder as module
+
+    monkeypatch.setattr(module.importlib_metadata, "version", lambda _name: version)
+
+    assert (
+        _allows_pinned_xformers(
+            system=system,
+            machine=machine,
+            implementation=implementation,
+            python_version=python_version,
+        )
+        is expected
+    )
+
+
+def test_forced_fallback_rejects_an_already_imported_xformers_backend(monkeypatch):
+    import raw2features.embedders.kronos2_embedder as module
+
+    monkeypatch.setitem(
+        sys.modules,
+        "dinov2.layers.attention",
+        SimpleNamespace(XFORMERS_AVAILABLE=True),
+    )
+    with pytest.raises(RuntimeError, match="already-imported DINOv2"):
+        module._assert_forced_fallback_is_not_preimported_with_xformers()
+
+
+@pytest.mark.parametrize("snapshot_preexisting", [False, True])
 def test_loader_verifies_both_artifacts_then_loads_only_the_local_snapshot(
-    monkeypatch, tmp_path
+    monkeypatch, tmp_path, snapshot_preexisting
 ):
     import raw2features.embedders.kronos2_embedder as module
 
@@ -708,6 +771,7 @@ def test_loader_verifies_both_artifacts_then_loads_only_the_local_snapshot(
     metadata.write_bytes(metadata_bytes)
     snapshot_calls = []
     load_calls = []
+    backend_env = []
     events = []
 
     isolated_dir = tmp_path / "isolated-runtime"
@@ -722,6 +786,8 @@ def test_loader_verifies_both_artifacts_then_loads_only_the_local_snapshot(
         return str(tmp_path)
 
     monkeypatch.setattr(module, "download_pinned_hf_snapshot", snapshot_download)
+    monkeypatch.setattr(module, "_allows_pinned_xformers", lambda: False)
+    monkeypatch.delenv("XFORMERS_DISABLED", raising=False)
     original_verify = module.verify_sha256
 
     def verify(path, expected, *, what):
@@ -748,6 +814,7 @@ def test_loader_verifies_both_artifacts_then_loads_only_the_local_snapshot(
         def from_pretrained(source, **kwargs):
             events.append(("load", Path(source).name, "AutoModel"))
             load_calls.append((source, kwargs))
+            backend_env.append(module.os.environ.get("XFORMERS_DISABLED"))
             sys.path.insert(0, source)
             return Model()
 
@@ -770,6 +837,9 @@ def test_loader_verifies_both_artifacts_then_loads_only_the_local_snapshot(
     emb._registered_additional_markers_digest = "stale"
     emb._novel_registration_failed = True
     emb._raw2features_multiplex_source_indices = (9,)
+    if snapshot_preexisting:
+        monkeypatch.setattr(sys, "path", [*sys.path, str(tmp_path)])
+    original_sys_path = list(sys.path)
     emb.load(device="cpu")
 
     assert snapshot_calls == [
@@ -800,7 +870,9 @@ def test_loader_verifies_both_artifacts_then_loads_only_the_local_snapshot(
     assert not hasattr(emb, "_registered_additional_markers_digest")
     assert not hasattr(emb, "_novel_registration_failed")
     assert not hasattr(emb, "_raw2features_multiplex_source_indices")
-    assert str(tmp_path) not in sys.path
+    assert sys.path == original_sys_path
+    assert backend_env == ["1"]
+    assert "XFORMERS_DISABLED" not in module.os.environ
 
 
 def test_loader_rejects_stale_unrequested_snapshot_code_before_execution(

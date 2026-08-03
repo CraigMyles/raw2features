@@ -2,10 +2,11 @@
 
 KRONOS2 is distributed as a gated Hugging Face repository containing custom
 ``transformers`` code, a marker-aware DINOv2 ViT-B/16 checkpoint, and the marker
-metadata that defines both normalisation and marker identity.  raw2features downloads
-one immutable snapshot, verifies both content-affecting data artifacts, and gives only
-that local directory to ``AutoModel``.  This prevents the pinned custom loader from
-silently resolving a newer copy of its own weights.
+metadata that defines both normalisation and marker identity. raw2features downloads
+only the files required for inference from one immutable revision into a managed cache,
+verifies both content-affecting data artifacts, and gives only that local directory to
+``AutoModel``. This prevents the pinned custom loader from silently resolving a newer
+copy of its own weights.
 
 Published markers use text embeddings already baked into the checkpoint.  The upstream
 ``register_additional_markers`` path runs BioLinkBERT for genuinely novel markers.
@@ -25,9 +26,11 @@ import importlib
 import json
 import math
 import os
+import platform
 import sys
 import tempfile
 import unicodedata
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +59,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 KRONOS2_MARKER_METADATA_FILENAME = "marker_metadata.csv"
+KRONOS2_XFORMERS_VERSION = "0.0.29.post3"
 KRONOS2_SNAPSHOT_TOP_LEVEL_ALLOWLIST = (
     "config.json",
     "configuration_kronos2.py",
@@ -103,6 +107,22 @@ KRONOS2_FORWARD_CONTRACT: dict[str, Any] = {
         "output": "slice_back_to_unpadded_row_count",
     },
     "output_order": "input_order",
+    "attention_backend_policy": {
+        "selection": "pinned_xformers_in_reference_environment_else_forced_fallback",
+        "pinned_reference": {
+            "implementation": "xformers.ops.memory_efficient_attention",
+            "package_version": KRONOS2_XFORMERS_VERSION,
+            "install_environment": "linux_x86_64_cpython_3_11_or_3_12",
+        },
+        "fallback": {
+            "implementation": "upstream_dinov2_pytorch_attention",
+            "condition": (
+                "outside_reference_environment_or_xformers_unavailable_or_disabled"
+            ),
+            "enforcement": "temporary_XFORMERS_DISABLED_during_construction",
+            "preimport_conflict": "fail_closed",
+        },
+    },
 }
 KRONOS2_MARKER_MATCHING_CONTRACT: dict[str, Any] = {
     "name": "upstream_separator_insensitive_exact",
@@ -303,8 +323,47 @@ def _assert_allowlisted_runtime_snapshot(snapshot: str) -> None:
     unexpected = sorted(actual - allowed)
     if unexpected:
         raise ValueError(
-            "KRONOS2's isolated runtime snapshot contains unexpected top-level "
+            "KRONOS2's raw2features-managed cache contains unexpected top-level "
             f"entries: {unexpected}. Refusing to add it to the Python import path."
+        )
+
+
+def _allows_pinned_xformers(
+    *,
+    system: str | None = None,
+    machine: str | None = None,
+    implementation: str | None = None,
+    python_version: tuple[int, int] | None = None,
+) -> bool:
+    """Whether this process may use the one validated xFormers distribution."""
+
+    runtime = tuple(sys.version_info[:2]) if python_version is None else python_version
+    if (
+        (system or platform.system()).casefold() != "linux"
+        or (machine or platform.machine()).casefold() not in {"x86_64", "amd64"}
+        or (implementation or platform.python_implementation()).casefold() != "cpython"
+        or runtime not in {(3, 11), (3, 12)}
+    ):
+        return False
+    try:
+        return importlib_metadata.version("xformers") == KRONOS2_XFORMERS_VERSION
+    except importlib_metadata.PackageNotFoundError:
+        return False
+
+
+def _assert_forced_fallback_is_not_preimported_with_xformers() -> None:
+    """Fail if an already-imported upstream module makes fallback unenforceable."""
+
+    conflicts = [
+        name
+        for name in ("dinov2.layers.attention", "dinov2.layers.block")
+        if bool(getattr(sys.modules.get(name), "XFORMERS_AVAILABLE", False))
+    ]
+    if conflicts:
+        raise RuntimeError(
+            "KRONOS2 must use its PyTorch attention fallback in this environment, "
+            "but an already-imported DINOv2 module enabled xFormers: "
+            f"{conflicts}. Start a fresh Python process before loading KRONOS2."
         )
 
 
@@ -364,8 +423,14 @@ class Kronos2Embedder(Embedder):
         # snapshot_download call. The outer Transformers resolver also receives
         # local_files_only=True. Upstream temporarily inserts the directory at
         # sys.path[0] for its bundled dinov2 package; remove that new entry after
-        # construction so its module names cannot shadow later imports.
-        snapshot_was_on_sys_path = snapshot in sys.path
+        # construction so the directory is not left at the front of the caller's
+        # import search path.
+        force_attention_fallback = not _allows_pinned_xformers()
+        previous_xformers_disabled = os.environ.get("XFORMERS_DISABLED")
+        if force_attention_fallback:
+            _assert_forced_fallback_is_not_preimported_with_xformers()
+            os.environ["XFORMERS_DISABLED"] = "1"
+        snapshot_path_count = sys.path.count(snapshot)
         try:
             model = AutoModel.from_pretrained(
                 snapshot,
@@ -374,8 +439,16 @@ class Kronos2Embedder(Embedder):
                 device=device,
             )
         finally:
-            if not snapshot_was_on_sys_path:
-                sys.path[:] = [entry for entry in sys.path if entry != snapshot]
+            added_count = max(0, sys.path.count(snapshot) - snapshot_path_count)
+            for _ in range(added_count):
+                # Upstream inserts at the front, and list.remove() removes the first
+                # occurrence. Preserve any entry that belonged to the caller.
+                sys.path.remove(snapshot)
+            if force_attention_fallback:
+                if previous_xformers_disabled is None:
+                    os.environ.pop("XFORMERS_DISABLED", None)
+                else:
+                    os.environ["XFORMERS_DISABLED"] = previous_xformers_disabled
         model = model.float().eval().to(device)
         self._model = model
         self._device = device

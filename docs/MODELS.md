@@ -271,10 +271,12 @@ back to **1.0 µm/px** unless run alongside a model that supplies one or given a
   Upstream recommends batches of at least eight for reproducibility. raw2features fixes
   its effective forward microbatch at eight and pads a shorter final microbatch before
   slicing the output back to its original length. This runtime contract is recorded;
-  bitwise equality across different hardware is not promised. The `[kronos2]` extra
-  installs the authors' pinned Torch, xFormers, Transformers, and timm reference stack
-  on x86-64 Linux and is validated with Python 3.12. The pinned Torch release does not
-  support Python 3.14. `--compile` is not supported for KRONOS2 in v0.2.1.
+  bitwise equality across different hardware is not promised. On x86-64 Linux with
+  CPython 3.11 or 3.12, the `[kronos2]` extra installs the authors' pinned Torch,
+  xFormers, Transformers, and timm reference stack; this path is validated with Python
+  3.12. Python 3.13 and other platforms use the upstream PyTorch attention fallback,
+  which is slower and may use more memory. The pinned Torch release does not support
+  Python 3.14. `--compile` is not supported for KRONOS2 in v0.2.1.
   The ordinary 288-marker path uses text embeddings already stored in the checkpoint
   and never downloads BioLinkBERT.
   The vocabulary includes DAPI and DRAQ5 but not Hoechst or DNA1/DNA2 labels; exclude

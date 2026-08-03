@@ -165,6 +165,38 @@ def test_native_multiplex_rejects_unproven_historical_nuclear_grids(
     assert not native.allows_hashless_legacy_grid()
 
 
+def test_draq5_fallback_is_grid_bound_and_never_reuses_a_v01_grid():
+    draq5 = RunConfig(
+        models=["kronos2"],
+        resolved_channel_names=["DRAQ5", "CD3"],
+        resolved_nuclear_channel_indices=[0],
+        resolved_original_channel_names=["DRAQ5", "CD3"],
+    )
+    moved = replace(
+        draq5,
+        resolved_channel_names=["CD3", "DRAQ5"],
+        resolved_nuclear_channel_indices=[1],
+        resolved_original_channel_names=["CD3", "DRAQ5"],
+    )
+    repeated = replace(
+        draq5,
+        resolved_channel_names=["DRAQ5", "DRAQ-5", "CD3"],
+        resolved_nuclear_channel_indices=[0, 1],
+        resolved_original_channel_names=["DRAQ5", "DRAQ-5", "CD3"],
+    )
+    established_dapi = replace(
+        draq5,
+        resolved_channel_names=["DAPI", "DRAQ5", "CD3"],
+        resolved_original_channel_names=["DAPI", "DRAQ5", "CD3"],
+    )
+
+    assert len({draq5.grid_hash(), moved.grid_hash(), repeated.grid_hash()}) == 3
+    assert established_dapi.grid_hash() == draq5.grid_hash()
+    assert draq5.compatible_legacy_grid_hashes() == ()
+    assert draq5.compatible_legacy_grid_segmenters() == {}
+    assert not draq5.allows_hashless_legacy_grid()
+
+
 def test_multiplex_settings_move_content_identity_but_not_grid_identity():
     """A strategy changes model output/receipt identity, never patch geometry."""
     base = RunConfig(models=["uni"], no_seg=True)

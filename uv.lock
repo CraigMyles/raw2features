@@ -3396,7 +3396,7 @@ kronos2 = [
     { name = "timm" },
     { name = "torch" },
     { name = "transformers" },
-    { name = "xformers", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "xformers", marker = "python_full_version < '3.13' and platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux'" },
 ]
 madeleine = [
     { name = "einops" },
@@ -3584,7 +3584,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'kronos2'", specifier = "==4.56.0" },
     { name = "transformers", marker = "extra == 'models'", specifier = ">=4.40" },
     { name = "typer", specifier = ">=0.12" },
-    { name = "xformers", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'kronos2'", specifier = "==0.0.29.post3" },
+    { name = "xformers", marker = "python_full_version < '3.13' and platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra == 'kronos2'", specifier = "==0.0.29.post3" },
     { name = "zarr", marker = "extra == 'zarr'", specifier = ">=3.1" },
 ]
 provides-extras = ["all", "zarr", "image", "stain", "torch", "models", "conch", "hibou", "kronos", "kronos2", "musk", "open-clip", "grandqc", "prism", "madeleine", "gigapath-slide", "chief", "tangle", "seal", "spatialdata", "h5", "tables", "s3", "benchmark"]
@@ -5123,8 +5123,8 @@ name = "xformers"
 version = "0.0.29.post3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "numpy", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
-    { name = "torch", marker = "sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "numpy", marker = "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
+    { name = "torch", marker = "python_full_version < '3.14' and sys_platform != 'emscripten' and sys_platform != 'win32'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/c1/fd/e9201fbee6a1a6d7a9c67c24a256ad4c2377bc67a634f7dbeaea23bd668a/xformers-0.0.29.post3.tar.gz", hash = "sha256:0b77c67ecc3c9fdd8a0e4399e675adf12e2ff40285e00974cca2d09108157f60", size = 8461348, upload-time = "2025-02-10T18:33:04.046Z" }
 wheels = [

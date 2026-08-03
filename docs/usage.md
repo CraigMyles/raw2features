@@ -358,10 +358,12 @@ Upstream recommends batches of at least eight for reproducibility. raw2features 
 fixed eight-sample forward microbatches and pads a shorter final microbatch before
 discarding the padded outputs. This runtime contract is recorded. The global
 `--batch-size` may be left unchanged; it does not override this internal cap. Bitwise
-equality across different hardware is not promised. The `[kronos2]` extra installs the
-authors' pinned x86-64 Linux reference stack and is validated with Python 3.12. The
-pinned Torch release does not support Python 3.14. `--compile` is not supported for
-KRONOS2 in v0.2.1; use the validated eager path.
+equality across different hardware is not promised. On x86-64 Linux with CPython 3.11
+or 3.12, the `[kronos2]` extra installs the authors' pinned xFormers reference path;
+this path is validated with Python 3.12. Python 3.13 and other platforms use the
+upstream PyTorch attention fallback, which is slower and may use more memory. The pinned
+Torch release does not support Python 3.14. `--compile` is not supported for KRONOS2 in
+v0.2.1; use the validated eager path.
 
 The released KRONOS2 repository includes 288 usable marker-metadata entries, 268 marked
 as pretraining markers, and stores their text vectors in the checkpoint. Normal

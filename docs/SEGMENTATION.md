@@ -12,6 +12,7 @@ from standard techniques - no GPL/CLAM code, no model weights.
 |---|---|---|
 | `otsu` *(default)* | Otsu threshold on HSV **saturation** + morphology | general default - clean & robust |
 | `canny` | **low**-threshold Canny (`low=0.05`) → close → **hole-aware contour fill** (`max_hole_frac` keeps large cavities as background) | good on **cervical / faint** tissue - recovers pale tissue Otsu can under-segment |
+| `canny_density` | the same low-threshold Canny kept as a **raw edge map** (no dilate/close/fill) at a finer `seg_mpp` (2.0) → the patcher's per-cell mean *is* the patch's **edge density** | **per-patch** decisions with sharp, gap-respecting boundaries - fragmented / sparse slides where filling would swallow the background between fragments. **`--tissue-threshold` becomes a density** (try 0.01-0.05), not a coverage fraction |
 | `combined` | fuse `otsu` and `canny` - `or` (default) recovers faint tissue, `and` suppresses smooth high-saturation artefacts | when a cohort needs faint-tissue recovery (`or`) or artefact suppression (`and`) |
 
 ## Choosing a segmenter (evidence)
@@ -36,6 +37,28 @@ which matches practitioners' experience on cervical H&E. So:
   (lower = more sensitive) per cohort.
 - **`combined or`** is a safe superset of `otsu` (never loses tissue) that folds in
   canny's faint-tissue recovery; **`combined and`** is stricter (artefact suppression).
+
+### `canny` (contour fill) vs `canny_density` (per-patch)
+
+The finding above - that a *high/auto* threshold or **edge-density** thresholding
+under-segments faint tissue - was measured against a **region**-style mask: one coarse
+whole-slide mask that then has to outline whole tissue regions. Filling contours is the
+right fix *there*.
+
+`canny_density` is a different use of the same edges: it keeps the raw edge map and lets
+the patcher average it per patch, so **each patch is judged on its own edge content** and
+nothing is grown or filled. That combination - a **low** threshold (0.05) with a
+**per-patch** density - is the recipe practitioners report working well on cervical H&E,
+and it is not the configuration the 0.3% result above came from (that was a high/auto
+threshold). Pick by failure mode:
+
+- tissue is *faint but contiguous*, and you want solid regions → **`canny`**
+- tissue is *fragmented/sparse*, and filling the gaps between fragments would tile
+  background → **`canny_density`**
+
+Because the mask is a thin edge map, its per-patch mean is small: start around
+`--tissue-threshold 0.02` and tune per cohort (and re-tune if you change `seg_mpp`,
+since finer masks carry more, thinner edges per field of view).
 
 ## Provenance of the built-in segmenters
 

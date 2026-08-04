@@ -220,6 +220,7 @@ def validate_model(
             return False
         if expected_fingerprint is not None:
             from raw2features.embedders.fingerprint import (
+                output_fingerprints_compatible,
                 output_fingerprints_equal,
             )
 
@@ -235,9 +236,14 @@ def validate_model(
                 if isinstance(model_meta, dict)
                 else None
             )
-            if not output_fingerprints_equal(array_fingerprint, expected_fingerprint):
+            # Header and array must describe one exact producer. Once that invariant
+            # holds, a completed KRONOS2 output may be checked on a host whose approved
+            # attention backend differs from the producer recorded in the store.
+            if not output_fingerprints_equal(array_fingerprint, header_fingerprint):
                 return False
-            if not output_fingerprints_equal(header_fingerprint, expected_fingerprint):
+            if not output_fingerprints_compatible(
+                array_fingerprint, expected_fingerprint
+            ):
                 return False
         block = 8192
         for s in range(0, n_patches, block):

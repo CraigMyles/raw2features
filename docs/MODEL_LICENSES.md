@@ -3,9 +3,12 @@
 `raw2features` (this code) is **MIT**. It downloads model weights at runtime from each
 model's source - Hugging Face, or Google Drive (by a pinned file id + verified SHA-256) for
 `chief` / `tangle` - under *your* acceptance of that model's licence/gate, and
-**redistributes no weights**. The inference recipe for each model is re-implemented in our
-own code with the source cited (`transform_source_url` in
-`src/raw2features/embedders/registry.yaml`); we vendor no model code.
+**redistributes no weights**. Most inference recipes are implemented in our own code.
+Loaders that use a model repository's custom code, including KRONOS2, execute it only
+from the recorded pinned snapshot. The source is cited through `transform_source_url` in
+`src/raw2features/embedders/registry.yaml`. KRONOS2's executable code is pinned by its
+immutable repository commit; its weights and marker table are additionally SHA-256
+verified before that code runs.
 
 **You are responsible for complying with each model's own licence where applicable.** The
 per-model `license:` field in `registry.yaml` is the machine-readable source of truth; the
@@ -51,6 +54,12 @@ table below lists each model's weights licence.
 | `plip` | MIT (project `setup.py`; no LICENSE file) | no |
 | `keep` | MIT | no |
 | `kronos` | CC-BY-NC-ND-4.0 (KRONOS, MahmoodLab; multiplex, non-commercial) | yes |
+| `kronos2` | CC-BY-NC-ND-4.0 (KRONOS2, MahmoodLab; gated non-commercial academic terms) | yes (institutional approval) |
+
+KRONOS2's optional novel-marker path also downloads
+`michiyasunaga/BioLinkBERT-large`, whose repository declares Apache-2.0. Its source,
+immutable revision, artifact hashes, and licence are recorded in the conditional
+registration contract. It is not loaded for the released KRONOS2 marker vocabulary.
 
 ## Slide encoders
 

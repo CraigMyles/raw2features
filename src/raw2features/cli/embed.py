@@ -14,6 +14,7 @@ from raw2features.viz import DEFAULT_THUMBNAIL_MPP
 from ._validation import (
     parse_channel_names_file,
     parse_json_object,
+    parse_kronos2_additional_markers_file,
     validate_amp,
     validate_batch_size,
     validate_geometry,
@@ -77,8 +78,9 @@ def embed(
     multiplex_markers: list[str] = typer.Option(
         [],
         "--marker",
-        help="Multiplex marker to include; repeat in the required order. Default: all "
-        "named channels in source order (concat requires an explicit list).",
+        help="Multiplex marker to include; repeat in the required order. Applies to "
+        "native multiplex models and --multiplex-strategy. Default: all source "
+        "channels (channelwise concat requires an explicit list).",
     ),
     channel_names_file: str | None = typer.Option(
         None,
@@ -86,6 +88,12 @@ def embed(
         help="UTF-8 .txt/.csv/.tsv with exactly one ordered name per physical C-axis "
         "position. Supplies missing labels and verifies existing labels; combine "
         "with --marker to select or order a subset.",
+    ),
+    kronos2_additional_markers: str | None = typer.Option(
+        None,
+        "--kronos2-additional-markers",
+        help="Complete CSV metadata for explicitly selected markers outside KRONOS2's "
+        "released vocabulary. Conditionally loads the pinned BioLinkBERT encoder.",
     ),
     multiplex_normalization: str = typer.Option(
         "percentile",
@@ -233,6 +241,9 @@ def embed(
     validate_multiplex_percentiles(multiplex_percentile_low, multiplex_percentile_high)
     strategy_params = parse_json_object(multiplex_params, "--multiplex-params")
     channel_names_override = parse_channel_names_file(channel_names_file)
+    kronos2_marker_contract = parse_kronos2_additional_markers_file(
+        kronos2_additional_markers
+    )
     if hf_token:
         os.environ["HF_TOKEN"] = hf_token
         os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
@@ -248,6 +259,11 @@ def embed(
         models = list(dict.fromkeys(e["model"] for e in geometry_config))
     else:
         models = list(feature_extractor)
+    if kronos2_marker_contract is not None and "kronos2" not in models:
+        raise typer.BadParameter(
+            "requires `kronos2` in the requested model set",
+            param_hint="--kronos2-additional-markers",
+        )
 
     # Resolve and preview the per-model extraction geometry (one grid per group).
     groups = resolve_geometry(models, mpp, patch_size, geometry_config)
@@ -288,6 +304,11 @@ def embed(
         multiplex_normalization_max_side_px=multiplex_normalization_max_side_px,
         multiplex_aggregation=multiplex_aggregation,
         multiplex_strategy_params=strategy_params,
+        native_multiplex_params=(
+            {"kronos2": {"additional_markers": kronos2_marker_contract}}
+            if kronos2_marker_contract is not None
+            else {}
+        ),
         channel_names_override=channel_names_override,
         snap_to_level=snap_to_level,
         mpp_tolerance=mpp_tolerance,

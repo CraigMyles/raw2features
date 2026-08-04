@@ -1011,6 +1011,43 @@ kronos:
     SDPA (flash attention) by default -- no xFormers; much faster and far lighter on memory than KRONOS's
     upstream naive-attention fallback, so the default batch fits. Opt out with `sdpa: false`. Validated full-slide on real CODEX multiplex data.
 
+kronos2:
+  family: kronos2
+  modality: multiplex
+  source: "hf_hub:MahmoodLab/KRONOS2"
+  embedding_dim: 768
+  input_size: 256
+  recommended_patch_px: 256
+  pooling: cls
+  # RGB normalization is unused. Raw native marker channels first use the
+  # upstream dtype divisor, then the verified marker_metadata.csv statistics.
+  mean: [0.0, 0.0, 0.0]
+  std: [1.0, 1.0, 1.0]
+  interpolation: bicubic
+  inference_amp: fp32
+  transform_source_url: "https://huggingface.co/MahmoodLab/KRONOS2"
+  weights_filename: "kronos2_vitb16_teacher.pth"
+  weights_sha256: "afa261ef8b63bb0acea62612d7594ac11fbdb89fbdd23c513f046a034725d2b4"
+  weights_revision: "e2a5473206c02d9973885b6445ef783f7e082951"
+  doi: "10.48550/arXiv.2506.03373"
+  license: "CC-BY-NC-ND-4.0 (KRONOS2; gated non-commercial academic use)"
+  gated: true
+  timm_kwargs:
+    marker_metadata_filename: "marker_metadata.csv"
+    marker_metadata_sha256: "1e6791448a792c0edec9b2ba74efceaefba84d96852351cdc58d67f80b539074"
+  notes: >-
+    KRONOS2 (MahmoodLab) is a native marker-aware multiplex ViT-B/16 that returns
+    a 768-d CLS vector. Only the inference files allowlisted from the pinned Hugging
+    Face revision are placed in a raw2features-managed cache. The weight and marker
+    metadata hashes are verified before its custom code executes. Marker names match
+    exactly after the upstream separator-only normalization; no biological aliases or
+    KRONOSv1 compound-token fallback is applied. Published marker text embeddings are
+    checkpoint buffers, so ordinary inference does not download BioLinkBERT.
+    An explicit complete additional-marker CSV enables the upstream registration path
+    with user-supplied statistics and a separately pinned, SHA-verified BioLinkBERT
+    snapshot; that conditional contract is fingerprinted. Requires the `kronos2`
+    extra plus individually approved gated access.
+
 musk:
   family: musk
   source: "hf-hub:xiangjx/musk"

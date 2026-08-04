@@ -111,6 +111,27 @@ def test_nuclear_segmenter_thresholds_dapi(synthetic_multiplex_ngff):
         assert set(np.unique(tm.mask)).issubset({0.0, 1.0})
 
 
+def test_nuclear_segmenter_thresholds_draq5_as_a_fallback(
+    synthetic_multiplex_ngff,
+):
+    import zarr
+
+    from raw2features.segmenters.nuclear import NuclearSegmenter
+
+    root = zarr.open_group(synthetic_multiplex_ngff, mode="r+")
+    labels = ["DRAQ5", "CD3", "CD8", "CD20", "FOXP3"]
+    root.attrs["omero"] = {
+        "channels": [{"label": label, "active": True} for label in labels]
+    }
+
+    with OmeZarrReader(synthetic_multiplex_ngff) as reader:
+        assert NuclearSegmenter()._nuclear_indices(reader.channel_names) == [0]
+        mask = NuclearSegmenter(seg_mpp=2.0).segment(reader)
+
+    assert mask.mask.ndim == 2 and mask.mask.dtype == np.float32
+    assert set(np.unique(mask.mask)).issubset({0.0, 1.0})
+
+
 def test_nuclear_segmenter_errors_without_a_nuclear_channel(synthetic_multiplex_ngff):
     from raw2features.segmenters.nuclear import NuclearSegmenter
 
@@ -189,6 +210,46 @@ def test_nuclear_segmenter_combines_metal_prefixed_dna_pair_and_repeated_dapi():
         2,
         3,
     ]
+
+
+@pytest.mark.parametrize(
+    "name",
+    ["DRAQ5", "DRAQ-5", "DRAQ 5", "191Ir_DRAQ5", "DRAQ5(Ir191)"],
+)
+def test_nuclear_segmenter_recognizes_bounded_draq5_variants(name):
+    from raw2features.segmenters.nuclear import NuclearSegmenter
+
+    assert NuclearSegmenter()._nuclear_indices(["CD3", name]) == [1]
+
+
+@pytest.mark.parametrize("name", ["DRAQ7", "antiDRAQ5", "DRAQ51"])
+def test_nuclear_segmenter_rejects_draq5_false_positives(name):
+    from raw2features.segmenters.nuclear import NuclearSegmenter
+
+    with pytest.raises(ValueError, match="no nuclear channel"):
+        NuclearSegmenter()._nuclear_indices([name, "CD3"])
+
+
+def test_nuclear_segmenter_uses_draq5_only_when_primary_stain_is_absent():
+    from raw2features.segmenters.nuclear import NuclearSegmenter
+
+    segmenter = NuclearSegmenter()
+    assert segmenter._nuclear_indices(["DRAQ5", "DAPI", "CD3"]) == [1]
+    assert segmenter._nuclear_indices(["DAPI", "DRAQ5", "CD3"]) == [0]
+    assert segmenter._nuclear_indices(["DRAQ5", "Hoechst1", "CD3"]) == [1]
+
+
+def test_nuclear_segmenter_combines_repeated_draq5_without_uint16_overflow():
+    from raw2features.segmenters.nuclear import NuclearSegmenter
+
+    segmenter = NuclearSegmenter()
+    assert segmenter._nuclear_indices(["CD3", "DRAQ5", "DRAQ-5"]) == [1, 2]
+    block = np.zeros((2, 2, 3), dtype=np.uint16)
+    block[..., 1] = np.uint16(60_000)
+    block[..., 2] = np.uint16(50_000)
+    combined = segmenter._combine_nuclear_channels(block, [1, 2])
+    assert combined.dtype == np.float32
+    assert np.all(combined == 55_000.0)
 
 
 @pytest.mark.parametrize(

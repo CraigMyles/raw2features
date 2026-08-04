@@ -3,6 +3,42 @@
 Notable changes to raw2features, newest first. This project follows
 [Semantic Versioning](https://semver.org).
 
+## [0.2.1] - Unreleased
+
+This focused model update adds KRONOS2 to the existing native multiplex path. The store
+layout, geometry-only `grid_hash`, and brightfield execution path are unchanged.
+
+### Models and multiplex inputs
+
+- Add the gated `kronos2` native multiplex patch encoder: a pinned, SHA-verified
+  marker-aware ViT-B/16 that produces a 768-dimensional CLS vector from ordered marker
+  stacks. The released metadata contains 288 usable marker entries, 268 of them
+  marked as pretraining markers. This path runs in fp32 and does not download its
+  BioLinkBERT text encoder. Its recorded forward contract uses fixed eight-sample
+  microbatches, including deterministic padding of a short final microbatch. The
+  optional extra installs the authors' pinned x86-64 Linux reference stack. Only the
+  required pinned custom-code modules enter an app-owned runtime snapshot, and the
+  upstream-added import path is removed after model construction.
+- Use DRAQ5 as the nuclear-segmentation fallback when a multiplex panel has no
+  recognized DAPI, Hoechst, or DNA stain. Existing panels containing DAPI retain their
+  DAPI binding, and repeated DRAQ5 acquisitions are averaged with their physical indices
+  recorded in grid identity.
+- Install the pinned xFormers reference kernel only where its release provides wheels
+  (x86-64 Linux, CPython 3.11/3.12); Python 3.13 and other platforms use KRONOS2's
+  enforced upstream PyTorch attention fallback instead of an unvalidated xFormers build.
+  Record the resolved attention backend in each model-output fingerprint so outputs
+  remain self-describing across hosts; completed arrays from either approved path remain
+  valid, while exact header/array agreement prevents partial writes being accepted.
+- Extend repeated `--marker` selection and ordering to native multiplex encoders. The
+  resolved physical indices and order are included in output fingerprints and panel
+  provenance without changing patch-grid identity.
+- Add optional `--kronos2-additional-markers` registration for novel markers. The
+  canonical consumed CSV fields, intensity statistics, and pinned BioLinkBERT dependency
+  are bound into the model contract; BioLinkBERT is fetched only when this option is used.
+- Keep native multiplex and ordinary RGB encoders in separate requests so each receives
+  the correct source-channel view. Additive runs can still write their outputs into the
+  same store when their grid geometry matches.
+
 ## [0.2.0] - 2026-07-23
 
 This release extends named-channel multiplex support with a `channelwise` strategy, adds
@@ -130,3 +166,4 @@ What 0.1.0 provides:
 
 [0.1.0]: https://github.com/CraigMyles/raw2features/releases/tag/v0.1.0
 [0.2.0]: https://github.com/CraigMyles/raw2features/compare/v0.1.0...v0.2.0
+[0.2.1]: https://github.com/CraigMyles/raw2features/compare/v0.2.0...HEAD

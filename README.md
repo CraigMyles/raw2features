@@ -12,8 +12,9 @@ independently swappable.
 from cloud storage, and each embedding carries the metadata needed to interpret and reuse it.
 
 By analogy to `bioformats2raw` and `raw2ometiff`, but for features: point it at a raw OME-Zarr WSI,
-choose from 30+ feature extractors (UNI/UNI2, Virchow/Virchow2, CONCH, KEEP,
-GigaPath, H-optimus, Phikon, CTransPath, …; full list in [MODELS.md](docs/MODELS.md)),
+choose from 30+ feature extractors (UNI/UNI2, Virchow/Virchow2, CONCH, KRONOS/KRONOS2,
+KEEP, GigaPath, H-optimus, Phikon, CTransPath, …; full list in
+[MODELS.md](docs/MODELS.md)),
 and get back a compact, self-describing `*.embeddings.zarr` with per-patch
 coordinates such that every embedding is relocatable to the slide.
 
@@ -81,6 +82,25 @@ The same pattern covers the other gated encoders - mostly slide encoders (e.g. `
 `gigapath_slide`, `seal`), a few with extra model-specific steps (a pinned fork, `flash-attn`,
 or Drive-hosted weights). Each model's exact install is in its [`MODELS.md`](docs/MODELS.md) row
 and the matching extra's comment in `pyproject.toml`.
+
+**KRONOS2.** The gated KRONOS2 repository is loaded from a pinned Hugging Face snapshot,
+so it needs no separate git-package install:
+
+```bash
+pip install "raw2features[all,kronos2]"
+hf auth login
+```
+
+Request access to [`MahmoodLab/KRONOS2`](https://huggingface.co/MahmoodLab/KRONOS2)
+with the institutional account required by its gate. On x86-64 Linux with CPython 3.11
+or 3.12, the extra installs the authors' pinned Torch/xFormers/Transformers/timm
+reference stack; raw2features validates this path on Python 3.12. Python 3.13 and other
+platforms use the upstream PyTorch attention fallback, which is slower and may use more
+memory. The KRONOS2 extra is not available on Python 3.14 because the pinned Torch
+release does not support it. Normal use of the released marker vocabulary does not
+download BioLinkBERT; that conditional download occurs only when a complete novel-marker
+CSV is supplied. See
+[MODALITIES.md](docs/MODALITIES.md) for marker selection and registration.
 
 **Development** (from a clone, with [uv](https://docs.astral.sh/uv/)):
 

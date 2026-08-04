@@ -220,6 +220,57 @@ def test_embed_cli_threads_multiplex_options(tmp_path, monkeypatch):
     _assert_multiplex_config(captured["cfg"])
 
 
+def test_embed_cli_threads_canonical_kronos2_additional_marker_contract(
+    tmp_path, monkeypatch
+):
+    embed_module = import_module("raw2features.cli.embed")
+    captured = {}
+
+    marker_csv = tmp_path / "novel.csv"
+    marker_csv.write_text(
+        "marker_name,marker_full_name,compartment,family,family_desc,mean,std\n"
+        "Novel-X,Novel marker X,membrane,immune_marker,immune marker,0.25,0.5\n"
+    )
+
+    def fake_embed_slide(slide, out_dir, cfg, **kwargs):
+        captured["cfg"] = cfg
+        return {"status": "complete"}
+
+    monkeypatch.setattr(embed_module, "embed_slide", fake_embed_slide)
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed",
+            str(tmp_path / "unused.zarr"),
+            str(tmp_path / "out"),
+            "-m",
+            "kronos2",
+            "--no-seg",
+            "--marker",
+            "Novel-X",
+            "--kronos2-additional-markers",
+            str(marker_csv),
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    contract = captured["cfg"].native_multiplex_params["kronos2"][
+        "additional_markers"
+    ]
+    assert contract["rows"][0]["marker_name"] == "Novel-X"
+    assert "original_file_sha256" not in contract
+
+
+@pytest.mark.parametrize("command", ["embed", "embed-many", "verify"])
+def test_kronos2_additional_marker_option_is_exposed_by_all_embedding_commands(command):
+    result = CliRunner().invoke(
+        app, [command, "--help"], env={"COLUMNS": "160"}
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "--kronos2-additional-markers" in strip_ansi(result.output)
+
+
 def test_embed_many_cli_threads_multiplex_options(tmp_path, monkeypatch):
     embed_many_module = import_module("raw2features.cli.embed_many")
     slides = tmp_path / "slides"

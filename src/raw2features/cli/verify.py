@@ -26,6 +26,7 @@ from raw2features.pipeline.runner import (
 from ._validation import (
     parse_channel_names_file,
     parse_json_object,
+    parse_kronos2_additional_markers_file,
     validate_amp,
     validate_geometry,
     validate_multiplex_percentiles,
@@ -72,13 +73,19 @@ def verify(
     multiplex_markers: list[str] = typer.Option(
         [],
         "--marker",
-        help="Multiplex marker; repeat in the exact order used by the embed run.",
+        help="Multiplex marker; repeat in the exact order used by the embed run. "
+        "Applies to native multiplex models and --multiplex-strategy.",
     ),
     channel_names_file: str | None = typer.Option(
         None,
         "--channel-names-file",
         help="UTF-8 .txt/.csv/.tsv with exactly one ordered name per physical C-axis "
         "position; must resolve to the same effective panel used by embed.",
+    ),
+    kronos2_additional_markers: str | None = typer.Option(
+        None,
+        "--kronos2-additional-markers",
+        help="Complete KRONOS2 novel-marker CSV used by the embed run.",
     ),
     multiplex_normalization: str = typer.Option(
         "percentile",
@@ -134,6 +141,9 @@ def verify(
     validate_multiplex_percentiles(multiplex_percentile_low, multiplex_percentile_high)
     strategy_params = parse_json_object(multiplex_params, "--multiplex-params")
     channel_names_override = parse_channel_names_file(channel_names_file)
+    kronos2_marker_contract = parse_kronos2_additional_markers_file(
+        kronos2_additional_markers
+    )
     from raw2features.core.device import resolve_device
     from raw2features.embedders.model_registry import resolve_geometry
     from raw2features.pipeline.runner import resolve_run
@@ -146,6 +156,11 @@ def verify(
         models = list(dict.fromkeys(e["model"] for e in geometry_config))
     else:
         models = list(feature_extractor)
+    if kronos2_marker_contract is not None and "kronos2" not in models:
+        raise typer.BadParameter(
+            "requires `kronos2` in the requested model set",
+            param_hint="--kronos2-additional-markers",
+        )
     # Verification has no programmatic external-embedder instance from which to
     # derive a current contract or geometry. Fail closed with the established clean
     # diagnostic before the geometry resolver rejects the unknown name.
@@ -185,6 +200,11 @@ def verify(
         multiplex_normalization_max_side_px=multiplex_normalization_max_side_px,
         multiplex_aggregation=multiplex_aggregation,
         multiplex_strategy_params=strategy_params,
+        native_multiplex_params=(
+            {"kronos2": {"additional_markers": kronos2_marker_contract}}
+            if kronos2_marker_contract is not None
+            else {}
+        ),
         channel_names_override=channel_names_override,
         snap_to_level=snap_to_level,
         mpp_tolerance=mpp_tolerance,

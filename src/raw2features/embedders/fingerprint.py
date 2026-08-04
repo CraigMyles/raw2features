@@ -265,6 +265,47 @@ def output_fingerprints_equal(left: Any, right: Any) -> bool:
     )
 
 
+def output_fingerprints_compatible(left: Any, right: Any) -> bool:
+    """Compare output contracts, allowing only KRONOS2's approved backends.
+
+    A completed KRONOS2 array remains valid when inspected on a machine that would
+    select the other supported attention implementation. The concrete backend stays
+    in the fingerprint; every other output-affecting field must remain identical.
+    """
+
+    if output_fingerprints_equal(left, right):
+        return True
+    if not valid_output_fingerprint(left) or not valid_output_fingerprint(right):
+        return False
+
+    left_payload = deepcopy(dict(left["payload"]))
+    right_payload = deepcopy(dict(right["payload"]))
+    if any(
+        payload.get("kind") != "patch_features"
+        or payload.get("model") != "kronos2"
+        or not isinstance(payload.get("loader"), dict)
+        or payload["loader"].get("family") != "kronos2"
+        or not isinstance(payload.get("output"), dict)
+        for payload in (left_payload, right_payload)
+    ):
+        return False
+
+    from .kronos2_embedder import (
+        KRONOS2_PYTORCH_ATTENTION_BACKEND,
+        KRONOS2_XFORMERS_ATTENTION_BACKEND,
+    )
+
+    approved = (
+        KRONOS2_PYTORCH_ATTENTION_BACKEND,
+        KRONOS2_XFORMERS_ATTENTION_BACKEND,
+    )
+    left_backend = left_payload["output"].pop("attention_backend", None)
+    right_backend = right_payload["output"].pop("attention_backend", None)
+    if left_backend not in approved or right_backend not in approved:
+        return False
+    return left_payload == right_payload
+
+
 def fingerprint_digest(value: Any) -> str | None:
     """Return a validated record's digest, else ``None``."""
 
@@ -297,6 +338,7 @@ def _effective_patch_checkpoint(spec: ModelSpec) -> dict[str, Any]:
             "transformers_snapshot_return_conch",
         ),
         "kronos": (repo, "pinned_local_file"),
+        "kronos2": (repo, "pinned_local_snapshot"),
         "musk": (repo, "pinned_local_file"),
         "open_clip": (repo, "pinned_local_snapshot"),
         "keep": (repo, "pinned_safetensors_local_image_wrapper"),
@@ -377,6 +419,14 @@ def _seal_composite(spec: ModelSpec) -> dict[str, Any]:
 
 
 def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
+    from .kronos2_embedder import (
+        KRONOS2_FORWARD_CONTRACT,
+        KRONOS2_MARKER_MATCHING_CONTRACT,
+        KRONOS2_MARKER_METADATA_FILENAME,
+        KRONOS2_SNAPSHOT_ALLOW_PATTERNS,
+        KRONOS2_SNAPSHOT_TOP_LEVEL_ALLOWLIST,
+    )
+
     constructor: dict[str, Any] = {
         "timm_kwargs": deepcopy(spec.timm_kwargs),
         "checkpoint_load": deepcopy(spec.checkpoint),
@@ -407,6 +457,34 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
             "marker_metadata": "marker_metadata.csv",
             "construction_package_revision": KRONOS_PACKAGE_REVISION,
         },
+        "kronos2": {
+            "entrypoint": "transformers.AutoModel.from_pretrained",
+            "input": "app_owned_allowlisted_pinned_local_snapshot",
+            "snapshot_allow_patterns": list(KRONOS2_SNAPSHOT_ALLOW_PATTERNS),
+            "snapshot_top_level_allowlist": list(
+                KRONOS2_SNAPSHOT_TOP_LEVEL_ALLOWLIST
+            ),
+            "trust_remote_code": True,
+            "transformers_local_files_only": True,
+            "upstream_nested_download_guard": "local_directory_input",
+            "upstream_sys_path_cleanup": "remove_new_entry_after_construction",
+            "marker_metadata": {
+                "filename": KRONOS2_MARKER_METADATA_FILENAME,
+                "sha256": spec.timm_kwargs.get("marker_metadata_sha256"),
+            },
+            "marker_matching": deepcopy(KRONOS2_MARKER_MATCHING_CONTRACT),
+            "preferred_dapi_policy": "canonical_dapi_else_draq5_else_none",
+            "published_marker_text_embeddings": "checkpoint_buffer",
+            "novel_marker_registration": (
+                "explicit_additional_markers_parameter_with_conditional_contract"
+            ),
+            "forward": {
+                **deepcopy(KRONOS2_FORWARD_CONTRACT),
+                "method": "__call__",
+                "marker_names": "canonical_marker_metadata_names",
+                "result": "x_norm_clstoken",
+            },
+        },
         "musk": {
             "architecture": "musk_large_patch16_384",
             "with_head": False,
@@ -435,7 +513,12 @@ def _patch_constructor(spec: ModelSpec) -> dict[str, Any]:
     return constructor
 
 
-def patch_output_fingerprint(spec: ModelSpec, resolved_amp: str) -> dict[str, Any]:
+def patch_output_fingerprint(
+    spec: ModelSpec,
+    resolved_amp: str,
+    *,
+    resolved_attention_backend: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """Fingerprint the complete persisted-output contract for one patch model."""
 
     if spec.multiplex is not None:
@@ -529,12 +612,38 @@ def patch_output_fingerprint(spec: ModelSpec, resolved_amp: str) -> dict[str, An
                 "crop_mode": spec.crop_mode,
             }
         )
+    if spec.family == "kronos2":
+        from .kronos2_embedder import (
+            KRONOS2_SCALING_CONTRACT,
+            resolved_kronos2_attention_backend,
+        )
+
+        payload["preprocessing"]["native_multiplex"] = deepcopy(
+            KRONOS2_SCALING_CONTRACT
+        )
+        backend = (
+            resolved_kronos2_attention_backend()
+            if resolved_attention_backend is None
+            else dict(resolved_attention_backend)
+        )
+        payload["output"]["attention_backend"] = deepcopy(backend)
     return make_output_fingerprint(payload)
 
 
 def resolved_patch_amp(spec: ModelSpec, requested_amp: str, device: str) -> str:
     """Resolve requested/card AMP to the precision the forward path really uses."""
 
+    # KRONOS2's published inference contract is fixed fp32. Fail rather than silently
+    # coercing an explicit override: the raw requested AMP participates in receipt
+    # identity, so accepting an override that never executes would make completion
+    # semantics misleading.
+    if spec.family == "kronos2":
+        if requested_amp not in {"auto", "fp32"}:
+            raise ValueError(
+                "KRONOS2 follows its published fp32 inference path and does not "
+                f"accept requested AMP {requested_amp!r}; use 'auto' or 'fp32'"
+            )
+        return "fp32"
     selected = spec.inference_amp if requested_amp == "auto" else requested_amp
     # Embedder._forward_ctx enables fp16/bf16 autocast only on CUDA. Passing either
     # dtype on CPU/MPS still executes the model in fp32, so provenance must say fp32.

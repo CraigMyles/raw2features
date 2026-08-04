@@ -31,6 +31,7 @@ from raw2features.core.uris import (
 from raw2features.embedders.fingerprint import (
     expected_patch_outputs,
     make_output_fingerprint,
+    output_fingerprints_compatible,
     patch_output_fingerprint,
     resolved_patch_amp,
 )
@@ -1544,7 +1545,7 @@ def run_slide(
                     )
                 )
             run_contracts = {name: model_contracts[name] for name in models_to_do}
-            _assert_loaded_model_contracts(
+            run_contracts = _assert_loaded_model_contracts(
                 run_embedders,
                 run_contracts,
                 cfg.resolved_channel_names,
@@ -2566,8 +2567,8 @@ def _assert_loaded_model_contracts(
     selected_channels: list[dict[str, Any]] | None = None,
     explicit_selection: bool = False,
     native_model_params: dict[str, dict[str, Any]] | None = None,
-) -> None:
-    """Fail before store mutation if loaded model copies differ from provenance."""
+) -> dict[str, dict]:
+    """Return authoritative loaded contracts after compatibility validation."""
 
     actual = _loaded_model_contracts(
         embedders,
@@ -2583,13 +2584,22 @@ def _assert_loaded_model_contracts(
             "Loaded model set does not match the output contract "
             f"(missing={missing}, unexpected={extra})."
         )
-    mismatched = [name for name in expected if actual[name] != expected[name]]
+    mismatched = [
+        name
+        for name in expected
+        if actual[name].get("embedding_dim") != expected[name].get("embedding_dim")
+        or not output_fingerprints_compatible(
+            actual[name].get("output_fingerprint"),
+            expected[name].get("output_fingerprint"),
+        )
+    ]
     if mismatched:
         raise ValueError(
             "Loaded model contract differs from the requested/persisted contract for "
             f"{mismatched}. Check effective AMP, preprocessing, dimensions, and "
             "weights."
         )
+    return actual
 
 
 def load_embedders(cfg: RunConfig, device: str | None = None) -> list:

@@ -27,7 +27,8 @@ layout, geometry-only `grid_hash`, and brightfield execution path are unchanged.
   (x86-64 Linux, CPython 3.11/3.12); Python 3.13 and other platforms use KRONOS2's
   enforced upstream PyTorch attention fallback instead of an unvalidated xFormers build.
   Record the resolved attention backend in each model-output fingerprint so outputs
-  produced by the two paths cannot be silently combined during resume.
+  remain self-describing across hosts; completed arrays from either approved path remain
+  valid, while exact header/array agreement prevents partial writes being accepted.
 - Extend repeated `--marker` selection and ordering to native multiplex encoders. The
   resolved physical indices and order are included in output fingerprints and panel
   provenance without changing patch-grid identity.

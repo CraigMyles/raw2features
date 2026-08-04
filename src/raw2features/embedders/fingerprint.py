@@ -265,6 +265,47 @@ def output_fingerprints_equal(left: Any, right: Any) -> bool:
     )
 
 
+def output_fingerprints_compatible(left: Any, right: Any) -> bool:
+    """Compare output contracts, allowing only KRONOS2's approved backends.
+
+    A completed KRONOS2 array remains valid when inspected on a machine that would
+    select the other supported attention implementation. The concrete backend stays
+    in the fingerprint; every other output-affecting field must remain identical.
+    """
+
+    if output_fingerprints_equal(left, right):
+        return True
+    if not valid_output_fingerprint(left) or not valid_output_fingerprint(right):
+        return False
+
+    left_payload = deepcopy(dict(left["payload"]))
+    right_payload = deepcopy(dict(right["payload"]))
+    if any(
+        payload.get("kind") != "patch_features"
+        or payload.get("model") != "kronos2"
+        or not isinstance(payload.get("loader"), dict)
+        or payload["loader"].get("family") != "kronos2"
+        or not isinstance(payload.get("output"), dict)
+        for payload in (left_payload, right_payload)
+    ):
+        return False
+
+    from .kronos2_embedder import (
+        KRONOS2_PYTORCH_ATTENTION_BACKEND,
+        KRONOS2_XFORMERS_ATTENTION_BACKEND,
+    )
+
+    approved = (
+        KRONOS2_PYTORCH_ATTENTION_BACKEND,
+        KRONOS2_XFORMERS_ATTENTION_BACKEND,
+    )
+    left_backend = left_payload["output"].pop("attention_backend", None)
+    right_backend = right_payload["output"].pop("attention_backend", None)
+    if left_backend not in approved or right_backend not in approved:
+        return False
+    return left_payload == right_payload
+
+
 def fingerprint_digest(value: Any) -> str | None:
     """Return a validated record's digest, else ``None``."""
 

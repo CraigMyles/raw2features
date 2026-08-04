@@ -13,6 +13,8 @@ import numpy as np
 import pytest
 
 from raw2features.embedders.fingerprint import (
+    make_output_fingerprint,
+    output_fingerprints_compatible,
     patch_output_fingerprint,
     resolved_patch_amp,
 )
@@ -40,8 +42,10 @@ from raw2features.embedders.kronos2_metadata import (
     parse_kronos2_additional_markers,
 )
 from raw2features.embedders.model_registry import get_spec
+from raw2features.pipeline.receipt import validate_model
 from raw2features.pipeline.runner import (
     RunConfig,
+    _assert_loaded_model_contracts,
     _loaded_model_contracts,
     expected_model_contracts,
 )
@@ -789,10 +793,83 @@ def test_resolved_backend_honours_an_already_imported_upstream_fallback(monkeypa
     assert resolved_kronos2_attention_backend() == (KRONOS2_PYTORCH_ATTENTION_BACKEND)
 
 
+def test_backend_compatibility_is_narrow_and_keeps_store_provenance_exact(tmp_path):
+    import zarr
+
+    spec = get_spec("kronos2")
+    xformers = patch_output_fingerprint(
+        spec,
+        "fp32",
+        resolved_attention_backend=KRONOS2_XFORMERS_ATTENTION_BACKEND,
+    )
+    pytorch = patch_output_fingerprint(
+        spec,
+        "fp32",
+        resolved_attention_backend=KRONOS2_PYTORCH_ATTENTION_BACKEND,
+    )
+    assert output_fingerprints_compatible(xformers, pytorch)
+
+    changed_payload = json.loads(json.dumps(pytorch["payload"]))
+    changed_payload["checkpoint"]["weights_revision"] = "different"
+    changed = make_output_fingerprint(changed_payload)
+    assert not output_fingerprints_compatible(xformers, changed)
+
+    missing_backend_payload = json.loads(json.dumps(pytorch["payload"]))
+    del missing_backend_payload["output"]["attention_backend"]
+    missing_backend = make_output_fingerprint(missing_backend_payload)
+    assert not output_fingerprints_compatible(xformers, missing_backend)
+
+    unapproved_backend_payload = json.loads(json.dumps(pytorch["payload"]))
+    unapproved_backend_payload["output"]["attention_backend"] = {
+        "implementation": "unvalidated_attention",
+        "package": "unknown",
+    }
+    unapproved_backend = make_output_fingerprint(unapproved_backend_payload)
+    assert not output_fingerprints_compatible(xformers, unapproved_backend)
+
+    group = zarr.open_group(str(tmp_path / "kronos2.zarr"), mode="w", zarr_format=2)
+    features = group.create_group("features")
+    array = features.create_array("kronos2", shape=(2, 768), dtype="float32")
+    array[:] = 1
+    array.attrs["output_fingerprint"] = xformers
+    group.attrs["raw2features"] = {
+        "models": {"kronos2": {"output_fingerprint": xformers}}
+    }
+
+    # A complete xFormers output remains valid when checked on a PyTorch-fallback
+    # host, while the two persisted copies must still identify the same producer.
+    assert validate_model(
+        group,
+        "kronos2",
+        2,
+        expected_dim=768,
+        expected_fingerprint=pytorch,
+    )
+    group.attrs["raw2features"] = {
+        "models": {"kronos2": {"output_fingerprint": pytorch}}
+    }
+    assert not validate_model(
+        group,
+        "kronos2",
+        2,
+        expected_dim=768,
+        expected_fingerprint=pytorch,
+    )
+    del array.attrs["output_fingerprint"]
+    assert not validate_model(
+        group,
+        "kronos2",
+        2,
+        expected_dim=768,
+        expected_fingerprint=pytorch,
+    )
+
+
 def test_loaded_contract_uses_the_backend_recorded_during_model_load(monkeypatch):
     import raw2features.embedders.kronos2_embedder as module
 
-    monkeypatch.setattr(module, "_allows_pinned_xformers", lambda: False)
+    monkeypatch.delenv("XFORMERS_DISABLED", raising=False)
+    monkeypatch.setattr(module, "_allows_pinned_xformers", lambda: True)
     spec = get_spec("kronos2")
     embedder = SimpleNamespace(
         name="kronos2",
@@ -800,13 +877,23 @@ def test_loaded_contract_uses_the_backend_recorded_during_model_load(monkeypatch
         embedding_dim=spec.embedding_dim,
         _dtype=None,
         _device="cuda",
-        _resolved_attention_backend=KRONOS2_XFORMERS_ATTENTION_BACKEND,
+        _resolved_attention_backend=KRONOS2_PYTORCH_ATTENTION_BACKEND,
     )
 
-    fingerprint = _loaded_model_contracts([embedder])["kronos2"]["output_fingerprint"]
-    assert fingerprint["payload"]["output"]["attention_backend"] == (
+    expected = expected_model_contracts(
+        RunConfig(models=["kronos2"], no_seg=True, patch_px=256)
+    )
+    expected_fingerprint = expected["kronos2"]["output_fingerprint"]
+    assert expected_fingerprint["payload"]["output"]["attention_backend"] == (
         KRONOS2_XFORMERS_ATTENTION_BACKEND
     )
+
+    actual = _assert_loaded_model_contracts([embedder], expected)
+    fingerprint = actual["kronos2"]["output_fingerprint"]
+    assert fingerprint["payload"]["output"]["attention_backend"] == (
+        KRONOS2_PYTORCH_ATTENTION_BACKEND
+    )
+    assert output_fingerprints_compatible(fingerprint, expected_fingerprint)
 
     del embedder._resolved_attention_backend
     with pytest.raises(RuntimeError, match="no resolved attention-backend"):

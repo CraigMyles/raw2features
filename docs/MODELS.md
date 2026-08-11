@@ -108,9 +108,11 @@ raw2features embed slide.ome.zarr out -f virchow2 \
 
 Both PRISM2 outputs require an accepted model gate, a CUDA GPU, and a `flash-attn` build
 compatible with the installed Torch/CUDA stack. The `[prism2]` extra pins Transformers
-4.51.3 because the released config records that version and its diagnostic helper is not
-compatible with Transformers 4.57. It pins the raw2features-validated FlashAttention
-2.8.3 build as well. The checkpoint is approximately 17.9 GB.
+4.56.0, shared with the KRONOS2 extra. PRISM2's diagnostic helper calls a Phi-3 mask
+method removed after its released 4.51.3 stack, so raw2features restores that deterministic
+mask construction and records the compatibility contract in the output fingerprint. The
+extra also pins the raw2features-validated FlashAttention 2.8.3 build. The checkpoint is
+approximately 17.9 GB.
 The base path still constructs the complete released model, so it has the same download
 and device-memory requirements as the diagnostic path.
 

@@ -16,8 +16,9 @@ extraction path are unchanged.
   portion already preserved in raw2features' 2560-d `virchow2` patch output. The four
   checkpoint shards, shard index, and Phi-3 construction/tokenizer assets are pinned and
   SHA-256 verified in local runtime snapshots; the published CUDA BF16 path is retained
-  with validated Transformers 4.51.3 and FlashAttention 2.8.3 pins. Coordinates are not
-  used.
+  with validated Transformers 4.56.0 and FlashAttention 2.8.3 pins. A fingerprinted
+  compatibility helper preserves the released Phi-3 causal-mask construction. Coordinates
+  are not used.
 - Add the gated `kronos2` native multiplex patch encoder: a pinned, SHA-verified
   marker-aware ViT-B/16 that produces a 768-dimensional CLS vector from ordered marker
   stacks. The released metadata contains 288 usable marker entries, 268 of them

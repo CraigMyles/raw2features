@@ -26,8 +26,9 @@ from .base import SlideEmbedder, SlideModelSpec
 
 PRISM2_SOURCE = "hf-hub:paige-ai/Prism2"
 PRISM2_REVISION = "450352d0ddc6b42b21ce20794ce0fbefe6b5a47a"
-PRISM2_TRANSFORMERS_VERSION = "4.51.3"
+PRISM2_TRANSFORMERS_VERSION = "4.56.0"
 PRISM2_FLASH_ATTN_VERSION = "2.8.3"
+PRISM2_PHI3_MASK_COMPAT_VERSION = "phi3_4_51_3_causal_mask_v1"
 PRISM2_CHECKPOINT_SHA256 = {
     "model.safetensors.index.json": (
         "bda099bfdad33ee0e2fe49b6101feb58a0389d8c8a000cc6636c7a24b8c41bbd"
@@ -77,6 +78,76 @@ PRISM2_PHI3_ARTIFACT_SHA256 = {
         "aaa87217a0f61c684cdc8703d3d4030a1f5b1077183610b61a14d7f28addbb58"
     ),
 }
+
+
+def _prepare_phi3_4d_causal_mask(
+    attention_mask,
+    sequence_length: int,
+    target_length: int,
+    dtype,
+    device,
+    cache_position,
+    batch_size: int,
+    config,
+    past_key_values,
+):
+    """Restore the Phi-3 mask contract called by the pinned PRISM2 code."""
+
+    # This is the mask algorithm expected by the pinned PRISM2 custom code. Its
+    # Phi3Model entry point was present in Transformers 4.51.3 (Apache-2.0) but
+    # removed before the shared 4.56.0 runtime.
+    import torch
+    from transformers.cache_utils import SlidingWindowCache
+
+    if attention_mask is not None and attention_mask.dim() == 4:
+        return attention_mask
+
+    min_dtype = torch.finfo(dtype).min
+    causal_mask = torch.full(
+        (sequence_length, target_length),
+        fill_value=min_dtype,
+        dtype=dtype,
+        device=device,
+    )
+    target_positions = torch.arange(target_length, device=device)
+    diagonal_attend_mask = target_positions > cache_position.reshape(-1, 1)
+    if config.sliding_window is not None:
+        if (
+            not isinstance(past_key_values, SlidingWindowCache)
+            or sequence_length > target_length
+        ):
+            sliding_attend_mask = target_positions <= (
+                cache_position.reshape(-1, 1) - config.sliding_window
+            )
+            diagonal_attend_mask.bitwise_or_(sliding_attend_mask)
+    causal_mask *= diagonal_attend_mask
+    causal_mask = causal_mask[None, None, :, :].expand(batch_size, 1, -1, -1)
+    if attention_mask is not None:
+        causal_mask = causal_mask.clone()
+        if attention_mask.shape[-1] > target_length:
+            attention_mask = attention_mask[:, :target_length]
+        mask_length = attention_mask.shape[-1]
+        padding_mask = (
+            causal_mask[:, :, :, :mask_length]
+            + attention_mask[:, None, None, :].to(causal_mask.device)
+        ) == 0
+        causal_mask[:, :, :, :mask_length] = causal_mask[
+            :, :, :, :mask_length
+        ].masked_fill(padding_mask, min_dtype)
+    return causal_mask
+
+
+def _install_phi3_mask_compatibility(phi3_model_cls=None) -> None:
+    """Install the 4.51.3 Phi-3 helper removed before the shared 4.56 runtime."""
+
+    if phi3_model_cls is None:
+        from transformers.models.phi3.modeling_phi3 import Phi3Model
+
+        phi3_model_cls = Phi3Model
+    phi3_model_cls._prepare_4d_causal_attention_mask_with_cache_position = staticmethod(
+        _prepare_phi3_4d_causal_mask
+    )
+
 
 _BASE_SPEC = SlideModelSpec(
     name="prism2",
@@ -219,6 +290,8 @@ class _Prism2SlideEmbedder(SlideEmbedder):
         )
 
         from transformers import AutoConfig, AutoModel
+
+        _install_phi3_mask_compatibility()
 
         config = AutoConfig.from_pretrained(
             prism_snapshot,

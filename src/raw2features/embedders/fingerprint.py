@@ -717,6 +717,7 @@ def _prism2_phi3_contract() -> dict[str, Any]:
     from raw2features.slide_embedders.prism2 import (
         PRISM2_PHI3_ARTIFACT_SHA256,
         PRISM2_PHI3_LICENSE,
+        PRISM2_PHI3_MASK_COMPAT_VERSION,
         PRISM2_PHI3_REVISION,
         PRISM2_PHI3_SOURCE,
     )
@@ -728,6 +729,13 @@ def _prism2_phi3_contract() -> dict[str, Any]:
         "license": PRISM2_PHI3_LICENSE,
         "mechanism": "pinned_sha256_verified_local_config_and_tokenizer",
         "weights_source": "included_in_PRISM2_checkpoint",
+        "mask_compatibility": {
+            "version": PRISM2_PHI3_MASK_COMPAT_VERSION,
+            "restored_contract": (
+                "Phi3Model._prepare_4d_causal_attention_mask_with_cache_position"
+            ),
+            "source_runtime": "transformers==4.51.3",
+        },
     }
 
 
@@ -762,7 +770,7 @@ def _slide_constructor(spec) -> dict[str, Any]:
             "entrypoint": "transformers.AutoModel.from_pretrained",
             "input": "pinned_sha256_verified_local_snapshot",
             "trust_remote_code": True,
-            "transformers_version": "4.51.3",
+            "transformers_version": "4.56.0",
             "flash_attn_version": "2.8.3",
             "stored_patch_encoder": "virchow2",
             "stored_patch_dim": 2560,

@@ -20,6 +20,7 @@ from raw2features.slide_embedders.prism2 import (
     PRISM2_CODE_FILES,
     PRISM2_FLASH_ATTN_VERSION,
     PRISM2_PHI3_ARTIFACT_SHA256,
+    PRISM2_PHI3_MASK_COMPAT_VERSION,
     PRISM2_PHI3_REVISION,
     PRISM2_PHI3_SOURCE,
     PRISM2_REVISION,
@@ -27,6 +28,8 @@ from raw2features.slide_embedders.prism2 import (
     Prism2DiagnosticSlideEmbedder,
     Prism2SlideEmbedder,
     _assert_snapshot_files,
+    _install_phi3_mask_compatibility,
+    _prepare_phi3_4d_causal_mask,
     _require_prism2_runtime,
 )
 
@@ -141,6 +144,7 @@ def test_prism2_load_uses_only_verified_local_snapshots(monkeypatch):
 
     monkeypatch.setattr(module, "_verified_snapshot", verified)
     monkeypatch.setattr(module, "_require_prism2_runtime", lambda: None)
+    monkeypatch.setattr(module, "_install_phi3_mask_compatibility", lambda: None)
     monkeypatch.setitem(
         sys.modules,
         "transformers",
@@ -192,11 +196,53 @@ def test_prism2_runtime_pin_fails_clearly(monkeypatch):
     with pytest.raises(
         RuntimeError,
         match=(
-            r"transformers==4\.51\.3 \(found 4\.57\.6\).*"
+            r"transformers==4\.56\.0 \(found 4\.57\.6\).*"
             r"flash-attn==2\.8\.3 \(found missing\)"
         ),
     ):
         _require_prism2_runtime()
+
+
+def test_prism2_restores_released_phi3_mask_contract():
+    torch = pytest.importorskip("torch")
+
+    class Phi3Model:
+        pass
+
+    _install_phi3_mask_compatibility(Phi3Model)
+    helper = Phi3Model._prepare_4d_causal_attention_mask_with_cache_position
+    mask = helper(
+        attention_mask=torch.tensor([[1, 1, 0]], dtype=torch.int8),
+        sequence_length=3,
+        target_length=3,
+        dtype=torch.float32,
+        device=torch.device("cpu"),
+        cache_position=torch.arange(3),
+        batch_size=1,
+        config=SimpleNamespace(sliding_window=None),
+        past_key_values=None,
+    )
+    minimum = torch.finfo(torch.float32).min
+    expected = torch.tensor(
+        [[[[0.0, minimum, minimum], [0.0, 0.0, minimum], [0.0, 0.0, minimum]]]]
+    )
+    torch.testing.assert_close(mask, expected, rtol=0, atol=0)
+
+    supplied = torch.zeros((1, 1, 2, 2), dtype=torch.float32)
+    assert (
+        _prepare_phi3_4d_causal_mask(
+            supplied,
+            2,
+            2,
+            torch.float32,
+            torch.device("cpu"),
+            torch.arange(2),
+            1,
+            SimpleNamespace(sliding_window=None),
+            None,
+        )
+        is supplied
+    )
 
 
 def test_prism2_snapshot_allowlist_fails_closed(tmp_path):
@@ -254,6 +300,7 @@ def test_prism2_fingerprint_binds_cls_projection_shards_and_phi3():
     assert phi3["repo"] == "microsoft/Phi-3-mini-128k-instruct"
     assert phi3["revision"] == PRISM2_PHI3_REVISION
     assert phi3["artifacts"] == PRISM2_PHI3_ARTIFACT_SHA256
+    assert phi3["mask_compatibility"]["version"] == (PRISM2_PHI3_MASK_COMPAT_VERSION)
     assert base["payload"]["output"]["resolved_amp"] == "bf16"
     assert diagnostic["payload"]["loader"]["constructor"]["forward"] == (
         "get_diagnostic_embedding"

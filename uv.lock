@@ -749,6 +749,16 @@ wheels = [
 ]
 
 [[package]]
+name = "flash-attn"
+version = "2.8.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "einops" },
+    { name = "torch" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3b/b2/8d76c41ad7974ee264754709c22963447f7f8134613fd9ce80984ed0dab7/flash_attn-2.8.3.tar.gz", hash = "sha256:1e71dd64a9e0280e0447b8a0c2541bad4bf6ac65bdeaa2f90e51a9e57de0370d", size = 8447812, upload-time = "2025-08-15T08:28:12.911Z" }
+
+[[package]]
 name = "fonttools"
 version = "4.63.0"
 source = { registry = "https://pypi.org/simple" }
@@ -3451,6 +3461,17 @@ prism = [
     { name = "torchvision" },
     { name = "transformers" },
 ]
+prism2 = [
+    { name = "einops" },
+    { name = "einops-exts" },
+    { name = "flash-attn" },
+    { name = "huggingface-hub" },
+    { name = "safetensors" },
+    { name = "timm" },
+    { name = "torch" },
+    { name = "torchvision" },
+    { name = "transformers" },
+]
 s3 = [
     { name = "s3fs" },
 ]
@@ -3525,6 +3546,7 @@ requires-dist = [
     { name = "einops-exts", marker = "extra == 'models'", specifier = ">=0.0.4" },
     { name = "environs", marker = "extra == 'prism'" },
     { name = "fairscale", marker = "extra == 'musk'" },
+    { name = "flash-attn", marker = "extra == 'prism2'", specifier = "==2.8.3" },
     { name = "fsspec", extras = ["http"], marker = "extra == 'zarr'", specifier = ">=2024.0" },
     { name = "gdown", marker = "extra == 'chief'", specifier = ">=5.2" },
     { name = "gdown", marker = "extra == 'tangle'", specifier = ">=5.2" },
@@ -3560,6 +3582,7 @@ requires-dist = [
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'musk'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'open-clip'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'prism'" },
+    { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'prism2'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'seal'" },
     { name = "raw2features", extras = ["torch", "models"], marker = "extra == 'tangle'" },
     { name = "raw2features", extras = ["zarr", "image", "torch", "models", "stain"], marker = "extra == 'all'" },
@@ -3577,17 +3600,19 @@ requires-dist = [
     { name = "timm", marker = "extra == 'kronos2'", specifier = "==1.0.19" },
     { name = "timm", marker = "extra == 'models'", specifier = ">=1.0" },
     { name = "torch", marker = "extra == 'kronos2'", specifier = "==2.6.0" },
+    { name = "torch", marker = "extra == 'prism2'", specifier = ">=2.3" },
     { name = "torch", marker = "extra == 'torch'", specifier = ">=2.2" },
     { name = "torchvision", marker = "extra == 'torch'", specifier = ">=0.17" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "transformers", marker = "extra == 'hibou'", specifier = "<5" },
     { name = "transformers", marker = "extra == 'kronos2'", specifier = "==4.56.0" },
     { name = "transformers", marker = "extra == 'models'", specifier = ">=4.40" },
+    { name = "transformers", marker = "extra == 'prism2'", specifier = "==4.56.0" },
     { name = "typer", specifier = ">=0.12" },
     { name = "xformers", marker = "python_full_version < '3.13' and platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra == 'kronos2'", specifier = "==0.0.29.post3" },
     { name = "zarr", marker = "extra == 'zarr'", specifier = ">=3.1" },
 ]
-provides-extras = ["all", "zarr", "image", "stain", "torch", "models", "conch", "hibou", "kronos", "kronos2", "musk", "open-clip", "grandqc", "prism", "madeleine", "gigapath-slide", "chief", "tangle", "seal", "spatialdata", "h5", "tables", "s3", "benchmark"]
+provides-extras = ["all", "zarr", "image", "stain", "torch", "models", "conch", "hibou", "kronos", "kronos2", "musk", "open-clip", "grandqc", "prism", "prism2", "madeleine", "gigapath-slide", "chief", "tangle", "seal", "spatialdata", "h5", "tables", "s3", "benchmark"]
 
 [package.metadata.requires-dev]
 dev = [

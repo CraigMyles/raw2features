@@ -28,6 +28,11 @@ from raw2features.embedders.open_clip_embedder import (
 )
 from raw2features.embedders.seal_embedder import _SEAL_REPO
 from raw2features.slide_embedders.model_registry import load_slide_registry
+from raw2features.slide_embedders.prism2 import (
+    PRISM2_PHI3_ARTIFACT_SHA256,
+    PRISM2_PHI3_REVISION,
+    PRISM2_PHI3_SOURCE,
+)
 
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -236,6 +241,47 @@ def test_new_model_artifact_checksum_matches_huggingface_metadata(pin: _HubArtif
         f"patch:{pin.name}: registry SHA-256 {pin.sha256} does not match "
         f"{pin.repo}@{pin.revision}/{pin.filename} metadata {metadata_sha256}"
     )
+
+
+@pytest.mark.network
+def test_prism2_shard_manifest_matches_huggingface():
+    """Every file used to construct the sharded checkpoint matches its pin."""
+
+    spec = load_slide_registry()["prism2"]
+    assert spec.weights_manifest
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    info = huggingface_hub.HfApi().model_info(
+        repo_id=_hf_repo(spec) or "",
+        revision=spec.weights_revision,
+        timeout=30,
+        files_metadata=True,
+        token=os.environ.get("HF_TOKEN") or False,
+    )
+    siblings = {sibling.rfilename: sibling for sibling in (info.siblings or ())}
+    for filename, expected in spec.weights_manifest.items():
+        assert filename in siblings, filename
+        lfs = siblings[filename].lfs
+        if lfs is None:
+            path = download_pinned_hf_file(
+                spec.source,
+                filename,
+                spec.weights_revision,
+            )
+            verify_sha256(path, expected, what=f"prism2:{filename}")
+            continue
+        sha256 = lfs.get("sha256") if isinstance(lfs, Mapping) else lfs.sha256
+        assert sha256 == expected, filename
+
+
+@pytest.mark.network
+def test_prism2_phi3_construction_artifacts_match_pins():
+    for filename, expected in PRISM2_PHI3_ARTIFACT_SHA256.items():
+        path = download_pinned_hf_file(
+            PRISM2_PHI3_SOURCE,
+            filename,
+            PRISM2_PHI3_REVISION,
+        )
+        verify_sha256(path, expected, what=f"prism2:Phi-3:{filename}")
 
 
 @pytest.mark.network

@@ -367,6 +367,10 @@ def encode_slide_embedding(
             "computed_utc": now_utc_iso(),
             "raw2features_version": __version__,
         }
+        if slide_embedder.spec.weights_manifest is not None:
+            provenance["weights_manifest"] = dict(
+                slide_embedder.spec.weights_manifest
+            )
     finally:
         slide_embedder.unload()
 

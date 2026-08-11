@@ -5,11 +5,19 @@ Notable changes to raw2features, newest first. This project follows
 
 ## [0.2.1] - Unreleased
 
-This focused model update adds KRONOS2 to the existing native multiplex path. The store
-layout, geometry-only `grid_hash`, and brightfield execution path are unchanged.
+This focused model update adds KRONOS2 to the existing native multiplex path and PRISM2
+to slide embedding. The store layout, geometry-only `grid_hash`, and brightfield
+extraction path are unchanged.
 
 ### Models and multiplex inputs
 
+- Add the gated PRISM2 base (`prism2`, 2560-d) and diagnostic
+  (`prism2_diagnostic`, 3072-d) slide representations. Both consume the 1280-d CLS
+  portion already preserved in raw2features' 2560-d `virchow2` patch output. The four
+  checkpoint shards, shard index, and Phi-3 construction/tokenizer assets are pinned and
+  SHA-256 verified in local runtime snapshots; the published CUDA BF16 path is retained
+  with validated Transformers 4.51.3 and FlashAttention 2.8.3 pins. Coordinates are not
+  used.
 - Add the gated `kronos2` native multiplex patch encoder: a pinned, SHA-verified
   marker-aware ViT-B/16 that produces a 768-dimensional CLS vector from ordered marker
   stacks. The released metadata contains 288 usable marker entries, 268 of them

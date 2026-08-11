@@ -678,6 +678,13 @@ def expected_patch_outputs(
 
 def _effective_slide_checkpoint(spec) -> dict[str, Any]:
     repo = _hf_repo(spec.source)
+    if spec.family == "prism2":
+        return {
+            "repo": repo,
+            "filename": spec.weights_filename,
+            "files": deepcopy(spec.weights_manifest),
+            "mechanism": "pinned_sha256_verified_local_snapshot",
+        }
     if spec.family == "gigapath_slide":
         return {
             "repo": repo,
@@ -703,6 +710,24 @@ def _effective_slide_checkpoint(spec) -> dict[str, Any]:
         "repo": repo,
         "filename": spec.weights_filename,
         "mechanism": "loader_managed_snapshot",
+    }
+
+
+def _prism2_phi3_contract() -> dict[str, Any]:
+    from raw2features.slide_embedders.prism2 import (
+        PRISM2_PHI3_ARTIFACT_SHA256,
+        PRISM2_PHI3_LICENSE,
+        PRISM2_PHI3_REVISION,
+        PRISM2_PHI3_SOURCE,
+    )
+
+    return {
+        "repo": _hf_repo(PRISM2_PHI3_SOURCE),
+        "revision": PRISM2_PHI3_REVISION,
+        "artifacts": deepcopy(PRISM2_PHI3_ARTIFACT_SHA256),
+        "license": PRISM2_PHI3_LICENSE,
+        "mechanism": "pinned_sha256_verified_local_config_and_tokenizer",
+        "weights_source": "included_in_PRISM2_checkpoint",
     }
 
 
@@ -732,6 +757,33 @@ def _slide_constructor(spec) -> dict[str, Any]:
             "output_key": "image_embedding",
             "features_dtype": "float32",
             "batched": True,
+        },
+        "prism2": {
+            "entrypoint": "transformers.AutoModel.from_pretrained",
+            "input": "pinned_sha256_verified_local_snapshot",
+            "trust_remote_code": True,
+            "transformers_version": "4.51.3",
+            "flash_attn_version": "2.8.3",
+            "stored_patch_encoder": "virchow2",
+            "stored_patch_dim": 2560,
+            "model_input_projection": {
+                "operation": "slice",
+                "axis": 1,
+                "start": 0,
+                "stop": 1280,
+                "meaning": "Virchow2 CLS token",
+            },
+            "model_context_dim": 1280,
+            "forward": (
+                "get_diagnostic_embedding"
+                if spec.name == "prism2_diagnostic"
+                else "get_base_embedding"
+            ),
+            "features_dtype": "float32",
+            "batched": True,
+            "attention_mask": {"dtype": "int32", "single_slide_values": "ones"},
+            "uses_coords": False,
+            "uses_patch_size_lv0": False,
         },
         "feather": {
             "entrypoint": "transformers.AutoModel.from_pretrained",
@@ -820,7 +872,10 @@ def _slide_constructor(spec) -> dict[str, Any]:
             },
         },
     }
-    return deepcopy(contracts.get(spec.family, {"entrypoint": spec.family}))
+    contract = deepcopy(contracts.get(spec.family, {"entrypoint": spec.family}))
+    if spec.family == "prism2":
+        contract["phi3_construction_dependency"] = _prism2_phi3_contract()
+    return contract
 
 
 def slide_output_dim(spec, patch_dim: int) -> int:
@@ -836,6 +891,8 @@ def resolved_slide_amp(spec, device: str) -> str:
 
     # These loaders follow their model-card examples with fp16 CUDA autocast and
     # deliberately run fp32 on CPU/MPS. Other slide encoders currently run fp32.
+    if str(device).startswith("cuda") and spec.family == "prism2":
+        return "bf16"
     if str(device).startswith("cuda") and spec.family in {
         "gigapath_slide",
         "prism",
@@ -862,6 +919,13 @@ def slide_output_fingerprint(
             "raw2features embed for that patch model before slide encoding."
         )
     output_dim = slide_output_dim(spec, patch_dim)
+    checkpoint = {
+        "effective": _effective_slide_checkpoint(spec),
+        "weights_revision": spec.weights_revision,
+        "weights_sha256": spec.weights_sha256,
+    }
+    if spec.weights_manifest is not None:
+        checkpoint["weights_manifest"] = deepcopy(spec.weights_manifest)
     payload = {
         "kind": "slide_embedding",
         "model": spec.name,
@@ -871,11 +935,7 @@ def slide_output_fingerprint(
             "source": spec.source,
             "constructor": _slide_constructor(spec),
         },
-        "checkpoint": {
-            "effective": _effective_slide_checkpoint(spec),
-            "weights_revision": spec.weights_revision,
-            "weights_sha256": spec.weights_sha256,
-        },
+        "checkpoint": checkpoint,
         "input": {
             "patch_model": patch_model,
             "patch_dim": int(patch_dim),

@@ -102,6 +102,7 @@ for diagnosis-focused tasks. They may be requested separately or together:
 
 ```bash
 pip install "raw2features[prism2]"
+MAX_JOBS=4 pip install "flash-attn==2.8.3" --no-build-isolation
 raw2features embed slide.ome.zarr out -f virchow2 \
   -s prism2 -s prism2_diagnostic --mpp 0.5 --patch-size 224
 ```
@@ -111,8 +112,10 @@ compatible with the installed Torch/CUDA stack. The `[prism2]` extra pins Transf
 4.56.0, shared with the KRONOS2 extra. PRISM2's diagnostic helper calls a Phi-3 mask
 method removed after its released 4.51.3 stack, so raw2features restores that deterministic
 mask construction and records the compatibility contract in the output fingerprint. The
-extra also pins the raw2features-validated FlashAttention 2.8.3 build. The checkpoint is
-approximately 17.9 GB.
+validated path requires FlashAttention 2.8.3. PyPI distributes it as source, so install
+it after the extra with build isolation disabled as shown above, or install an
+ABI-compatible 2.8.3 wheel. Increase `MAX_JOBS` only when the build host has sufficient
+RAM. The checkpoint is approximately 17.9 GB.
 The base path still constructs the complete released model, so it has the same download
 and device-memory requirements as the diagnostic path.
 

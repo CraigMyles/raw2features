@@ -9,6 +9,8 @@ are separate outputs because the authors give them different downstream roles.
 
 from __future__ import annotations
 
+import sys
+import threading
 from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any
@@ -46,16 +48,24 @@ PRISM2_CHECKPOINT_SHA256 = {
         "da79790c9a73cf1ce85867aaa57c47cfd8d69e13b57ac86252d24a2687c2998c"
     ),
 }
-PRISM2_CODE_FILES = (
-    "config.json",
-    "configuration_prism2.py",
-    "modeling_prism2.py",
-    "processing_prism2.py",
-)
+PRISM2_CODE_SHA256 = {
+    "config.json": "2170566eeb216810e32f69293e07429694fc308e4290efb4ca2157dc7438f7a9",
+    "configuration_prism2.py": (
+        "24874c747af4ad499db5ce4ac9e6113c0289fb937badce4a6ccf37b3e6f8ede4"
+    ),
+    "modeling_prism2.py": (
+        "57546d28c94d4e8fd0fd29600f0b0190d32cc8fedf7c82ec85f525183f28669a"
+    ),
+    "processing_prism2.py": (
+        "a3dcc7b466234fcc96b47b32f774f1ffbc7271b8af37b6352b13d537b51c9bc9"
+    ),
+}
+PRISM2_CODE_FILES = tuple(PRISM2_CODE_SHA256)
 PRISM2_SNAPSHOT_ALLOW_PATTERNS = (
     *PRISM2_CODE_FILES,
     *PRISM2_CHECKPOINT_SHA256,
 )
+PRISM2_RUNTIME_SHA256 = {**PRISM2_CODE_SHA256, **PRISM2_CHECKPOINT_SHA256}
 
 PRISM2_PHI3_SOURCE = "hf-hub:microsoft/Phi-3-mini-128k-instruct"
 PRISM2_PHI3_REVISION = "f3c06aed622e14ca0abf5115094e4fc9a9948f36"
@@ -78,6 +88,13 @@ PRISM2_PHI3_ARTIFACT_SHA256 = {
         "aaa87217a0f61c684cdc8703d3d4030a1f5b1077183610b61a14d7f28addbb58"
     ),
 }
+PRISM2_PHI3_CONFIG_SHA256 = {"config.json": PRISM2_PHI3_ARTIFACT_SHA256["config.json"]}
+
+_VERIFIED_SNAPSHOT_CACHE: dict[
+    tuple[str, tuple[tuple[str, str], ...]],
+    tuple[tuple[str, int, int, int, int, int], ...],
+] = {}
+_VERIFIED_SNAPSHOT_LOCK = threading.Lock()
 
 
 def _prepare_phi3_4d_causal_mask(
@@ -137,16 +154,41 @@ def _prepare_phi3_4d_causal_mask(
     return causal_mask
 
 
-def _install_phi3_mask_compatibility(phi3_model_cls=None) -> None:
-    """Install the 4.51.3 Phi-3 helper removed before the shared 4.56 runtime."""
+class _Prism2Phi3MaskCompatibility:
+    """Private namespace for the Phi-3 helper used by pinned PRISM2 code."""
 
-    if phi3_model_cls is None:
-        from transformers.models.phi3.modeling_phi3 import Phi3Model
-
-        phi3_model_cls = Phi3Model
-    phi3_model_cls._prepare_4d_causal_attention_mask_with_cache_position = staticmethod(
+    _prepare_4d_causal_attention_mask_with_cache_position = staticmethod(
         _prepare_phi3_4d_causal_mask
     )
+
+
+def _bind_phi3_mask_compatibility(model) -> None:
+    """Bind the helper only inside PRISM2's verified dynamic-code module."""
+
+    module_name = type(model).__module__
+    module = sys.modules.get(module_name)
+    if module is None or not module_name.startswith("transformers_modules."):
+        raise RuntimeError(
+            "PRISM2 loaded outside its expected Transformers dynamic-code module; "
+            "refusing to install the Phi-3 compatibility contract"
+        )
+    current = getattr(module, "Phi3Model", None)
+    if current is _Prism2Phi3MaskCompatibility:
+        return
+    if (
+        current is None
+        or getattr(current, "__name__", None) != "Phi3Model"
+        or getattr(current, "__module__", None)
+        != "transformers.models.phi3.modeling_phi3"
+    ):
+        raise RuntimeError(
+            "PRISM2's verified module does not expose the expected Phi3Model import; "
+            "refusing to alter an unknown runtime"
+        )
+    # modeling_prism2.py calls its imported Phi3Model name directly during the
+    # diagnostic forward. Rebind that module global rather than changing the shared
+    # Transformers class process-wide.
+    module.Phi3Model = _Prism2Phi3MaskCompatibility
 
 
 _BASE_SPEC = SlideModelSpec(
@@ -196,12 +238,13 @@ def _assert_snapshot_files(
     snapshot: str,
     expected: tuple[str, ...],
     *,
+    allowed_files: tuple[str, ...] | None = None,
     what: str,
 ) -> None:
     """Reject a stale managed directory before its custom code can execute."""
 
     root = Path(snapshot)
-    allowed = {*expected, ".cache", "__pycache__"}
+    allowed = {*(allowed_files or expected), ".cache", "__pycache__"}
     unexpected = sorted(
         path.name for path in root.iterdir() if path.name not in allowed
     )
@@ -221,23 +264,81 @@ def _verified_snapshot(
     revision: str,
     artifacts: dict[str, str],
     *,
-    extra_files: tuple[str, ...] = (),
+    allowed_files: tuple[str, ...] | None = None,
     what: str,
 ) -> str:
-    expected = (*extra_files, *artifacts)
+    expected = tuple(artifacts)
     snapshot = download_pinned_hf_snapshot(
         source,
         revision,
         allow_patterns=expected,
         local_dir=pinned_model_cache_dir(source, revision),
     )
-    _assert_snapshot_files(snapshot, expected, what=what)
-    for filename, sha256 in artifacts.items():
-        verify_sha256(str(Path(snapshot) / filename), sha256, what=f"{what}:{filename}")
+    _assert_snapshot_files(
+        snapshot,
+        expected,
+        allowed_files=allowed_files,
+        what=what,
+    )
+    _verify_snapshot_artifacts_once(snapshot, artifacts, what=what)
     return snapshot
 
 
+def _snapshot_signature(
+    snapshot: str,
+    artifacts: dict[str, str],
+) -> tuple[tuple[str, int, int, int, int, int], ...]:
+    root = Path(snapshot)
+    signature = []
+    for filename in sorted(artifacts):
+        stat = (root / filename).stat()
+        signature.append(
+            (
+                filename,
+                int(stat.st_dev),
+                int(stat.st_ino),
+                int(stat.st_size),
+                int(stat.st_mtime_ns),
+                int(stat.st_ctime_ns),
+            )
+        )
+    return tuple(signature)
+
+
+def _verify_snapshot_artifacts_once(
+    snapshot: str,
+    artifacts: dict[str, str],
+    *,
+    what: str,
+) -> None:
+    """Hash an immutable snapshot once per process, unless any file changes."""
+
+    key = (str(Path(snapshot).resolve()), tuple(sorted(artifacts.items())))
+    with _VERIFIED_SNAPSHOT_LOCK:
+        before = _snapshot_signature(snapshot, artifacts)
+        if _VERIFIED_SNAPSHOT_CACHE.get(key) == before:
+            return
+        for filename, sha256 in artifacts.items():
+            verify_sha256(
+                str(Path(snapshot) / filename),
+                sha256,
+                what=f"{what}:{filename}",
+            )
+        after = _snapshot_signature(snapshot, artifacts)
+        if after != before:
+            raise ValueError(f"{what}: pinned runtime snapshot changed while hashing")
+        _VERIFIED_SNAPSHOT_CACHE[key] = after
+
+
 def _require_prism2_runtime() -> None:
+    try:
+        from packaging.specifiers import SpecifierSet
+    except ImportError as exc:  # pragma: no cover - declared by the optional extra
+        raise RuntimeError(
+            "PRISM2 requires its optional runtime; install raw2features[prism2], "
+            "then install flash-attn==2.8.3 with --no-build-isolation"
+        ) from exc
+
     required = {
         "transformers": PRISM2_TRANSFORMERS_VERSION,
         "flash-attn": PRISM2_FLASH_ATTN_VERSION,
@@ -248,12 +349,15 @@ def _require_prism2_runtime() -> None:
             installed = importlib_metadata.version(distribution)
         except importlib_metadata.PackageNotFoundError:
             installed = None
-        if installed != expected:
+        if installed is None or not SpecifierSet(f"=={expected}").contains(
+            installed, prereleases=True
+        ):
             found = installed or "missing"
             mismatches.append(f"{distribution}=={expected} (found {found})")
     if mismatches:
         raise RuntimeError(
-            "PRISM2 requires its validated runtime; install raw2features[prism2]: "
+            "PRISM2 requires its validated runtime. Install raw2features[prism2], "
+            "then install flash-attn==2.8.3 with --no-build-isolation. Mismatch: "
             + ", ".join(mismatches)
         )
 
@@ -278,20 +382,23 @@ class _Prism2SlideEmbedder(SlideEmbedder):
         prism_snapshot = _verified_snapshot(
             self.spec.source,
             str(self.spec.weights_revision),
-            dict(self.spec.weights_manifest),
-            extra_files=PRISM2_CODE_FILES,
+            PRISM2_RUNTIME_SHA256,
             what=self.spec.name,
+        )
+        phi3_artifacts = (
+            PRISM2_PHI3_ARTIFACT_SHA256
+            if self.spec.name == "prism2_diagnostic"
+            else PRISM2_PHI3_CONFIG_SHA256
         )
         phi3_snapshot = _verified_snapshot(
             PRISM2_PHI3_SOURCE,
             PRISM2_PHI3_REVISION,
-            PRISM2_PHI3_ARTIFACT_SHA256,
+            phi3_artifacts,
+            allowed_files=tuple(PRISM2_PHI3_ARTIFACT_SHA256),
             what=f"{self.spec.name}:Phi-3",
         )
 
         from transformers import AutoConfig, AutoModel
-
-        _install_phi3_mask_compatibility()
 
         config = AutoConfig.from_pretrained(
             prism_snapshot,
@@ -308,6 +415,8 @@ class _Prism2SlideEmbedder(SlideEmbedder):
             local_files_only=True,
             torch_dtype="auto",
         )
+        if self.spec.name == "prism2_diagnostic":
+            _bind_phi3_mask_compatibility(model)
         model.eval().to(device)
         self._model = model
         self._device = str(device)
@@ -361,7 +470,6 @@ class _Prism2SlideEmbedder(SlideEmbedder):
         import torch
 
         if self._model is not None:
-            self._model.cpu()
             del self._model
             self._model = None
             if torch.cuda.is_available():

@@ -3,34 +3,49 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import zarr
 
 from raw2features.embedders.fingerprint import (
     patch_output_fingerprint,
     resolved_slide_amp,
+    slide_output_dim,
     slide_output_fingerprint,
 )
 from raw2features.embedders.model_registry import get_spec
-from raw2features.slide_embedders.model_registry import get_slide_spec
+from raw2features.slide_embedders.encoding import (
+    slide_encoders_requiring_compute,
+    write_slide_embedding,
+)
+from raw2features.slide_embedders.model_registry import (
+    get_slide_spec,
+    validate_slide_encoder_runtime,
+)
 from raw2features.slide_embedders.prism2 import (
+    _VERIFIED_SNAPSHOT_CACHE,
     PRISM2_CHECKPOINT_SHA256,
-    PRISM2_CODE_FILES,
+    PRISM2_CODE_SHA256,
     PRISM2_FLASH_ATTN_VERSION,
     PRISM2_PHI3_ARTIFACT_SHA256,
+    PRISM2_PHI3_CONFIG_SHA256,
     PRISM2_PHI3_MASK_COMPAT_VERSION,
     PRISM2_PHI3_REVISION,
     PRISM2_PHI3_SOURCE,
     PRISM2_REVISION,
+    PRISM2_RUNTIME_SHA256,
+    PRISM2_SNAPSHOT_ALLOW_PATTERNS,
     PRISM2_TRANSFORMERS_VERSION,
     Prism2DiagnosticSlideEmbedder,
     Prism2SlideEmbedder,
     _assert_snapshot_files,
-    _install_phi3_mask_compatibility,
+    _bind_phi3_mask_compatibility,
     _prepare_phi3_4d_causal_mask,
     _require_prism2_runtime,
+    _verified_snapshot,
 )
 
 
@@ -109,8 +124,10 @@ def test_prism2_rejects_an_incompatible_patch_array():
 def test_prism2_load_uses_only_verified_local_snapshots(monkeypatch):
     calls = []
 
-    def verified(source, revision, artifacts, *, extra_files=(), what):
-        calls.append((source, revision, dict(artifacts), tuple(extra_files), what))
+    def verified(source, revision, artifacts, *, allowed_files=None, what):
+        calls.append(
+            (source, revision, dict(artifacts), tuple(allowed_files or ()), what)
+        )
         return "/verified/phi3" if "Phi-3" in what else "/verified/prism2"
 
     config = SimpleNamespace(text_decoder_model_id="mutable-upstream-name")
@@ -144,7 +161,6 @@ def test_prism2_load_uses_only_verified_local_snapshots(monkeypatch):
 
     monkeypatch.setattr(module, "_verified_snapshot", verified)
     monkeypatch.setattr(module, "_require_prism2_runtime", lambda: None)
-    monkeypatch.setattr(module, "_install_phi3_mask_compatibility", lambda: None)
     monkeypatch.setitem(
         sys.modules,
         "transformers",
@@ -157,16 +173,63 @@ def test_prism2_load_uses_only_verified_local_snapshots(monkeypatch):
     assert config.text_decoder_model_id == "/verified/phi3"
     assert calls[0][1:] == (
         PRISM2_REVISION,
-        PRISM2_CHECKPOINT_SHA256,
-        PRISM2_CODE_FILES,
+        PRISM2_RUNTIME_SHA256,
+        (),
         "prism2",
     )
-    assert calls[1][0:4] == (
+    assert calls[1] == (
         PRISM2_PHI3_SOURCE,
         PRISM2_PHI3_REVISION,
-        PRISM2_PHI3_ARTIFACT_SHA256,
-        (),
+        PRISM2_PHI3_CONFIG_SHA256,
+        tuple(PRISM2_PHI3_ARTIFACT_SHA256),
+        "prism2:Phi-3",
     )
+
+
+def test_prism2_diagnostic_load_binds_helper_and_full_phi3_assets(monkeypatch):
+    calls = []
+    model = SimpleNamespace(
+        eval=lambda: model,
+        to=lambda device: model,
+    )
+
+    def verified(source, revision, artifacts, *, allowed_files=None, what):
+        calls.append((dict(artifacts), tuple(allowed_files or ()), what))
+        return "/verified/phi3" if "Phi-3" in what else "/verified/prism2"
+
+    class AutoConfig:
+        @staticmethod
+        def from_pretrained(path, **kwargs):
+            return SimpleNamespace(text_decoder_model_id="mutable")
+
+    class AutoModel:
+        @staticmethod
+        def from_pretrained(path, **kwargs):
+            return model
+
+    import raw2features.slide_embedders.prism2 as module
+
+    monkeypatch.setattr(module, "_verified_snapshot", verified)
+    monkeypatch.setattr(module, "_require_prism2_runtime", lambda: None)
+    monkeypatch.setattr(
+        module,
+        "_bind_phi3_mask_compatibility",
+        lambda received: calls.append(("bind", received)),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(AutoConfig=AutoConfig, AutoModel=AutoModel),
+    )
+
+    Prism2DiagnosticSlideEmbedder().load("cuda:0")
+
+    assert calls[1] == (
+        PRISM2_PHI3_ARTIFACT_SHA256,
+        tuple(PRISM2_PHI3_ARTIFACT_SHA256),
+        "prism2_diagnostic:Phi-3",
+    )
+    assert calls[2] == ("bind", model)
 
 
 def test_prism2_rejects_cpu_before_downloading(monkeypatch):
@@ -196,6 +259,7 @@ def test_prism2_runtime_pin_fails_clearly(monkeypatch):
     with pytest.raises(
         RuntimeError,
         match=(
+            r"install flash-attn==2\.8\.3 with --no-build-isolation.*"
             r"transformers==4\.56\.0 \(found 4\.57\.6\).*"
             r"flash-attn==2\.8\.3 \(found missing\)"
         ),
@@ -203,15 +267,41 @@ def test_prism2_runtime_pin_fails_clearly(monkeypatch):
         _require_prism2_runtime()
 
 
+def test_prism2_runtime_pin_accepts_pep440_equivalent_versions(monkeypatch):
+    import raw2features.slide_embedders.prism2 as module
+
+    versions = {"transformers": "4.56", "flash-attn": "2.8.3+cu128"}
+    monkeypatch.setattr(
+        module.importlib_metadata,
+        "version",
+        lambda distribution: versions[distribution],
+    )
+
+    _require_prism2_runtime()
+
+
+def test_prism2_runtime_preflight_checks_packages_and_device(monkeypatch):
+    import raw2features.slide_embedders.prism2 as module
+
+    calls = []
+    monkeypatch.setattr(module, "_require_prism2_runtime", lambda: calls.append(True))
+
+    validate_slide_encoder_runtime(["mean"], devices=["cpu"])
+    assert calls == []
+    validate_slide_encoder_runtime(["prism2"], devices=["cuda:0"])
+    assert calls == [True]
+    with pytest.raises(ValueError, match="requires a CUDA GPU"):
+        validate_slide_encoder_runtime(
+            ["prism2_diagnostic"],
+            devices=["cpu"],
+        )
+
+
 def test_prism2_restores_released_phi3_mask_contract():
     torch = pytest.importorskip("torch")
+    pytest.importorskip("transformers")
 
-    class Phi3Model:
-        pass
-
-    _install_phi3_mask_compatibility(Phi3Model)
-    helper = Phi3Model._prepare_4d_causal_attention_mask_with_cache_position
-    mask = helper(
+    mask = _prepare_phi3_4d_causal_mask(
         attention_mask=torch.tensor([[1, 1, 0]], dtype=torch.int8),
         sequence_length=3,
         target_length=3,
@@ -245,6 +335,40 @@ def test_prism2_restores_released_phi3_mask_contract():
     )
 
 
+def test_prism2_binds_phi3_helper_only_to_verified_dynamic_module(monkeypatch):
+    pytest.importorskip("transformers")
+    module_name = "transformers_modules.paige_prism2.modeling_prism2"
+    original = type(
+        "Phi3Model",
+        (),
+        {"__module__": "transformers.models.phi3.modeling_phi3"},
+    )
+    dynamic_module = SimpleNamespace(Phi3Model=original)
+    model_cls = type("Prism2Model", (), {"__module__": module_name})
+    monkeypatch.setitem(sys.modules, module_name, dynamic_module)
+
+    _bind_phi3_mask_compatibility(model_cls())
+
+    helper = dynamic_module.Phi3Model
+    assert helper is not original
+    assert callable(helper._prepare_4d_causal_attention_mask_with_cache_position)
+    from transformers.models.phi3.modeling_phi3 import Phi3Model
+
+    assert not hasattr(
+        Phi3Model, "_prepare_4d_causal_attention_mask_with_cache_position"
+    )
+
+
+def test_prism2_rejects_unknown_dynamic_module_binding(monkeypatch):
+    module_name = "transformers_modules.paige_prism2.modeling_prism2"
+    dynamic_module = SimpleNamespace(Phi3Model=object)
+    model_cls = type("Prism2Model", (), {"__module__": module_name})
+    monkeypatch.setitem(sys.modules, module_name, dynamic_module)
+
+    with pytest.raises(RuntimeError, match="does not expose the expected Phi3Model"):
+        _bind_phi3_mask_compatibility(model_cls())
+
+
 def test_prism2_snapshot_allowlist_fails_closed(tmp_path):
     for filename in ("config.json", "model.safetensors.index.json"):
         (tmp_path / filename).write_bytes(b"test")
@@ -261,6 +385,76 @@ def test_prism2_snapshot_allowlist_fails_closed(tmp_path):
             ("config.json", "model.safetensors.index.json"),
             what="prism2",
         )
+
+
+def test_prism2_runtime_code_is_sha_bound_and_cached(monkeypatch, tmp_path):
+    artifact = tmp_path / "modeling_prism2.py"
+    artifact.write_bytes(b"verified code")
+    calls = []
+
+    monkeypatch.setattr(
+        "raw2features.slide_embedders.prism2.download_pinned_hf_snapshot",
+        lambda *args, **kwargs: str(tmp_path),
+    )
+
+    def verify(path, expected, *, what):
+        calls.append((Path(path).name, expected, what))
+
+    monkeypatch.setattr(
+        "raw2features.slide_embedders.prism2.verify_sha256",
+        verify,
+    )
+    _VERIFIED_SNAPSHOT_CACHE.clear()
+    artifacts = {"modeling_prism2.py": "a" * 64}
+
+    _verified_snapshot("hf-hub:test/model", "a" * 40, artifacts, what="test")
+    _verified_snapshot("hf-hub:test/model", "a" * 40, artifacts, what="test")
+    assert len(calls) == 1
+
+    artifact.write_bytes(b"changed code")
+    _verified_snapshot("hf-hub:test/model", "a" * 40, artifacts, what="test")
+    assert len(calls) == 2
+
+
+def test_prism2_rejects_bad_runtime_digest_before_custom_code(monkeypatch, tmp_path):
+    for filename in PRISM2_SNAPSHOT_ALLOW_PATTERNS:
+        (tmp_path / filename).write_bytes(b"untrusted")
+    events = []
+
+    monkeypatch.setattr(
+        "raw2features.slide_embedders.prism2.download_pinned_hf_snapshot",
+        lambda *args, **kwargs: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        "raw2features.slide_embedders.prism2._require_prism2_runtime",
+        lambda: None,
+    )
+
+    def reject(*args, **kwargs):
+        events.append("verify")
+        raise ValueError("digest mismatch")
+
+    monkeypatch.setattr(
+        "raw2features.slide_embedders.prism2.verify_sha256",
+        reject,
+    )
+    _VERIFIED_SNAPSHOT_CACHE.clear()
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        SimpleNamespace(
+            AutoConfig=SimpleNamespace(
+                from_pretrained=lambda *a, **k: pytest.fail("custom code executed")
+            ),
+            AutoModel=SimpleNamespace(
+                from_pretrained=lambda *a, **k: pytest.fail("custom code executed")
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="digest mismatch"):
+        Prism2SlideEmbedder().load("cuda:0")
+    assert events == ["verify"]
 
 
 def test_prism2_fingerprint_binds_cls_projection_shards_and_phi3():
@@ -299,14 +493,97 @@ def test_prism2_fingerprint_binds_cls_projection_shards_and_phi3():
     phi3 = constructor["phi3_construction_dependency"]
     assert phi3["repo"] == "microsoft/Phi-3-mini-128k-instruct"
     assert phi3["revision"] == PRISM2_PHI3_REVISION
-    assert phi3["artifacts"] == PRISM2_PHI3_ARTIFACT_SHA256
-    assert phi3["mask_compatibility"]["version"] == (PRISM2_PHI3_MASK_COMPAT_VERSION)
+    assert phi3["artifacts"] == PRISM2_PHI3_CONFIG_SHA256
+    assert "mask_compatibility" not in phi3
+    assert constructor["snapshot"] == {
+        "allow_patterns": list(PRISM2_SNAPSHOT_ALLOW_PATTERNS),
+        "custom_code_sha256": PRISM2_CODE_SHA256,
+    }
     assert base["payload"]["output"]["resolved_amp"] == "bf16"
-    assert diagnostic["payload"]["loader"]["constructor"]["forward"] == (
-        "get_diagnostic_embedding"
+    diagnostic_constructor = diagnostic["payload"]["loader"]["constructor"]
+    assert diagnostic_constructor["forward"] == "get_diagnostic_embedding"
+    diagnostic_phi3 = diagnostic_constructor["phi3_construction_dependency"]
+    assert diagnostic_phi3["artifacts"] == PRISM2_PHI3_ARTIFACT_SHA256
+    assert diagnostic_phi3["mask_compatibility"]["version"] == (
+        PRISM2_PHI3_MASK_COMPAT_VERSION
+    )
+    assert diagnostic_phi3["mask_compatibility"]["binding_scope"] == (
+        "verified_prism2_dynamic_module"
     )
     assert diagnostic["payload"]["output"]["embedding_dim"] == 3072
     assert base["digest"] != diagnostic["digest"]
+
+
+def test_prism2_amp_contract_is_device_independent():
+    for name in ("prism2", "prism2_diagnostic"):
+        spec = get_slide_spec(name)
+        assert resolved_slide_amp(spec, "cpu") == "bf16"
+        assert resolved_slide_amp(spec, "cuda:0") == "bf16"
+
+
+def test_prism2_complete_output_can_be_recognized_without_gpu_runtime(tmp_path):
+    path = str(tmp_path / "complete.embeddings.zarr")
+    root = zarr.open_group(path, mode="w", zarr_format=2)
+    grids = root.create_group("grids")
+    group = grids.create_group("mpp0.5_px224")
+    coords = group.create_array("coords", shape=(2, 2), dtype="int32")
+    coords[:] = np.asarray([[0, 0], [224, 0]], dtype=np.int32)
+
+    patch_spec = get_spec("virchow2")
+    patch_fingerprint = patch_output_fingerprint(patch_spec, "fp16")
+    features = group.create_group("features").create_array(
+        "virchow2",
+        shape=(2, patch_spec.embedding_dim),
+        chunks=(2, patch_spec.embedding_dim),
+        dtype="float32",
+    )
+    features[:] = 1.0
+    features.attrs.update(
+        {
+            "role": "features",
+            "model": "virchow2",
+            "output_fingerprint": patch_fingerprint,
+        }
+    )
+    group.attrs["raw2features"] = {
+        "schema_version": "0.1",
+        "models": {
+            "virchow2": {
+                "embedding_dim": patch_spec.embedding_dim,
+                "output_fingerprint": patch_fingerprint,
+            }
+        },
+        "patching": {"level0_patch": 224},
+    }
+    root.attrs["raw2features"] = {
+        "schema_version": "0.1",
+        "grids": {"mpp0.5_px224": {}},
+    }
+
+    slide_spec = get_slide_spec("prism2")
+    slide_fingerprint = slide_output_fingerprint(
+        slide_spec,
+        patch_model="virchow2",
+        patch_output_fingerprint=patch_fingerprint,
+        patch_dim=patch_spec.embedding_dim,
+        resolved_amp="bf16",
+    )
+    write_slide_embedding(
+        group,
+        "prism2",
+        np.ones(slide_output_dim(slide_spec, patch_spec.embedding_dim)),
+        {
+            "patch_encoder": "virchow2",
+            "embedding_dim": slide_spec.embedding_dim,
+            "output_fingerprint": slide_fingerprint,
+        },
+    )
+
+    assert slide_encoders_requiring_compute(path, ["prism2"], device="cpu") == []
+    del group["slide"]["prism2"]
+    assert slide_encoders_requiring_compute(path, ["prism2"], device="cpu") == [
+        "prism2"
+    ]
 
 
 def test_prism2_fields_do_not_change_existing_prism_fingerprint_shape():

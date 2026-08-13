@@ -220,6 +220,8 @@ patch features invalidates any derived slide vector, and records the effective
 fp16/fp32/bf16 slide-forward precision for the resolved device. Sharded slide checkpoints
 additionally record a `weights_manifest` binding the index and every shard; construction
 dependencies such as a separately sourced config or tokenizer belong in the loader contract.
+When a slide loader executes pinned repository code, the consumed code/config files and
+their SHA-256 digests are recorded there as well.
 Fingerprint fields are optional in
 the 0.1 schema so older stores remain readable and exportable, but current completion
 checks never reconstruct them from legacy headers: requesting an unfingerprinted patch

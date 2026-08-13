@@ -176,15 +176,18 @@ grandqc = ["raw2features[torch]", "segmentation-models-pytorch>=0.3", "timm>=1.0
 # sacremoses at module load (the BioGPT decoder path, unused for slide embeddings). Gated.
 prism = ["raw2features[torch,models]", "environs", "sacremoses"]
 # PRISM2's released custom code requires FlashAttention for the perceiver and
-# Transformers 4.56.0 for its Phi-3 image decoder. The model card specifies CUDA bf16;
-# keep this gated 17.9 GB checkpoint opt-in rather than adding it to [all].
+# Transformers 4.56.0 for its Phi-3 image decoder. FlashAttention publishes only a
+# source distribution on PyPI and requires a build against an already-installed
+# Torch/CUDA stack, so install it separately with --no-build-isolation (see MODELS.md).
+# Keep this gated 17.9 GB checkpoint opt-in rather than adding it to [all].
 prism2 = [
     "raw2features[torch,models]",
     "torch>=2.3",
     # Share KRONOS2's validated runtime. The loader restores the deterministic Phi-3
     # mask helper called by PRISM2 and records that compatibility contract.
     "transformers==4.56.0",
-    "flash-attn==2.8.3",
+    "packaging>=23",
+    "ninja>=1.11",
 ]
 # MADELEINE slide encoder (Mahmood Lab): loads via the authors' non-PyPI `madeleine` git
 # package (post-install, like conch):

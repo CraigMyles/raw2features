@@ -11,6 +11,7 @@ Run just this check in a model-enabled environment with::
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import urllib.request
@@ -29,9 +30,12 @@ from raw2features.embedders.open_clip_embedder import (
 from raw2features.embedders.seal_embedder import _SEAL_REPO
 from raw2features.slide_embedders.model_registry import load_slide_registry
 from raw2features.slide_embedders.prism2 import (
+    PRISM2_CODE_SHA256,
     PRISM2_PHI3_ARTIFACT_SHA256,
     PRISM2_PHI3_REVISION,
     PRISM2_PHI3_SOURCE,
+    PRISM2_REVISION,
+    PRISM2_SOURCE,
 )
 
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -262,6 +266,10 @@ def test_prism2_shard_manifest_matches_huggingface():
         assert filename in siblings, filename
         lfs = siblings[filename].lfs
         if lfs is None:
+            assert not filename.endswith(".safetensors"), (
+                f"prism2:{filename}: missing Git LFS digest; refusing to download "
+                "a multi-GB shard in a network pin test"
+            )
             path = download_pinned_hf_file(
                 spec.source,
                 filename,
@@ -271,6 +279,26 @@ def test_prism2_shard_manifest_matches_huggingface():
             continue
         sha256 = lfs.get("sha256") if isinstance(lfs, Mapping) else lfs.sha256
         assert sha256 == expected, filename
+
+    index_path = download_pinned_hf_file(
+        spec.source,
+        spec.weights_filename,
+        spec.weights_revision,
+    )
+    with open(index_path, encoding="utf-8") as handle:
+        index = json.load(handle)
+    indexed_shards = set(index["weight_map"].values())
+    recorded_shards = set(spec.weights_manifest) - {spec.weights_filename}
+    assert indexed_shards == recorded_shards
+
+
+@pytest.mark.network
+def test_prism2_custom_code_matches_pinned_sha256():
+    """Every Python/config file executed by trust_remote_code matches its pin."""
+
+    for filename, expected in PRISM2_CODE_SHA256.items():
+        path = download_pinned_hf_file(PRISM2_SOURCE, filename, PRISM2_REVISION)
+        verify_sha256(path, expected, what=f"prism2:custom-code:{filename}")
 
 
 @pytest.mark.network

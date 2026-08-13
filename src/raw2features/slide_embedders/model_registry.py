@@ -53,6 +53,29 @@ def validate_slide_encoder_names(names: list[str]) -> None:
         )
 
 
+def validate_slide_encoder_runtime(
+    names: list[str],
+    *,
+    devices: list[str] | None = None,
+) -> None:
+    """Fail before patch work when a requested slide runtime is unavailable."""
+
+    specs = [get_slide_spec(name) for name in dict.fromkeys(names)]
+    if not any(spec.family == "prism2" for spec in specs):
+        return
+
+    from raw2features.slide_embedders.prism2 import _require_prism2_runtime
+
+    _require_prism2_runtime()
+    if devices is not None:
+        incompatible = [device for device in devices if not device.startswith("cuda")]
+        if incompatible:
+            raise ValueError(
+                "PRISM2 requires a CUDA GPU; resolved incompatible device(s): "
+                f"{incompatible}"
+            )
+
+
 def build_slide_embedder(name: str) -> SlideEmbedder:
     from raw2features.core.plugins import get
 

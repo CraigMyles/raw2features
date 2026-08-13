@@ -66,3 +66,5 @@ and verify every component they can; any deliberately unpinned component must be
 For a sharded slide checkpoint, set `weights_filename` / `weights_sha256` to its index
 and provide `weights_manifest` with the SHA-256 of the index and every shard. The loader
 must verify the whole manifest before constructing the model.
+If loading with `trust_remote_code=True`, pin and SHA-256 verify every executed code/config
+file before construction and record that allowlist in the loader fingerprint.

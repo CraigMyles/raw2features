@@ -80,6 +80,10 @@ def test_every_slide_spec_is_complete():
         if spec.family != "pool":
             assert spec.doi and spec.doi.startswith("10."), f"{name}: needs a DOI"
             assert spec.weights_filename, f"{name}: needs the exact weights_filename"
+            if spec.weights_filename.endswith(".safetensors.index.json"):
+                assert spec.weights_manifest is not None, (
+                    f"{name}: a sharded safetensors checkpoint needs a weights_manifest"
+                )
             if spec.weights_manifest is not None:
                 assert spec.weights_filename in spec.weights_manifest
                 assert spec.weights_manifest[spec.weights_filename] == (

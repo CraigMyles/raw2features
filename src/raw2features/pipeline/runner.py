@@ -1453,6 +1453,32 @@ def run_slide(
     else:
         models_to_do = list(cfg.models)
 
+    if cfg.slide_encoders:
+        from raw2features.slide_embedders.encoding import (
+            slide_encoders_requiring_compute,
+        )
+        from raw2features.slide_embedders.model_registry import (
+            get_slide_spec,
+            validate_slide_encoder_runtime,
+        )
+
+        runtime_names = (
+            list(cfg.slide_encoders)
+            if force
+            else slide_encoders_requiring_compute(
+                out_path,
+                cfg.slide_encoders,
+                device=cfg.device,
+            )
+        )
+        for name in cfg.slide_encoders:
+            if get_slide_spec(name).patch_encoder in models_to_do:
+                runtime_names.append(name)
+        validate_slide_encoder_runtime(
+            list(dict.fromkeys(runtime_names)),
+            devices=devices,
+        )
+
     qc_to_do = list(cfg.qc)
     thumbnail_to_do = bool(cfg.emit_thumbnail)
     thumb_meta = None
@@ -2201,6 +2227,23 @@ def embed_slide(
             "reason": "already complete",
             "grids": grids,
         }
+
+    if cfg.slide_encoders:
+        from raw2features.slide_embedders.encoding import (
+            slide_encoders_requiring_compute,
+        )
+        from raw2features.slide_embedders.model_registry import (
+            validate_slide_encoder_runtime,
+        )
+
+        validate_slide_encoder_runtime(
+            slide_encoders_requiring_compute(
+                out_path,
+                cfg.slide_encoders,
+                device=cfg.device,
+            ),
+            devices=devices,
+        )
 
     started = time.time()
     results = []

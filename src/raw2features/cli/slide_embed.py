@@ -76,6 +76,7 @@ def slide_embed(
     )
     from raw2features.slide_embedders.model_registry import (
         validate_slide_encoder_names,
+        validate_slide_encoder_runtime,
     )
 
     try:
@@ -111,7 +112,7 @@ def slide_embed(
                 grid=grid,
                 patch_model=patch_model,
             )
-        except (KeyError, ValueError) as exc:
+        except (KeyError, RuntimeError, ValueError) as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc
 
@@ -132,6 +133,15 @@ def slide_embed(
                 f"{slide_model_name} [{selected_grid}]: already complete (skipping)"
             )
             continue
+
+        try:
+            validate_slide_encoder_runtime(
+                [slide_model_name],
+                devices=[device],
+            )
+        except (RuntimeError, ValueError) as exc:
+            typer.echo(f"Error: {exc}", err=True)
+            raise typer.Exit(1) from exc
 
         typer.echo(
             f"{slide_model_name} [{selected_grid}]: encoding from "

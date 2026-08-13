@@ -7,6 +7,7 @@ provenance, and writes here prevents the two entry points from drifting.
 
 from __future__ import annotations
 
+import os
 import warnings
 from dataclasses import dataclass
 
@@ -193,6 +194,46 @@ def slide_embedding_is_complete(
 
     vector = np.asarray(array[:], dtype=np.float32)
     return bool(vector.size and np.isfinite(vector).all() and (vector != 0).any())
+
+
+def slide_encoders_requiring_compute(
+    store_path: str,
+    slide_models: list[str],
+    *,
+    device: str = "cpu",
+) -> list[str]:
+    """Return requested slide encoders without a complete current store output."""
+
+    if not slide_models:
+        return []
+    path = store_path.removeprefix("file://")
+    if not os.path.exists(path):
+        return list(slide_models)
+
+    import zarr
+
+    try:
+        root = zarr.open_group(path, mode="r", use_consolidated=False)
+    except Exception:  # noqa: BLE001 - an unreadable store cannot prove completion
+        return list(slide_models)
+
+    missing = []
+    for slide_model in slide_models:
+        try:
+            _, group, patch_model = resolve_slide_grid(root, slide_model)
+            output_name = slide_output_key(group, slide_model, patch_model)
+            complete = slide_embedding_is_complete(
+                group,
+                slide_model,
+                patch_model=patch_model,
+                device=device,
+                output_name=output_name,
+            )
+        except (KeyError, TypeError, ValueError):
+            complete = False
+        if not complete:
+            missing.append(slide_model)
+    return missing
 
 
 def resolve_slide_grid(

@@ -114,8 +114,9 @@ method removed after its released 4.51.3 stack, so raw2features restores that de
 mask construction and records the compatibility contract in the output fingerprint. The
 validated path requires FlashAttention 2.8.3. PyPI distributes it as source, so install
 it after the extra with build isolation disabled as shown above, or install an
-ABI-compatible 2.8.3 wheel. Increase `MAX_JOBS` only when the build host has sufficient
-RAM. The checkpoint is approximately 17.9 GB.
+ABI-compatible 2.8.3 wheel. The extra supplies the source build's packaging, Ninja,
+setuptools and wheel prerequisites. Increase `MAX_JOBS` only when the build host has
+sufficient RAM. The checkpoint is approximately 17.9 GB.
 The base path still constructs the complete released model, so it has the same download
 and device-memory requirements as the diagnostic path.
 

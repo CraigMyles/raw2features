@@ -61,3 +61,13 @@ def test_kronos2_xformers_pin_only_targets_published_wheel_versions() -> None:
         "python_full_version": "3.12.0",
     }
     assert not requirement.marker.evaluate(pypy_environment)
+
+
+def test_prism2_extra_supplies_nonisolated_flash_build_prerequisites() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    requirements = {
+        Requirement(item).name
+        for item in project["project"]["optional-dependencies"]["prism2"]
+    }
+
+    assert {"torch", "packaging", "ninja", "setuptools", "wheel"} <= requirements

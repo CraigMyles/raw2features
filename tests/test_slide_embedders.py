@@ -1020,6 +1020,75 @@ def test_cli_slide_embed_validates_all_encoder_names_before_work(
     assert "slide" not in open_grid(path, mode="r+")
 
 
+def test_cli_slide_embed_runtime_preflight_precedes_all_encoder_writes(
+    tmp_path, monkeypatch, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {
+            "mpp0.5_px224": (
+                224,
+                {
+                    "conch_v1_5": np.ones((2, 768), np.float32),
+                    "virchow2": np.ones((2, 2560), np.float32),
+                },
+            )
+        },
+    )
+    import raw2features.slide_embedders.prism2 as prism2
+
+    monkeypatch.setattr(
+        prism2,
+        "_require_prism2_runtime",
+        lambda: (_ for _ in ()).throw(RuntimeError("PRISM2 runtime missing")),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "slide-embed",
+            path,
+            "-s",
+            "titan",
+            "-s",
+            "prism2",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "PRISM2 runtime missing" in result.output
+    assert recording_slide_embedder["loads"] == 0
+    assert "slide" not in open_grid(path, mode="r+")
+
+
+def test_embed_cli_reports_pipeline_runtime_errors_without_traceback(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(
+        "raw2features.cli.embed.embed_slide",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            RuntimeError("PRISM2 runtime missing")
+        ),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed",
+            str(tmp_path / "slide.zarr"),
+            str(tmp_path / "out"),
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Error: PRISM2 runtime missing" in result.output
+    assert "Traceback" not in result.output
+
+
 def test_cli_slide_embed_consolidates_once_after_all_writes(
     tmp_path, recording_slide_embedder, monkeypatch
 ):

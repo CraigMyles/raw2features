@@ -8,6 +8,7 @@ import sys
 import typer
 
 from raw2features.core.provenance import sanitize_argv
+from raw2features.core.uris import redact_uri_credentials
 from raw2features.pipeline.runner import RunConfig, embed_slide
 from raw2features.viz import DEFAULT_THUMBNAIL_MPP
 
@@ -330,16 +331,20 @@ def embed(
         qc_artifact_mpp=qc_artifact_mpp,
         output_zarr_format=output_zarr_format,
     )
-    summary = embed_slide(
-        slide,
-        out_dir,
-        cfg,
-        requested_mpp=mpp,
-        requested_patch_px=patch_size,
-        geometry_config=geometry_config,
-        receipts_dir=receipts_dir,
-        cli=sanitize_argv(sys.argv),
-        force=force,
-    )
+    try:
+        summary = embed_slide(
+            slide,
+            out_dir,
+            cfg,
+            requested_mpp=mpp,
+            requested_patch_px=patch_size,
+            geometry_config=geometry_config,
+            receipts_dir=receipts_dir,
+            cli=sanitize_argv(sys.argv),
+            force=force,
+        )
+    except (KeyError, RuntimeError, ValueError) as exc:
+        typer.echo(redact_uri_credentials(f"Error: {exc}"), err=True)
+        raise typer.Exit(1) from exc
     for key, value in summary.items():
         typer.echo(f"{key}: {value}")

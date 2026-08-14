@@ -188,6 +188,8 @@ prism2 = [
     "transformers==4.56.0",
     "packaging>=23",
     "ninja>=1.11",
+    "setuptools>=64",
+    "wheel>=0.41",
 ]
 # MADELEINE slide encoder (Mahmood Lab): loads via the authors' non-PyPI `madeleine` git
 # package (post-install, like conch):

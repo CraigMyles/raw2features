@@ -9,6 +9,7 @@ are separate outputs because the authors give them different downstream roles.
 
 from __future__ import annotations
 
+import importlib
 import sys
 import threading
 from importlib import metadata as importlib_metadata
@@ -268,11 +269,24 @@ def _verified_snapshot(
     what: str,
 ) -> str:
     expected = tuple(artifacts)
+    local_dir = pinned_model_cache_dir(source, revision)
+    if Path(local_dir).is_dir() and all(
+        (Path(local_dir) / filename).is_file() for filename in expected
+    ):
+        _assert_snapshot_files(
+            local_dir,
+            expected,
+            allowed_files=allowed_files,
+            what=what,
+        )
+        _verify_snapshot_artifacts_once(local_dir, artifacts, what=what)
+        return local_dir
+
     snapshot = download_pinned_hf_snapshot(
         source,
         revision,
         allow_patterns=expected,
-        local_dir=pinned_model_cache_dir(source, revision),
+        local_dir=local_dir,
     )
     _assert_snapshot_files(
         snapshot,
@@ -349,9 +363,7 @@ def _require_prism2_runtime() -> None:
             installed = importlib_metadata.version(distribution)
         except importlib_metadata.PackageNotFoundError:
             installed = None
-        if installed is None or not SpecifierSet(f"=={expected}").contains(
-            installed, prereleases=True
-        ):
+        if installed is None or not SpecifierSet(f"=={expected}").contains(installed):
             found = installed or "missing"
             mismatches.append(f"{distribution}=={expected} (found {found})")
     if mismatches:
@@ -360,6 +372,15 @@ def _require_prism2_runtime() -> None:
             "then install flash-attn==2.8.3 with --no-build-isolation. Mismatch: "
             + ", ".join(mismatches)
         )
+    try:
+        importlib.import_module("flash_attn")
+    except Exception as exc:  # noqa: BLE001 - surface binary/ABI import failures early
+        raise RuntimeError(
+            "PRISM2 found flash-attn==2.8.3, but it could not be imported. "
+            "Rebuild flash-attn against the active Torch/CUDA environment with "
+            "--no-build-isolation. Import error: "
+            f"{exc}"
+        ) from exc
 
 
 class _Prism2SlideEmbedder(SlideEmbedder):

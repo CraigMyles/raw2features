@@ -391,6 +391,19 @@ def embed_many(
     cli = sanitize_argv(sys.argv)
     device_list = cfg.device_list()
 
+    try:
+        from raw2features.slide_embedders.model_registry import (
+            validate_slide_encoder_runtime,
+        )
+
+        # embed-many loads patch models once before visiting individual stores. Its
+        # slide-parallel workers run slide encoders on these resolved devices, so
+        # validate that actual runtime now rather than after an expensive warm load.
+        validate_slide_encoder_runtime(cfg.slide_encoders, devices=device_list)
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"Error: slide-encoder runtime preflight failed: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
     # Validate every positional panel before a warm worker loads model weights. This is
     # especially important for one --channel-names-file applied to a whole cohort: a
     # count or metadata conflict must not surface only after an expensive gated load.
@@ -425,18 +438,6 @@ def embed_many(
             redact_uri_credentials(f"Error: multiplex panel preflight failed: {exc}"),
             err=True,
         )
-        raise typer.Exit(1) from exc
-
-    try:
-        _preflight_slide_encoder_runtime(
-            shard,
-            out_dir,
-            cfg,
-            device_list,
-            force=force,
-        )
-    except (RuntimeError, ValueError) as exc:
-        typer.echo(f"Error: slide-encoder runtime preflight failed: {exc}", err=True)
         raise typer.Exit(1) from exc
 
     t0 = time.time()
@@ -480,44 +481,6 @@ def embed_many(
 def _classify(summary: dict) -> str:
     """'skipped' | 'done' for the running tally (anything not skipped counts done)."""
     return "skipped" if summary["status"] == "skipped" else "done"
-
-
-def _preflight_slide_encoder_runtime(
-    shard: list[dict],
-    out_dir: str,
-    cfg: RunConfig,
-    devices: list[str],
-    *,
-    force: bool,
-) -> None:
-    """Check a required slide runtime before warm patch models are loaded."""
-
-    if not cfg.slide_encoders:
-        return
-    from raw2features.slide_embedders.encoding import (
-        slide_encoders_requiring_compute,
-    )
-    from raw2features.slide_embedders.model_registry import (
-        validate_slide_encoder_runtime,
-    )
-
-    required = set(cfg.slide_encoders) if force else set()
-    if not force:
-        inspection_device = devices[0] if devices else cfg.device
-        for row in shard:
-            slide_id = slide_id_from_path(row["path"])
-            store_path = os.path.join(out_dir, f"{slide_id}.embeddings.zarr")
-            required.update(
-                slide_encoders_requiring_compute(
-                    store_path,
-                    cfg.slide_encoders,
-                    device=inspection_device,
-                )
-            )
-            if len(required) == len(set(cfg.slide_encoders)):
-                break
-    ordered = [name for name in dict.fromkeys(cfg.slide_encoders) if name in required]
-    validate_slide_encoder_runtime(ordered, devices=devices)
 
 
 def _resolve_manifest_sources(rows: list[dict], slide_dir: str) -> list[dict]:

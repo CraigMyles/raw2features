@@ -1454,29 +1454,14 @@ def run_slide(
         models_to_do = list(cfg.models)
 
     if cfg.slide_encoders:
-        from raw2features.slide_embedders.encoding import (
-            slide_encoders_requiring_compute,
-        )
-        from raw2features.slide_embedders.model_registry import (
-            get_slide_spec,
-            validate_slide_encoder_runtime,
-        )
-
-        runtime_names = (
-            list(cfg.slide_encoders)
-            if force
-            else slide_encoders_requiring_compute(
-                out_path,
-                cfg.slide_encoders,
-                device=cfg.device,
-            )
-        )
-        for name in cfg.slide_encoders:
-            if get_slide_spec(name).patch_encoder in models_to_do:
-                runtime_names.append(name)
-        validate_slide_encoder_runtime(
-            list(dict.fromkeys(runtime_names)),
-            devices=devices,
+        available = sorted(set(present_valid) | set(models_to_do))
+        _preflight_slide_encoders_for_grid(
+            out_path,
+            grid_key_existing,
+            cfg.slide_encoders,
+            available,
+            models_to_do,
+            cfg.device,
         )
 
     qc_to_do = list(cfg.qc)
@@ -2227,23 +2212,6 @@ def embed_slide(
             "reason": "already complete",
             "grids": grids,
         }
-
-    if cfg.slide_encoders:
-        from raw2features.slide_embedders.encoding import (
-            slide_encoders_requiring_compute,
-        )
-        from raw2features.slide_embedders.model_registry import (
-            validate_slide_encoder_runtime,
-        )
-
-        validate_slide_encoder_runtime(
-            slide_encoders_requiring_compute(
-                out_path,
-                cfg.slide_encoders,
-                device=cfg.device,
-            ),
-            devices=devices,
-        )
 
     started = time.time()
     results = []
@@ -3823,6 +3791,75 @@ def _slide_encoders_for(names: list[str], available: list[str]) -> list[str]:
     return out
 
 
+def _preflight_slide_encoders_for_grid(
+    out_path: str,
+    grid_key_existing: str | None,
+    names: list[str],
+    available_patch_models: list[str],
+    patch_models_to_write: list[str],
+    slide_device: str,
+) -> list[str]:
+    """Validate runtimes needed by this exact grid before patch work starts."""
+
+    from raw2features.slide_embedders.model_registry import (
+        get_slide_spec,
+        validate_slide_encoder_runtime,
+    )
+
+    candidates = [
+        name
+        for name in _slide_encoders_for(names, available_patch_models)
+        if get_slide_spec(name).family == "prism2"
+    ]
+    if not candidates:
+        return []
+
+    required = [
+        name
+        for name in candidates
+        if grid_key_existing is None
+        or get_slide_spec(name).patch_encoder in patch_models_to_write
+    ]
+    if grid_key_existing is not None and len(required) != len(candidates):
+        try:
+            import zarr
+
+            from raw2features.core.store import open_grid
+            from raw2features.slide_embedders.encoding import (
+                resolve_slide_patch_model,
+                slide_embedding_is_complete,
+                slide_output_key,
+            )
+
+            root = zarr.open_group(out_path, mode="r", use_consolidated=False)
+            group = open_grid(root, grid_key_existing)
+            for name in candidates:
+                if name in required:
+                    continue
+                patch_model = resolve_slide_patch_model(
+                    group,
+                    name,
+                    available_patch_models=available_patch_models,
+                )
+                output_name = slide_output_key(group, name, patch_model)
+                if not slide_embedding_is_complete(
+                    group,
+                    name,
+                    patch_model=patch_model,
+                    device=slide_device,
+                    output_name=output_name,
+                    # _inspect_store already validated this exact patch array.
+                    patch_is_complete=True,
+                ):
+                    required.append(name)
+        except Exception:  # noqa: BLE001 - unreadable state cannot prove completion
+            required = list(candidates)
+
+    required = list(dict.fromkeys(required))
+    validate_slide_encoder_runtime(required, devices=[slide_device])
+    return required
+
+
 def _run_qc(
     qc_tools,
     reader,
@@ -3911,6 +3948,7 @@ def _run_slide_encoders(
             patch_model=patch_model,
             device=device,
             output_name=output_name,
+            patch_is_complete=True,
         ):
             results[slide_model_name] = f"slide/{output_name}"
             continue
@@ -3921,6 +3959,7 @@ def _run_slide_encoders(
             device,
             patch_model=patch_model,
             available_patch_models=available_patch_models,
+            patch_is_complete=True,
         )
         if encoding is None:
             continue

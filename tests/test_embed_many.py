@@ -86,10 +86,12 @@ def test_embed_many_runtime_preflight_runs_before_warm_model_load(
     slides = tmp_path / "slides"
     slides.mkdir()
     (slides / "S.zarr").mkdir()
+    import raw2features.slide_embedders.prism2 as prism2
+
     monkeypatch.setattr(
-        em,
-        "_preflight_slide_encoder_runtime",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("runtime missing")),
+        prism2,
+        "_require_prism2_runtime",
+        lambda: (_ for _ in ()).throw(RuntimeError("runtime missing")),
     )
     monkeypatch.setattr(
         em,
@@ -115,36 +117,6 @@ def test_embed_many_runtime_preflight_runs_before_warm_model_load(
     assert result.exit_code == 1
     assert "runtime missing" in result.output
     assert "models must not be loaded" not in result.output
-
-
-def test_embed_many_runtime_preflight_ignores_complete_slide_outputs(
-    tmp_path, monkeypatch
-):
-    import raw2features.slide_embedders.encoding as encoding
-    import raw2features.slide_embedders.model_registry as slide_registry
-    from raw2features.cli.embed_many import _preflight_slide_encoder_runtime
-
-    checked = []
-    monkeypatch.setattr(
-        encoding,
-        "slide_encoders_requiring_compute",
-        lambda *args, **kwargs: [],
-    )
-    monkeypatch.setattr(
-        slide_registry,
-        "validate_slide_encoder_runtime",
-        lambda names, *, devices: checked.append((names, devices)),
-    )
-
-    _preflight_slide_encoder_runtime(
-        [{"path": str(tmp_path / "S.zarr")}],
-        str(tmp_path / "out"),
-        RunConfig(models=["mock"], slide_encoders=["prism2"]),
-        ["cpu"],
-        force=False,
-    )
-
-    assert checked == [([], ["cpu"])]
 
 
 @pytest.mark.parametrize(

@@ -3484,10 +3484,12 @@ prism2 = [
     { name = "ninja" },
     { name = "packaging" },
     { name = "safetensors" },
+    { name = "setuptools" },
     { name = "timm" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
+    { name = "wheel" },
 ]
 s3 = [
     { name = "s3fs" },
@@ -3611,6 +3613,7 @@ requires-dist = [
     { name = "scanpy", marker = "extra == 'seal'" },
     { name = "scikit-learn", marker = "extra == 'stain'", specifier = ">=1.3" },
     { name = "segmentation-models-pytorch", marker = "extra == 'grandqc'", specifier = ">=0.3" },
+    { name = "setuptools", marker = "extra == 'prism2'", specifier = ">=64" },
     { name = "shapely", marker = "extra == 'image'", specifier = ">=2.0" },
     { name = "spatialdata", marker = "extra == 'spatialdata'", specifier = ">=0.2" },
     { name = "tifffile", marker = "extra == 'kronos'", specifier = ">=2024" },
@@ -3627,6 +3630,7 @@ requires-dist = [
     { name = "transformers", marker = "extra == 'models'", specifier = ">=4.40" },
     { name = "transformers", marker = "extra == 'prism2'", specifier = "==4.56.0" },
     { name = "typer", specifier = ">=0.12" },
+    { name = "wheel", marker = "extra == 'prism2'", specifier = ">=0.41" },
     { name = "xformers", marker = "python_full_version < '3.13' and platform_machine == 'x86_64' and platform_python_implementation == 'CPython' and sys_platform == 'linux' and extra == 'kronos2'", specifier = "==0.0.29.post3" },
     { name = "zarr", marker = "extra == 'zarr'", specifier = ">=3.1" },
 ]
@@ -4994,6 +4998,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/af/44/c833e6b746ffb654e9abacf7ad6c2480a9c8c42e9637c1ae849964fb4dde/wcwidth-0.8.0.tar.gz", hash = "sha256:68a882ff6d14e3d14e0cae590b96a0551be64ce4905408112a8254434a1bdf69", size = 1305357, upload-time = "2026-06-05T21:19:35.667Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fb/17/c68b6cbcfeadbf420b3c3edaf8fda51335bc9c38732adb2d3ba8984dc607/wcwidth-0.8.0-py3-none-any.whl", hash = "sha256:8c75e6099cefd197c4bcc67a486f70b5dbc68f997c05f34a811d853910450d64", size = 324935, upload-time = "2026-06-05T21:19:33.999Z" },
+]
+
+[[package]]
+name = "wheel"
+version = "0.48.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "packaging" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d0/20/50ed6bdf27dec98b568a8ae25dc599f35baa3d9709f9e83fd1edb56b9a90/wheel-0.48.0.tar.gz", hash = "sha256:94800765601e9171bf5d58d066e640662842bcedcbab982b2c90787a2c987322", size = 66471, upload-time = "2026-08-11T22:02:27.327Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/2e/29/69cfbb602cd91690c55d38ba9fe53e6a7e76a6fa647bf38f19c138d25449/wheel-0.48.0-py3-none-any.whl", hash = "sha256:3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab", size = 33320, upload-time = "2026-08-11T22:02:26.1Z" },
 ]
 
 [[package]]

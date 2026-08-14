@@ -102,46 +102,64 @@ def slide_embed(
     # use_consolidated=False: the store was consolidated by `embed`, so its
     # consolidated metadata predates any slide/ group we add here. Reading the
     # live metadata avoids stale-key KeyErrors; we re-consolidate at the end.
-    root = zarr.open_group(path, mode="r+", use_consolidated=False)
-
-    for slide_model_name in slide_encoder:
-        try:
+    plans = []
+    try:
+        root = zarr.open_group(path, mode="r+", use_consolidated=False)
+        for slide_model_name in slide_encoder:
             selected_grid, group, selected_patch_model = resolve_slide_grid(
                 root,
                 slide_model_name,
                 grid=grid,
                 patch_model=patch_model,
             )
-        except (KeyError, RuntimeError, ValueError) as exc:
-            typer.echo(f"Error: {exc}", err=True)
-            raise typer.Exit(1) from exc
+            # Strategy-derived multiplex pools are patch-qualified so several marker
+            # recipes can coexist on the same grid without replacing one another.
+            output_name = slide_output_key(
+                group, slide_model_name, selected_patch_model
+            )
+            complete = not force and slide_embedding_is_complete(
+                group,
+                slide_model_name,
+                patch_model=selected_patch_model,
+                device=device,
+                output_name=output_name,
+            )
+            plans.append(
+                (
+                    slide_model_name,
+                    selected_grid,
+                    group,
+                    selected_patch_model,
+                    output_name,
+                    complete,
+                )
+            )
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
 
-        # Strategy-derived multiplex pools are patch-qualified so several marker
-        # recipes can coexist on the same grid without replacing one another.
-        output_name = slide_output_key(
-            group, slide_model_name, selected_patch_model
+    try:
+        validate_slide_encoder_runtime(
+            [plan[0] for plan in plans if not plan[-1]],
+            devices=[device],
         )
-        # Skip only an output produced from the requested patch model.
-        if not force and slide_embedding_is_complete(
-            group,
-            slide_model_name,
-            patch_model=selected_patch_model,
-            device=device,
-            output_name=output_name,
-        ):
+    except (RuntimeError, ValueError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from exc
+
+    for (
+        slide_model_name,
+        selected_grid,
+        group,
+        selected_patch_model,
+        output_name,
+        complete,
+    ) in plans:
+        if complete:
             typer.echo(
                 f"{slide_model_name} [{selected_grid}]: already complete (skipping)"
             )
             continue
-
-        try:
-            validate_slide_encoder_runtime(
-                [slide_model_name],
-                devices=[device],
-            )
-        except (RuntimeError, ValueError) as exc:
-            typer.echo(f"Error: {exc}", err=True)
-            raise typer.Exit(1) from exc
 
         typer.echo(
             f"{slide_model_name} [{selected_grid}]: encoding from "
@@ -154,7 +172,7 @@ def slide_embed(
                 device,
                 patch_model=selected_patch_model,
             )
-        except (KeyError, ValueError) as exc:
+        except (KeyError, RuntimeError, ValueError) as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc
         if encoding is None:

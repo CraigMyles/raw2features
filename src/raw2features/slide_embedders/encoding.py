@@ -7,7 +7,6 @@ provenance, and writes here prevents the two entry points from drifting.
 
 from __future__ import annotations
 
-import os
 import warnings
 from dataclasses import dataclass
 
@@ -51,7 +50,12 @@ def slide_output_key(group, slide_model: str, patch_model: str) -> str:
     return f"{slide_model}__{patch_model}"
 
 
-def _validated_patch_fingerprint(group, patch_model: str) -> dict:
+def _validated_patch_fingerprint(
+    group,
+    patch_model: str,
+    *,
+    validate_data: bool = True,
+) -> dict:
     """Return a committed, complete patch-output fingerprint.
 
     Slide outputs inherit the exact patch-output identity, so a self-consistent
@@ -102,7 +106,7 @@ def _validated_patch_fingerprint(group, patch_model: str) -> dict:
             "The selected grid has no valid coordinate array; rerun raw2features "
             "embed before slide encoding."
         )
-    if not validate_model(
+    if validate_data and not validate_model(
         group,
         patch_model,
         int(group["coords"].shape[0]),
@@ -123,6 +127,7 @@ def slide_embedding_is_complete(
     patch_model: str | None = None,
     device: str = "cpu",
     output_name: str | None = None,
+    patch_is_complete: bool = False,
 ) -> bool:
     """Return whether ``slide/<model>`` is valid for the requested patch model."""
     stored_name = output_name or slide_model
@@ -148,7 +153,11 @@ def slide_embedding_is_complete(
 
     patch_array = group["features"][stored_patch_model]
     try:
-        patch_fingerprint = _validated_patch_fingerprint(group, stored_patch_model)
+        patch_fingerprint = _validated_patch_fingerprint(
+            group,
+            stored_patch_model,
+            validate_data=not patch_is_complete,
+        )
         spec = get_slide_spec(slide_model)
         expected_dim = slide_output_dim(spec, int(patch_array.shape[1]))
         expected_fingerprint = slide_output_fingerprint(
@@ -194,46 +203,6 @@ def slide_embedding_is_complete(
 
     vector = np.asarray(array[:], dtype=np.float32)
     return bool(vector.size and np.isfinite(vector).all() and (vector != 0).any())
-
-
-def slide_encoders_requiring_compute(
-    store_path: str,
-    slide_models: list[str],
-    *,
-    device: str = "cpu",
-) -> list[str]:
-    """Return requested slide encoders without a complete current store output."""
-
-    if not slide_models:
-        return []
-    path = store_path.removeprefix("file://")
-    if not os.path.exists(path):
-        return list(slide_models)
-
-    import zarr
-
-    try:
-        root = zarr.open_group(path, mode="r", use_consolidated=False)
-    except Exception:  # noqa: BLE001 - an unreadable store cannot prove completion
-        return list(slide_models)
-
-    missing = []
-    for slide_model in slide_models:
-        try:
-            _, group, patch_model = resolve_slide_grid(root, slide_model)
-            output_name = slide_output_key(group, slide_model, patch_model)
-            complete = slide_embedding_is_complete(
-                group,
-                slide_model,
-                patch_model=patch_model,
-                device=device,
-                output_name=output_name,
-            )
-        except (KeyError, TypeError, ValueError):
-            complete = False
-        if not complete:
-            missing.append(slide_model)
-    return missing
 
 
 def resolve_slide_grid(
@@ -331,6 +300,7 @@ def encode_slide_embedding(
     *,
     patch_model: str | None = None,
     available_patch_models: list[str] | None = None,
+    patch_is_complete: bool = False,
 ) -> SlideEncoding | None:
     """Encode ``slide_model`` from patch features in one open grid group.
 
@@ -367,7 +337,11 @@ def encode_slide_embedding(
     # Refuse to mint current-looking slide provenance over a legacy/unknown patch
     # array. The patch model must first be recomputed under the current contract.
     slide_embedder = build_slide_embedder(slide_model)
-    patch_fingerprint = _validated_patch_fingerprint(group, selected_patch_model)
+    patch_fingerprint = _validated_patch_fingerprint(
+        group,
+        selected_patch_model,
+        validate_data=not patch_is_complete,
+    )
     output_fingerprint = slide_output_fingerprint(
         slide_embedder.spec,
         patch_model=selected_patch_model,

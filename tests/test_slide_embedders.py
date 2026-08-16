@@ -677,7 +677,7 @@ def test_cli_slide_embed_rejects_incomplete_patch_output(
         {"mpp0.5_px64": (137, {"mock": np.ones((3, 4), dtype=np.float32)})},
     )
     group = open_grid(path, mode="r+")
-    group["features"]["mock"][-1] = 0
+    group["features"]["mock"][-1, 0] = np.nan
 
     result = CliRunner().invoke(
         app,
@@ -1132,6 +1132,37 @@ def test_cli_slide_embed_consolidates_once_after_all_writes(
     assert set(group["slide"].keys()) == {"mean", "max"}
 
 
+def test_cli_slide_embed_reports_execution_grid_reopen_error(
+    tmp_path, monkeypatch, recording_slide_embedder
+):
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (128, {"mock": np.ones((2, 3), np.float32)})},
+    )
+    import raw2features.core.store as store
+
+    real_open_grid = store.open_grid
+    calls = 0
+
+    def fail_execution_reopen(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("grid disappeared")
+        return real_open_grid(*args, **kwargs)
+
+    monkeypatch.setattr(store, "open_grid", fail_execution_reopen)
+    result = CliRunner().invoke(
+        app,
+        ["slide-embed", path, "-s", "mean", "--device", "cpu"],
+    )
+
+    assert result.exit_code == 1
+    assert "Error: grid disappeared" in result.output
+    assert "Traceback" not in result.output
+    assert recording_slide_embedder["loads"] == 0
+
+
 def test_embed_slide_validates_all_encoder_names_before_work(tmp_path, monkeypatch):
     from raw2features.pipeline.runner import embed_slide
 
@@ -1194,6 +1225,88 @@ def test_inline_slide_encoder_validates_new_patch_data_before_use(
 
     assert recording_slide_embedder["loads"] == 0
     assert "slide" not in sink._group
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_inline_slide_encoder_accepts_committed_zero_final_feature_row(
+    synthetic_ngff, tmp_path
+):
+    state = {"forbid_forward": False}
+
+    class ZeroTailEmbedder(MockEmbedder):
+        def embed_batch(self, batch):
+            if state["forbid_forward"]:
+                pytest.fail("committed zero-tail patch output must not be recomputed")
+            features = super().embed_batch(batch)
+            features[-1] = 0
+            return features
+
+    cfg = RunConfig(
+        models=["zero_tail"],
+        slide_encoders=["mean"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        batch_size=4096,
+        features_dtype="float32",
+        device="cpu",
+        amp="fp32",
+    )
+    receipts = str(tmp_path / "receipts")
+    summary = run_slide(
+        synthetic_ngff,
+        str(tmp_path / "out"),
+        cfg,
+        receipts_dir=receipts,
+        embedders=[ZeroTailEmbedder(name="zero_tail")],
+    )
+
+    group = open_grid(summary["output_uri"])
+    assert not np.asarray(group["features"]["zero_tail"][-1]).any()
+    assert "mean" in group["slide"]
+    state["forbid_forward"] = True
+    rerun = run_slide(
+        synthetic_ngff,
+        str(tmp_path / "out"),
+        cfg,
+        receipts_dir=receipts,
+        embedders=[ZeroTailEmbedder(name="zero_tail")],
+    )
+    assert rerun["models_added"] == []
+    assert rerun["models_skipped"] == ["zero_tail"]
+
+
+@pytest.mark.skipif(not _TORCH, reason="torch not installed")
+def test_nonfinite_patch_features_fail_before_model_commit(synthetic_ngff, tmp_path):
+    class NonfiniteTailEmbedder(MockEmbedder):
+        def embed_batch(self, batch):
+            features = super().embed_batch(batch)
+            features[-1, 0] = float("nan")
+            return features
+
+    out = tmp_path / "out"
+    with pytest.raises(ValueError, match="non-finite patch features"):
+        run_slide(
+            synthetic_ngff,
+            str(out),
+            RunConfig(
+                models=["nonfinite"],
+                slide_encoders=["mean"],
+                no_seg=True,
+                target_mpp=0.5,
+                patch_px=64,
+                batch_size=4096,
+                features_dtype="float32",
+                device="cpu",
+                amp="fp32",
+            ),
+            embedders=[NonfiniteTailEmbedder(name="nonfinite")],
+        )
+
+    stores = list(out.glob("*.embeddings.zarr"))
+    assert len(stores) == 1
+    array = open_grid(str(stores[0]))["features"]["nonfinite"]
+    assert "output_fingerprint" not in array.attrs
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")

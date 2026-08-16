@@ -1454,17 +1454,34 @@ def run_slide(
         models_to_do = list(cfg.models)
 
     if cfg.slide_encoders:
+        from raw2features.slide_embedders.encoding import (
+            slide_encoders_requiring_compute,
+        )
         from raw2features.slide_embedders.model_registry import (
+            get_slide_spec,
             validate_slide_encoder_runtime,
         )
 
-        # Validate every explicitly requested slide runtime before this grid does
-        # patch work. This intentionally does not infer relevance from cfg.models:
-        # embed_slide may satisfy an encoder later from a compatible grid already in
-        # the store, and that fallback must not discover a missing runtime only after
-        # an unrelated patch encoder has run.
+        # A complete current slide output must remain resumable on a host without its
+        # optional runtime. Incomplete outputs, including ones discovered on another
+        # compatible grid, still fail before this grid does unrelated patch work.
+        runtime_names = (
+            list(cfg.slide_encoders)
+            if force
+            else slide_encoders_requiring_compute(
+                out_path,
+                cfg.slide_encoders,
+                device=cfg.device,
+            )
+        )
+        # A patch output being replaced can invalidate a slide output that is still
+        # self-consistent with the old patch fingerprint at preflight time.
+        for name in cfg.slide_encoders:
+            required = get_slide_spec(name).patch_encoder
+            if required in models_to_do or (required == "any" and models_to_do):
+                runtime_names.append(name)
         validate_slide_encoder_runtime(
-            cfg.slide_encoders,
+            list(dict.fromkeys(runtime_names)),
             devices=[cfg.device],
         )
 
@@ -1913,7 +1930,10 @@ def run_slide(
                         cfg.device,
                         available,
                         preferred_patch_models=list(cfg.models),
-                        validated_patch_models=present_valid,
+                        # Existing arrays passed _inspect_store; fresh arrays passed
+                        # producer-side shape/finiteness checks before their commit
+                        # marker was stamped. Neither needs an immediate disk rescan.
+                        validated_patch_models=available,
                     )
 
         final_dims = sink.feature_dims()
@@ -3050,6 +3070,8 @@ def _run_batches(
     collector that stores into its shard buffer). Behaviour for the single-device
     case is identical -- ``device == cfg.device`` and the writes are 1:1 the same.
     """
+    import numpy as np
+
     prof = prof or null_profiler()
     n = int(coords.shape[0])
     batch_size = _effective_batch_size(cfg.batch_size, embedders)
@@ -3139,6 +3161,17 @@ def _run_batches(
                                 .numpy()
                                 .astype(cfg.features_dtype)
                             )
+                            expected_shape = (len(patches), emb.embedding_dim)
+                            if tuple(feats.shape) != expected_shape:
+                                raise ValueError(
+                                    f"model {emb.name!r} returned feature shape "
+                                    f"{tuple(feats.shape)}; expected {expected_shape}"
+                                )
+                            if not np.isfinite(feats).all():
+                                raise ValueError(
+                                    f"model {emb.name!r} returned non-finite patch "
+                                    "features"
+                                )
                         with prof.stage("write"):
                             write_block(emb.name, start, feats)
         finally:

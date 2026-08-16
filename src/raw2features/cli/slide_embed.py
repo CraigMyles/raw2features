@@ -166,22 +166,21 @@ def slide_embed(
         # encoder rebuild the header from a stale snapshot and erase an earlier
         # encoder's metadata. Reacquire once per grid for the execution phase, then
         # reuse that live handle for every write to the same grid.
-        if selected_grid not in live_groups:
-            live_groups[selected_grid] = open_grid(root, selected_grid)
-        group = live_groups[selected_grid]
-
         typer.echo(
             f"{slide_model_name} [{selected_grid}]: encoding from "
             f"'{selected_patch_model}' patch features …"
         )
         try:
+            if selected_grid not in live_groups:
+                live_groups[selected_grid] = open_grid(root, selected_grid)
+            group = live_groups[selected_grid]
             encoding = encode_slide_embedding(
                 group,
                 slide_model_name,
                 device,
                 patch_model=selected_patch_model,
             )
-        except (KeyError, RuntimeError, ValueError) as exc:
+        except (KeyError, OSError, RuntimeError, ValueError) as exc:
             typer.echo(f"Error: {exc}", err=True)
             raise typer.Exit(1) from exc
         if encoding is None:

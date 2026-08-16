@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import zarr
 
 from conftest import MockEmbedder
 from raw2features.embedders.fingerprint import (
@@ -17,6 +18,10 @@ from raw2features.embedders.fingerprint import (
 )
 from raw2features.embedders.model_registry import get_spec
 from raw2features.pipeline.runner import RunConfig, run_slide
+from raw2features.slide_embedders.encoding import (
+    slide_encoders_requiring_compute,
+    write_slide_embedding,
+)
 from raw2features.slide_embedders.model_registry import (
     get_slide_spec,
     validate_slide_encoder_runtime,
@@ -43,6 +48,39 @@ from raw2features.slide_embedders.prism2 import (
     _require_prism2_runtime,
     _verified_snapshot,
 )
+
+
+def _write_prism2_patch_grid(root, key: str):
+    group = root["grids"].create_group(key)
+    coords = group.create_array("coords", shape=(2, 2), dtype="int32")
+    coords[:] = np.asarray([[0, 0], [224, 0]], dtype=np.int32)
+    patch_spec = get_spec("virchow2")
+    patch_fingerprint = patch_output_fingerprint(patch_spec, "fp16")
+    features = group.create_group("features").create_array(
+        "virchow2",
+        shape=(2, patch_spec.embedding_dim),
+        chunks=(2, patch_spec.embedding_dim),
+        dtype="float32",
+    )
+    features[:] = 1.0
+    features.attrs.update(
+        {
+            "role": "features",
+            "model": "virchow2",
+            "output_fingerprint": patch_fingerprint,
+        }
+    )
+    group.attrs["raw2features"] = {
+        "schema_version": "0.1",
+        "models": {
+            "virchow2": {
+                "embedding_dim": patch_spec.embedding_dim,
+                "output_fingerprint": patch_fingerprint,
+            }
+        },
+        "patching": {"level0_patch": 224},
+    }
+    return group, patch_spec, patch_fingerprint
 
 
 def test_prism2_registry_records_both_published_embeddings():
@@ -625,6 +663,66 @@ def test_run_slide_preflights_prism2_before_unrelated_patch_work(
 
     assert calls == [(["prism2"], ["cpu"])]
     assert not list((tmp_path / "out").glob("*.embeddings.zarr"))
+
+
+def test_prism2_runtime_planning_skips_complete_multigrid_outputs_once_per_patch(
+    tmp_path, monkeypatch
+):
+    path = str(tmp_path / "complete.embeddings.zarr")
+    root = zarr.open_group(path, mode="w", zarr_format=2)
+    root.create_group("grids")
+    group, patch_spec, patch_fingerprint = _write_prism2_patch_grid(
+        root, "mpp0.5_px224"
+    )
+    unrelated = root["grids"].create_group("mpp1_px64")
+    unrelated.create_array("coords", shape=(1, 2), dtype="int32")[:] = 0
+    unrelated.create_group("features")
+    unrelated.attrs["raw2features"] = {
+        "schema_version": "0.1",
+        "models": {},
+        "patching": {"level0_patch": 64},
+    }
+    root.attrs["raw2features"] = {
+        "schema_version": "0.1",
+        "grids": {"mpp0.5_px224": {}, "mpp1_px64": {}},
+    }
+
+    for name in ("prism2", "prism2_diagnostic"):
+        slide_spec = get_slide_spec(name)
+        slide_fingerprint = slide_output_fingerprint(
+            slide_spec,
+            patch_model="virchow2",
+            patch_output_fingerprint=patch_fingerprint,
+            patch_dim=patch_spec.embedding_dim,
+            resolved_amp="bf16",
+        )
+        write_slide_embedding(
+            group,
+            name,
+            np.ones(slide_spec.embedding_dim, dtype=np.float32),
+            {
+                "patch_encoder": "virchow2",
+                "embedding_dim": slide_spec.embedding_dim,
+                "output_fingerprint": slide_fingerprint,
+            },
+        )
+
+    import raw2features.pipeline.receipt as receipt
+
+    real_validate_model = receipt.validate_model
+    calls = 0
+
+    def count_validation(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real_validate_model(*args, **kwargs)
+
+    monkeypatch.setattr(receipt, "validate_model", count_validation)
+    names = ["prism2", "prism2_diagnostic"]
+    assert slide_encoders_requiring_compute(path, names, device="cpu") == []
+    assert calls == 1
+    del group["slide"]["prism2"]
+    assert slide_encoders_requiring_compute(path, names, device="cpu") == ["prism2"]
 
 
 def test_prism2_fields_do_not_change_existing_prism_fingerprint_shape():

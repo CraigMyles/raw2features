@@ -388,6 +388,16 @@ def test_validate_model_requires_current_fingerprint_and_expected_dimension(tmp_
         expected_dim=3,
         expected_fingerprint=fingerprint,
     )
+    array[-1] = 0
+    assert validate_model(
+        group,
+        "m",
+        4,
+        expected_dim=3,
+        expected_fingerprint=fingerprint,
+    )
+    assert not validate_model(group, "m", 4)
+    array[-1] = 1
     assert not validate_model(
         group,
         "m",

@@ -394,6 +394,9 @@ def embed_many(
     cfg = _resolved_serial_config(cfg, device_list)
 
     try:
+        from raw2features.slide_embedders.encoding import (
+            slide_encoders_requiring_compute,
+        )
         from raw2features.slide_embedders.model_registry import (
             validate_slide_encoder_runtime,
         )
@@ -401,7 +404,23 @@ def embed_many(
         # embed-many loads patch models once before visiting individual stores. Its
         # slide-parallel workers run slide encoders on these resolved devices, so
         # validate that actual runtime now rather than after an expensive warm load.
-        validate_slide_encoder_runtime(cfg.slide_encoders, devices=device_list)
+        # A fully complete shard remains inspectable/resumable without reinstalling
+        # an optional slide runtime or scheduling a GPU solely for the skip check.
+        runtime_names = list(cfg.slide_encoders) if force else []
+        if not force:
+            for row in shard:
+                slide_id = slide_id_from_path(row["path"])
+                runtime_names.extend(
+                    slide_encoders_requiring_compute(
+                        os.path.join(out_dir, f"{slide_id}.embeddings.zarr"),
+                        cfg.slide_encoders,
+                        device=device_list[0],
+                    )
+                )
+        validate_slide_encoder_runtime(
+            list(dict.fromkeys(runtime_names)),
+            devices=device_list,
+        )
     except (RuntimeError, ValueError) as exc:
         typer.echo(f"Error: slide-encoder runtime preflight failed: {exc}", err=True)
         raise typer.Exit(1) from exc

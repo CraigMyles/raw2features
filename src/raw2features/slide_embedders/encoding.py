@@ -7,6 +7,7 @@ provenance, and writes here prevents the two entry points from drifting.
 
 from __future__ import annotations
 
+import os
 import warnings
 from dataclasses import dataclass
 
@@ -203,6 +204,62 @@ def slide_embedding_is_complete(
 
     vector = np.asarray(array[:], dtype=np.float32)
     return bool(vector.size and np.isfinite(vector).all() and (vector != 0).any())
+
+
+def slide_encoders_requiring_compute(
+    store_path: str,
+    slide_models: list[str],
+    *,
+    device: str = "cpu",
+) -> list[str]:
+    """Return requested slide encoders without a complete current store output."""
+
+    if not slide_models:
+        return []
+    path = store_path.removeprefix("file://")
+    if not os.path.exists(path):
+        return list(slide_models)
+
+    import zarr
+
+    try:
+        root = zarr.open_group(path, mode="r", use_consolidated=False)
+    except Exception:  # noqa: BLE001 - an unreadable store cannot prove completion
+        return list(slide_models)
+
+    missing = []
+    valid_patches: set[tuple[str, str]] = set()
+    invalid_patches: set[tuple[str, str]] = set()
+    for slide_model in slide_models:
+        try:
+            selected_grid, group, patch_model = resolve_slide_grid(root, slide_model)
+            patch_key = (selected_grid, patch_model)
+            if patch_key in invalid_patches:
+                complete = False
+            else:
+                if patch_key not in valid_patches:
+                    try:
+                        _validated_patch_fingerprint(group, patch_model)
+                    except ValueError:
+                        invalid_patches.add(patch_key)
+                        complete = False
+                    else:
+                        valid_patches.add(patch_key)
+                if patch_key in valid_patches:
+                    output_name = slide_output_key(group, slide_model, patch_model)
+                    complete = slide_embedding_is_complete(
+                        group,
+                        slide_model,
+                        patch_model=patch_model,
+                        device=device,
+                        output_name=output_name,
+                        patch_is_complete=True,
+                    )
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            complete = False
+        if not complete:
+            missing.append(slide_model)
+    return missing
 
 
 def resolve_slide_grid(

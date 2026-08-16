@@ -134,6 +134,46 @@ def test_embed_many_runtime_preflight_runs_before_warm_model_load(
     assert "models must not be loaded" not in result.output
 
 
+def test_embed_many_complete_shard_skips_optional_runtime_preflight(
+    tmp_path, monkeypatch
+):
+    import raw2features.cli.embed_many as em
+    import raw2features.slide_embedders.encoding as encoding
+    import raw2features.slide_embedders.prism2 as prism2
+
+    slides = tmp_path / "slides"
+    slides.mkdir()
+    (slides / "S.zarr").mkdir()
+    monkeypatch.setattr(
+        encoding,
+        "slide_encoders_requiring_compute",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        prism2,
+        "_require_prism2_runtime",
+        lambda: pytest.fail("complete shard must not require the PRISM2 runtime"),
+    )
+    monkeypatch.setattr(em, "_embed_shard_serial", lambda *args, **kwargs: (0, 1, 0))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(slides),
+            str(tmp_path / "out"),
+            "-f",
+            "mock",
+            "-s",
+            "prism2",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+
+
 @pytest.mark.parametrize(
     "rows",
     [

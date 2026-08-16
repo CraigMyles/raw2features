@@ -80,6 +80,21 @@ def test_every_slide_spec_is_complete():
         if spec.family != "pool":
             assert spec.doi and spec.doi.startswith("10."), f"{name}: needs a DOI"
             assert spec.weights_filename, f"{name}: needs the exact weights_filename"
+            if spec.weights_filename.endswith(".index.json"):
+                assert spec.weights_manifest is not None, (
+                    f"{name}: a sharded checkpoint needs a weights_manifest"
+                )
+            if spec.weights_manifest is not None:
+                assert spec.weights_filename in spec.weights_manifest
+                assert spec.weights_manifest[spec.weights_filename] == (
+                    spec.weights_sha256
+                )
+                assert all(
+                    len(filename) > 0
+                    and len(digest) == 64
+                    and digest == digest.lower()
+                    for filename, digest in spec.weights_manifest.items()
+                ), f"{name}: invalid weights_manifest"
 
 
 def test_optional_fields_round_trip_through_loader():

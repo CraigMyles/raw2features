@@ -202,11 +202,10 @@ def validate_model(
     """True iff ``features/<model>`` in an open zarr group holds complete data.
 
     Streams the array in row-blocks to bound memory: every row must be finite. A zarr
-    shape is metadata only; an unwritten tail reads back as the finite fill value (0.0),
-    so a finiteness check alone would pass a truncated store as "complete". Writes go in
-    coord order, so the unwritten part is always a contiguous *suffix* -- an all-zero
-    **last** row signals truncation. Checking only the last row (not every row) lets a
-    model emit a legitimately all-zero feature row mid-array without making resume loop.
+    shape is metadata only; an unwritten tail reads back as the finite fill value (0.0).
+    Legacy arrays without an expected output fingerprint therefore retain the all-zero
+    final-row truncation heuristic. Under the current contract the matching array/header
+    fingerprint is a post-write commit marker, so a committed zero final row is valid.
     """
     import numpy as np
 
@@ -250,7 +249,11 @@ def validate_model(
             rows = np.asarray(arr[s : s + block]).astype(np.float32, copy=False)
             if not np.isfinite(rows).all():
                 return False
-        if n_patches > 0 and not np.asarray(arr[n_patches - 1]).any():  # all-zero tail
+        if (
+            expected_fingerprint is None
+            and n_patches > 0
+            and not np.asarray(arr[n_patches - 1]).any()
+        ):
             return False
     except Exception:  # noqa: BLE001 - any failure means "not valid"
         return False

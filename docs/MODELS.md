@@ -80,6 +80,8 @@ Each needs the matching patch encoder run first (`-f <patch_encoder>`).
 | `meanmax` | any patch encoder | 2 × patch dim | MIT | no | built-in (no weights) |
 | `titan` | `conch_v1_5` (768) | 768 | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/TITAN) · [GH](https://github.com/mahmoodlab/TITAN) · [paper](https://arxiv.org/abs/2411.19666) |
 | `prism` | `virchow` (2560) | 1280 | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/paige-ai/Prism) · [paper](https://arxiv.org/abs/2405.10254) |
+| `prism2` | `virchow2` (2560; CLS 1280 consumed) | 2560 | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/paige-ai/Prism2) · [paper](https://doi.org/10.1038/s41591-026-04521-4) |
+| `prism2_diagnostic` | `virchow2` (2560; CLS 1280 consumed) | 3072 | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/paige-ai/Prism2) · [paper](https://doi.org/10.1038/s41591-026-04521-4) |
 | `madeleine` | `conch` (512) | 512 | MIT / CC-BY-NC-ND ‡ | yes | [HF](https://huggingface.co/MahmoodLab/madeleine) · [GH](https://github.com/mahmoodlab/MADELEINE) · [paper](https://arxiv.org/abs/2408.02859) |
 | `feather_conch_v15` | `conch_v1_5` (768) | 512 | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/abmil.base.conch_v15.pc108-24k) · [GH](https://github.com/mahmoodlab/MIL-Lab) · [paper](https://arxiv.org/abs/2506.09022) |
 | `feather_uni_v2` | `uni2_h` (1536) | 512 | CC-BY-NC-ND-4.0 | yes | [HF](https://huggingface.co/MahmoodLab/abmil.base.uni_v2.pc108-24k) · [GH](https://github.com/mahmoodlab/MIL-Lab) · [paper](https://arxiv.org/abs/2506.09022) |
@@ -91,6 +93,32 @@ Each needs the matching patch encoder run first (`-f <patch_encoder>`).
 
 TITAN runs on CONCH v1.5 patch features, **not** UNI:
 `raw2features embed slide.ome.zarr out -f conch_v1_5 --patch-size 512 -s titan`.
+
+PRISM2 requires Virchow2 CLS tokens from foreground 224 px tiles at 0.5 µm/px. The
+registered `virchow2` output is `[CLS, mean-patch]`, so the slide adapter takes its first
+1280 values without recomputing patches. `prism2` is the authors' general base
+representation; `prism2_diagnostic` is the Phi-3 hidden-state representation intended
+for diagnosis-focused tasks. They may be requested separately or together:
+
+```bash
+pip install "raw2features[prism2]"
+MAX_JOBS=4 pip install "flash-attn==2.8.3" --no-build-isolation
+raw2features embed slide.ome.zarr out -f virchow2 \
+  -s prism2 -s prism2_diagnostic --mpp 0.5 --patch-size 224
+```
+
+Both PRISM2 outputs require an accepted model gate, a CUDA GPU, and a `flash-attn` build
+compatible with the installed Torch/CUDA stack. The `[prism2]` extra pins Transformers
+4.56.0, shared with the KRONOS2 extra. PRISM2's diagnostic helper calls a Phi-3 mask
+method removed after its released 4.51.3 stack, so raw2features restores that deterministic
+mask construction and records the compatibility contract in the output fingerprint. The
+validated path requires FlashAttention 2.8.3. PyPI distributes it as source, so install
+it after the extra with build isolation disabled as shown above, or install an
+ABI-compatible 2.8.3 wheel. The extra supplies the source build's packaging, Ninja,
+setuptools and wheel prerequisites. Increase `MAX_JOBS` only when the build host has
+sufficient RAM. The checkpoint is approximately 17.9 GB.
+The base path still constructs the complete released model, so it has the same download
+and device-memory requirements as the diagnostic path.
 
 For standalone encoding, `slide-embed` selects the sole grid automatically. In a
 multi-grid store it can infer the grid from a slide encoder's required patch model when

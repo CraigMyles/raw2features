@@ -63,3 +63,8 @@ constructor semantics change, bump the patch or slide loader-contract version so
 finite arrays cannot be mistaken for current outputs. Composite loaders must identify
 and verify every component they can; any deliberately unpinned component must be marked
 `experimental` in the registry and documented as outside the pinning guarantee.
+For a sharded slide checkpoint, set `weights_filename` / `weights_sha256` to its index
+and provide `weights_manifest` with the SHA-256 of the index and every shard. The loader
+must verify the whole manifest before constructing the model.
+If loading with `trust_remote_code=True`, pin and SHA-256 verify every executed code/config
+file before construction and record that allowlist in the loader fingerprint.

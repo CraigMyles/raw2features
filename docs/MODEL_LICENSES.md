@@ -54,7 +54,7 @@ table below lists each model's weights licence.
 | `plip` | MIT (project `setup.py`; no LICENSE file) | no |
 | `keep` | MIT | no |
 | `kronos` | CC-BY-NC-ND-4.0 (KRONOS, MahmoodLab; multiplex, non-commercial) | yes |
-| `kronos2` | CC-BY-NC-ND-4.0 (KRONOS2, MahmoodLab; gated non-commercial academic terms) | yes (institutional approval) |
+| `kronos2` | CC-BY-NC-ND-4.0 (KRONOS2, MahmoodLab; gated non-commercial academic terms) | yes |
 
 KRONOS2's optional novel-marker path also downloads
 `michiyasunaga/BioLinkBERT-large`, whose repository declares Apache-2.0. Its source,
@@ -71,6 +71,7 @@ below. `mean` / `max` / `meanmax` are weightless pooling baselines (MIT).
 |---|---|---|
 | `titan` | CC-BY-NC-ND-4.0 | yes |
 | `prism` | CC-BY-NC-ND-4.0 | yes |
+| `prism2` / `prism2_diagnostic` | CC-BY-NC-ND-4.0 | yes |
 | `madeleine` | MIT (HF card) / CC-BY-NC-ND-4.0 (GitHub `LICENSE`) - conflict, verify | yes |
 | `feather_conch_v15` / `feather_uni_v2` / `feather_uni` | CC-BY-NC-ND-4.0 | yes |
 | `gigapath_slide` / `gigapath_flash_slide` | Apache-2.0 | yes (terms acceptance) |
@@ -78,6 +79,11 @@ below. `mean` / `max` / `meanmax` are weightless pooling baselines (MIT).
 | `tangle` | CC-BY-NC-ND-4.0 | no (Google Drive) |
 
 Check each model's licence on its model card before use.
+
+PRISM2's released checkpoint includes its Phi-3 decoder weights. The loader also uses
+the pinned MIT-licensed `microsoft/Phi-3-mini-128k-instruct` config and tokenizer to
+construct that decoder; their immutable revision and file hashes are recorded in the
+slide-output fingerprint.
 
 ## Quality control / preprocessing
 

@@ -11,6 +11,7 @@ Run just this check in a model-enabled environment with::
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import urllib.request
@@ -28,6 +29,14 @@ from raw2features.embedders.open_clip_embedder import (
 )
 from raw2features.embedders.seal_embedder import _SEAL_REPO
 from raw2features.slide_embedders.model_registry import load_slide_registry
+from raw2features.slide_embedders.prism2 import (
+    PRISM2_CODE_SHA256,
+    PRISM2_PHI3_ARTIFACT_SHA256,
+    PRISM2_PHI3_REVISION,
+    PRISM2_PHI3_SOURCE,
+    PRISM2_REVISION,
+    PRISM2_SOURCE,
+)
 
 _FULL_COMMIT = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -236,6 +245,71 @@ def test_new_model_artifact_checksum_matches_huggingface_metadata(pin: _HubArtif
         f"patch:{pin.name}: registry SHA-256 {pin.sha256} does not match "
         f"{pin.repo}@{pin.revision}/{pin.filename} metadata {metadata_sha256}"
     )
+
+
+@pytest.mark.network
+def test_prism2_shard_manifest_matches_huggingface():
+    """Every file used to construct the sharded checkpoint matches its pin."""
+
+    spec = load_slide_registry()["prism2"]
+    assert spec.weights_manifest
+    huggingface_hub = pytest.importorskip("huggingface_hub")
+    info = huggingface_hub.HfApi().model_info(
+        repo_id=_hf_repo(spec) or "",
+        revision=spec.weights_revision,
+        timeout=30,
+        files_metadata=True,
+        token=os.environ.get("HF_TOKEN") or False,
+    )
+    siblings = {sibling.rfilename: sibling for sibling in (info.siblings or ())}
+    for filename, expected in spec.weights_manifest.items():
+        assert filename in siblings, filename
+        lfs = siblings[filename].lfs
+        if lfs is None:
+            assert not filename.endswith(".safetensors"), (
+                f"prism2:{filename}: missing Git LFS digest; refusing to download "
+                "a multi-GB shard in a network pin test"
+            )
+            path = download_pinned_hf_file(
+                spec.source,
+                filename,
+                spec.weights_revision,
+            )
+            verify_sha256(path, expected, what=f"prism2:{filename}")
+            continue
+        sha256 = lfs.get("sha256") if isinstance(lfs, Mapping) else lfs.sha256
+        assert sha256 == expected, filename
+
+    index_path = download_pinned_hf_file(
+        spec.source,
+        spec.weights_filename,
+        spec.weights_revision,
+    )
+    with open(index_path, encoding="utf-8") as handle:
+        index = json.load(handle)
+    indexed_shards = set(index["weight_map"].values())
+    recorded_shards = set(spec.weights_manifest) - {spec.weights_filename}
+    assert indexed_shards == recorded_shards
+
+
+@pytest.mark.network
+def test_prism2_custom_code_matches_pinned_sha256():
+    """Every Python/config file executed by trust_remote_code matches its pin."""
+
+    for filename, expected in PRISM2_CODE_SHA256.items():
+        path = download_pinned_hf_file(PRISM2_SOURCE, filename, PRISM2_REVISION)
+        verify_sha256(path, expected, what=f"prism2:custom-code:{filename}")
+
+
+@pytest.mark.network
+def test_prism2_phi3_construction_artifacts_match_pins():
+    for filename, expected in PRISM2_PHI3_ARTIFACT_SHA256.items():
+        path = download_pinned_hf_file(
+            PRISM2_PHI3_SOURCE,
+            filename,
+            PRISM2_PHI3_REVISION,
+        )
+        verify_sha256(path, expected, what=f"prism2:Phi-3:{filename}")
 
 
 @pytest.mark.network

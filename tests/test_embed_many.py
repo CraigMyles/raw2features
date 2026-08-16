@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import MockEmbedder, build_ngff_v04
-from raw2features.cli.embed_many import _shard
+from raw2features.cli.embed_many import _resolved_serial_config, _shard
 from raw2features.cli.main import app
 from raw2features.pipeline.runner import RunConfig, run_slide
 
@@ -48,6 +48,18 @@ def test_shard_partitions_disjoint_and_complete():
     assert shards[0] == items[0::4]  # strided
 
 
+def test_single_devices_value_becomes_the_serial_worker_device():
+    cfg = RunConfig(models=["mock"], device="cpu", devices="cuda:7")
+
+    resolved = _resolved_serial_config(cfg, ["cuda:7"])
+
+    assert resolved.device == "cuda:7"
+    assert resolved.devices is None
+    assert cfg.device == "cpu"
+    assert cfg.devices == "cuda:7"
+    assert _resolved_serial_config(cfg, ["cuda:0", "cuda:1"]) is cfg
+
+
 def test_embed_many_validates_slide_encoders_before_discovery_or_model_load(
     tmp_path, monkeypatch
 ):
@@ -76,6 +88,90 @@ def test_embed_many_validates_slide_encoders_before_discovery_or_model_load(
     assert result.exit_code == 1
     assert "Unknown slide encoder" in result.output
     assert "no slides found" not in result.output
+
+
+def test_embed_many_runtime_preflight_runs_before_warm_model_load(
+    tmp_path, monkeypatch
+):
+    import raw2features.cli.embed_many as em
+
+    slides = tmp_path / "slides"
+    slides.mkdir()
+    (slides / "S.zarr").mkdir()
+    import raw2features.slide_embedders.prism2 as prism2
+
+    monkeypatch.setattr(
+        prism2,
+        "_require_prism2_runtime",
+        lambda: (_ for _ in ()).throw(RuntimeError("runtime missing")),
+    )
+    monkeypatch.setattr(
+        "raw2features.core.device._accelerators", lambda: (True, False)
+    )
+    monkeypatch.setattr(
+        em,
+        "load_embedders",
+        lambda *args, **kwargs: pytest.fail("models must not be loaded"),
+    )
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(slides),
+            str(tmp_path / "out"),
+            "-f",
+            "mock",
+            "-s",
+            "prism2",
+            "--device",
+            "cuda:0",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "runtime missing" in result.output
+    assert "models must not be loaded" not in result.output
+
+
+def test_embed_many_complete_shard_skips_optional_runtime_preflight(
+    tmp_path, monkeypatch
+):
+    import raw2features.cli.embed_many as em
+    import raw2features.slide_embedders.encoding as encoding
+    import raw2features.slide_embedders.prism2 as prism2
+
+    slides = tmp_path / "slides"
+    slides.mkdir()
+    (slides / "S.zarr").mkdir()
+    monkeypatch.setattr(
+        encoding,
+        "slide_encoders_requiring_compute",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        prism2,
+        "_require_prism2_runtime",
+        lambda: pytest.fail("complete shard must not require the PRISM2 runtime"),
+    )
+    monkeypatch.setattr(em, "_embed_shard_serial", lambda *args, **kwargs: (0, 1, 0))
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "embed-many",
+            str(slides),
+            str(tmp_path / "out"),
+            "-f",
+            "mock",
+            "-s",
+            "prism2",
+            "--device",
+            "cpu",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
 
 
 @pytest.mark.parametrize(

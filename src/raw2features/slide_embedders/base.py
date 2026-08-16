@@ -49,6 +49,9 @@ class SlideModelSpec:
     weights_revision: str | None = None
     # Exact artifact identified by ``weights_sha256``; None for weight-free pools.
     weights_filename: str | None = None
+    # Sharded checkpoints bind every downloaded file as well as the primary artifact.
+    # Single-file models leave this unset.
+    weights_manifest: dict[str, str] | None = None
     # Upstream architecture where one loader family serves several compatible sizes.
     # ``patch_dim`` supplies the constructor's input-channel width.
     architecture: str | None = None

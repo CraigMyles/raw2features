@@ -1340,6 +1340,54 @@ slide_encoders:
       [prism] extra (environs, sacremoses, imported by its remote code) + accepted
       paige-ai/Prism gate. Run with `-f virchow -s prism`.
 
+  # PRISM2 exposes distinct base and diagnosis-oriented representations over
+  # Virchow2 CLS tokens. raw2features' virchow2 array stores CLS first, followed by
+  # mean-patch pooling, so both adapters consume the first 1280 values losslessly.
+  prism2:
+    family: prism2
+    source: "hf-hub:paige-ai/Prism2"
+    embedding_dim: 2560
+    patch_encoder: virchow2
+    patch_dim: 2560
+    gated: true
+    license: "CC-BY-NC-ND-4.0"
+    transform_source_url: "https://huggingface.co/paige-ai/Prism2"
+    weights_revision: "450352d0ddc6b42b21ce20794ce0fbefe6b5a47a"
+    weights_sha256: "bda099bfdad33ee0e2fe49b6101feb58a0389d8c8a000cc6636c7a24b8c41bbd"
+    weights_filename: "model.safetensors.index.json"
+    weights_manifest: &prism2_weights_manifest
+      model.safetensors.index.json: "bda099bfdad33ee0e2fe49b6101feb58a0389d8c8a000cc6636c7a24b8c41bbd"
+      model-00001-of-00004.safetensors: "3eec1f46c9dab8ac0dc744ef6f7b2db19028b5dd3bc722499e25a802f9a95556"
+      model-00002-of-00004.safetensors: "8cba90ae79ea934770673e9461720b0bf37665e0ac00e86124d116d9dfa526a4"
+      model-00003-of-00004.safetensors: "f899aefe28c8111bbd6a14ef6e295925e1588c88b1741d06935015162f0d4dd5"
+      model-00004-of-00004.safetensors: "da79790c9a73cf1ce85867aaa57c47cfd8d69e13b57ac86252d24a2687c2998c"
+    doi: "10.1038/s41591-026-04521-4"
+    notes: >-
+      PRISM2 base perceiver embedding. Consumes the 1280-d CLS half of the existing
+      2560-d virchow2 output and returns 2560-d. No coordinates. The four checkpoint
+      shards and the Phi-3 construction assets are pinned and SHA-verified. Needs the
+      [prism2] extra, CUDA, flash-attn, and accepted paige-ai/Prism2 access.
+
+  prism2_diagnostic:
+    family: prism2
+    source: "hf-hub:paige-ai/Prism2"
+    embedding_dim: 3072
+    patch_encoder: virchow2
+    patch_dim: 2560
+    gated: true
+    license: "CC-BY-NC-ND-4.0"
+    transform_source_url: "https://huggingface.co/paige-ai/Prism2"
+    weights_revision: "450352d0ddc6b42b21ce20794ce0fbefe6b5a47a"
+    weights_sha256: "bda099bfdad33ee0e2fe49b6101feb58a0389d8c8a000cc6636c7a24b8c41bbd"
+    weights_filename: "model.safetensors.index.json"
+    weights_manifest: *prism2_weights_manifest
+    doi: "10.1038/s41591-026-04521-4"
+    notes: >-
+      PRISM2 diagnostic Phi-3 hidden-state embedding. Consumes the 1280-d CLS half of
+      the existing 2560-d virchow2 output and returns 3072-d. No coordinates. Uses the
+      same verified checkpoint and runtime requirements as prism2. Run separately or
+      request both names when both representations are needed.
+
   # FEATHER (Mahmood Lab MIL-Lab, ICML 2025) - supervised ABMIL slide aggregators, one
   # per patch encoder. Pure-HF load; slide vector = forward_features pre-head pooling
   # (512-d). See slide_embedders/feather.py.

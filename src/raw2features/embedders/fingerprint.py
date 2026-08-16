@@ -678,6 +678,13 @@ def expected_patch_outputs(
 
 def _effective_slide_checkpoint(spec) -> dict[str, Any]:
     repo = _hf_repo(spec.source)
+    if spec.family == "prism2":
+        return {
+            "repo": repo,
+            "filename": spec.weights_filename,
+            "files": deepcopy(spec.weights_manifest),
+            "mechanism": "pinned_sha256_verified_local_snapshot",
+        }
     if spec.family == "gigapath_slide":
         return {
             "repo": repo,
@@ -706,7 +713,54 @@ def _effective_slide_checkpoint(spec) -> dict[str, Any]:
     }
 
 
+def _prism2_phi3_contract(*, diagnostic: bool) -> dict[str, Any]:
+    from raw2features.slide_embedders.prism2 import (
+        PRISM2_PHI3_ARTIFACT_SHA256,
+        PRISM2_PHI3_CONFIG_SHA256,
+        PRISM2_PHI3_LICENSE,
+        PRISM2_PHI3_MASK_COMPAT_VERSION,
+        PRISM2_PHI3_REVISION,
+        PRISM2_PHI3_SOURCE,
+    )
+
+    contract = {
+        "repo": _hf_repo(PRISM2_PHI3_SOURCE),
+        "revision": PRISM2_PHI3_REVISION,
+        "artifacts": deepcopy(
+            PRISM2_PHI3_ARTIFACT_SHA256 if diagnostic else PRISM2_PHI3_CONFIG_SHA256
+        ),
+        "license": PRISM2_PHI3_LICENSE,
+        "mechanism": (
+            "pinned_sha256_verified_local_config_and_tokenizer"
+            if diagnostic
+            else "pinned_sha256_verified_local_config"
+        ),
+        "weights_source": "included_in_PRISM2_checkpoint",
+    }
+    if diagnostic:
+        contract["mask_compatibility"] = {
+            "version": PRISM2_PHI3_MASK_COMPAT_VERSION,
+            "restored_contract": (
+                "Phi3Model._prepare_4d_causal_attention_mask_with_cache_position"
+            ),
+            "source_runtime": "transformers==4.51.3",
+            "binding_scope": "verified_prism2_dynamic_module",
+        }
+    return contract
+
+
 def _slide_constructor(spec) -> dict[str, Any]:
+    prism2_snapshot_contract = None
+    if spec.family == "prism2":
+        from raw2features.slide_embedders.prism2 import (
+            PRISM2_CODE_SHA256,
+            PRISM2_SNAPSHOT_ALLOW_PATTERNS,
+        )
+
+        prism2_snapshot_contract = {
+            "allow_patterns": list(PRISM2_SNAPSHOT_ALLOW_PATTERNS),
+            "custom_code_sha256": deepcopy(PRISM2_CODE_SHA256),
+        }
     contracts: dict[str, dict[str, Any]] = {
         "pool": {
             "operation": spec.name,
@@ -732,6 +786,34 @@ def _slide_constructor(spec) -> dict[str, Any]:
             "output_key": "image_embedding",
             "features_dtype": "float32",
             "batched": True,
+        },
+        "prism2": {
+            "entrypoint": "transformers.AutoModel.from_pretrained",
+            "input": "pinned_sha256_verified_local_snapshot",
+            "snapshot": prism2_snapshot_contract,
+            "trust_remote_code": True,
+            "transformers_version": "4.56.0",
+            "flash_attn_version": "2.8.3",
+            "stored_patch_encoder": "virchow2",
+            "stored_patch_dim": 2560,
+            "model_input_projection": {
+                "operation": "slice",
+                "axis": 1,
+                "start": 0,
+                "stop": 1280,
+                "meaning": "Virchow2 CLS token",
+            },
+            "model_context_dim": 1280,
+            "forward": (
+                "get_diagnostic_embedding"
+                if spec.name == "prism2_diagnostic"
+                else "get_base_embedding"
+            ),
+            "features_dtype": "float32",
+            "batched": True,
+            "attention_mask": {"dtype": "int32", "single_slide_values": "ones"},
+            "uses_coords": False,
+            "uses_patch_size_lv0": False,
         },
         "feather": {
             "entrypoint": "transformers.AutoModel.from_pretrained",
@@ -820,7 +902,12 @@ def _slide_constructor(spec) -> dict[str, Any]:
             },
         },
     }
-    return deepcopy(contracts.get(spec.family, {"entrypoint": spec.family}))
+    contract = deepcopy(contracts.get(spec.family, {"entrypoint": spec.family}))
+    if spec.family == "prism2":
+        contract["phi3_construction_dependency"] = _prism2_phi3_contract(
+            diagnostic=spec.name == "prism2_diagnostic"
+        )
+    return contract
 
 
 def slide_output_dim(spec, patch_dim: int) -> int:
@@ -836,6 +923,8 @@ def resolved_slide_amp(spec, device: str) -> str:
 
     # These loaders follow their model-card examples with fp16 CUDA autocast and
     # deliberately run fp32 on CPU/MPS. Other slide encoders currently run fp32.
+    if spec.family == "prism2":
+        return "bf16"
     if str(device).startswith("cuda") and spec.family in {
         "gigapath_slide",
         "prism",
@@ -862,6 +951,13 @@ def slide_output_fingerprint(
             "raw2features embed for that patch model before slide encoding."
         )
     output_dim = slide_output_dim(spec, patch_dim)
+    checkpoint = {
+        "effective": _effective_slide_checkpoint(spec),
+        "weights_revision": spec.weights_revision,
+        "weights_sha256": spec.weights_sha256,
+    }
+    if spec.weights_manifest is not None:
+        checkpoint["weights_manifest"] = deepcopy(spec.weights_manifest)
     payload = {
         "kind": "slide_embedding",
         "model": spec.name,
@@ -871,11 +967,7 @@ def slide_output_fingerprint(
             "source": spec.source,
             "constructor": _slide_constructor(spec),
         },
-        "checkpoint": {
-            "effective": _effective_slide_checkpoint(spec),
-            "weights_revision": spec.weights_revision,
-            "weights_sha256": spec.weights_sha256,
-        },
+        "checkpoint": checkpoint,
         "input": {
             "patch_model": patch_model,
             "patch_dim": int(patch_dim),

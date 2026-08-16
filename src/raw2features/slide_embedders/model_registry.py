@@ -64,9 +64,6 @@ def validate_slide_encoder_runtime(
     if not any(spec.family == "prism2" for spec in specs):
         return
 
-    from raw2features.slide_embedders.prism2 import _require_prism2_runtime
-
-    _require_prism2_runtime()
     if devices is not None:
         incompatible = [device for device in devices if not device.startswith("cuda")]
         if incompatible:
@@ -74,6 +71,10 @@ def validate_slide_encoder_runtime(
                 "PRISM2 requires a CUDA GPU; resolved incompatible device(s): "
                 f"{incompatible}"
             )
+
+    from raw2features.slide_embedders.prism2 import _require_prism2_runtime
+
+    _require_prism2_runtime()
 
 
 def build_slide_embedder(name: str) -> SlideEmbedder:

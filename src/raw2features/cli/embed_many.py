@@ -14,6 +14,7 @@ is recorded in its receipt and skipped so it can't take down the rest of the sha
 
 from __future__ import annotations
 
+import dataclasses
 import glob as globmod
 import math
 import os
@@ -390,6 +391,7 @@ def embed_many(
     )
     cli = sanitize_argv(sys.argv)
     device_list = cfg.device_list()
+    cfg = _resolved_serial_config(cfg, device_list)
 
     try:
         from raw2features.slide_embedders.model_registry import (
@@ -483,6 +485,14 @@ def _classify(summary: dict) -> str:
     return "skipped" if summary["status"] == "skipped" else "done"
 
 
+def _resolved_serial_config(cfg: RunConfig, devices: list[str]) -> RunConfig:
+    """Make a lone --devices value the actual serial worker device."""
+
+    if len(devices) != 1:
+        return cfg
+    return dataclasses.replace(cfg, device=devices[0], devices=None)
+
+
 def _resolve_manifest_sources(rows: list[dict], slide_dir: str) -> list[dict]:
     """Resolve only relative local manifest paths against ``slide_dir`` in place."""
 
@@ -560,8 +570,6 @@ def _validate_source_mpps(rows: list[dict]) -> None:
 def _with_source_mpp(cfg: RunConfig, row: dict) -> RunConfig:
     """Apply a manifest row's per-slide ``source_mpp`` override (else cfg unchanged)."""
     if "source_mpp" in row:
-        import dataclasses
-
         return dataclasses.replace(cfg, source_mpp=row["source_mpp"])
     return cfg
 
@@ -637,7 +645,6 @@ def _embed_shard_parallel(
     rest of the shard). Distinct slides write distinct ``*.embeddings.zarr`` stores,
     so the concurrent writes never collide.
     """
-    import dataclasses
     import queue
     import threading
 

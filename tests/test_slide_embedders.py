@@ -1042,6 +1042,9 @@ def test_cli_slide_embed_runtime_preflight_precedes_all_encoder_writes(
         "_require_prism2_runtime",
         lambda: (_ for _ in ()).throw(RuntimeError("PRISM2 runtime missing")),
     )
+    monkeypatch.setattr(
+        "raw2features.core.device._accelerators", lambda: (True, False)
+    )
 
     result = CliRunner().invoke(
         app,
@@ -1053,7 +1056,7 @@ def test_cli_slide_embed_runtime_preflight_precedes_all_encoder_writes(
             "-s",
             "prism2",
             "--device",
-            "cpu",
+            "cuda:0",
         ],
     )
 
@@ -1123,6 +1126,10 @@ def test_cli_slide_embed_consolidates_once_after_all_writes(
     assert result.exit_code == 0, result.output
     assert recording_slide_embedder["loads"] == 2
     assert len(calls) == 1
+    group = open_grid(path, mode="r+")
+    header = dict(group.attrs["raw2features"])
+    assert set(header["slide_embeddings"]) == {"mean", "max"}
+    assert set(group["slide"].keys()) == {"mean", "max"}
 
 
 def test_embed_slide_validates_all_encoder_names_before_work(tmp_path, monkeypatch):
@@ -1159,6 +1166,34 @@ def test_inline_slide_encoder_rerun_is_idempotent(
 
     assert first == second == {"mean": "slide/mean"}
     assert recording_slide_embedder["loads"] == 1
+
+
+def test_inline_slide_encoder_validates_new_patch_data_before_use(
+    tmp_path, recording_slide_embedder
+):
+    from raw2features.pipeline.runner import _run_slide_encoders
+    from raw2features.sinks.zarr_sink import ZarrSink
+
+    values = np.ones((2, 3), dtype=np.float32)
+    values[-1, 0] = np.nan
+    path = _write_slide_store(
+        tmp_path,
+        {"mpp0.5_px64": (128, {"mock": values})},
+    )
+    sink = ZarrSink()
+    sink._group = open_grid(path, mode="r+")
+
+    with pytest.raises(ValueError, match="incomplete or contains invalid data"):
+        _run_slide_encoders(
+            sink,
+            ["mean"],
+            "cpu",
+            ["mock"],
+            validated_patch_models=[],
+        )
+
+    assert recording_slide_embedder["loads"] == 0
+    assert "slide" not in sink._group
 
 
 @pytest.mark.skipif(not _TORCH, reason="torch not installed")

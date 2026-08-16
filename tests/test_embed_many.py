@@ -9,7 +9,7 @@ import pytest
 from typer.testing import CliRunner
 
 from conftest import MockEmbedder, build_ngff_v04
-from raw2features.cli.embed_many import _shard
+from raw2features.cli.embed_many import _resolved_serial_config, _shard
 from raw2features.cli.main import app
 from raw2features.pipeline.runner import RunConfig, run_slide
 
@@ -46,6 +46,18 @@ def test_shard_partitions_disjoint_and_complete():
     seen = [x for s in shards for x in s]
     assert sorted(seen) == items  # every item covered exactly once
     assert shards[0] == items[0::4]  # strided
+
+
+def test_single_devices_value_becomes_the_serial_worker_device():
+    cfg = RunConfig(models=["mock"], device="cpu", devices="cuda:7")
+
+    resolved = _resolved_serial_config(cfg, ["cuda:7"])
+
+    assert resolved.device == "cuda:7"
+    assert resolved.devices is None
+    assert cfg.device == "cpu"
+    assert cfg.devices == "cuda:7"
+    assert _resolved_serial_config(cfg, ["cuda:0", "cuda:1"]) is cfg
 
 
 def test_embed_many_validates_slide_encoders_before_discovery_or_model_load(
@@ -94,6 +106,9 @@ def test_embed_many_runtime_preflight_runs_before_warm_model_load(
         lambda: (_ for _ in ()).throw(RuntimeError("runtime missing")),
     )
     monkeypatch.setattr(
+        "raw2features.core.device._accelerators", lambda: (True, False)
+    )
+    monkeypatch.setattr(
         em,
         "load_embedders",
         lambda *args, **kwargs: pytest.fail("models must not be loaded"),
@@ -110,7 +125,7 @@ def test_embed_many_runtime_preflight_runs_before_warm_model_load(
             "-s",
             "prism2",
             "--device",
-            "cpu",
+            "cuda:0",
         ],
     )
 

@@ -67,6 +67,7 @@ def slide_embed(
     import zarr
 
     from raw2features.core.device import resolve_device
+    from raw2features.core.store import open_grid
     from raw2features.slide_embedders.encoding import (
         encode_slide_embedding,
         resolve_slide_grid,
@@ -128,7 +129,6 @@ def slide_embed(
                 (
                     slide_model_name,
                     selected_grid,
-                    group,
                     selected_patch_model,
                     output_name,
                     complete,
@@ -147,10 +147,10 @@ def slide_embed(
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(1) from exc
 
+    live_groups = {}
     for (
         slide_model_name,
         selected_grid,
-        group,
         selected_patch_model,
         output_name,
         complete,
@@ -160,6 +160,15 @@ def slide_embed(
                 f"{slide_model_name} [{selected_grid}]: already complete (skipping)"
             )
             continue
+
+        # Zarr group handles cache their attrs metadata. Planning deliberately opens
+        # every target before any writes, so retaining those handles would let a later
+        # encoder rebuild the header from a stale snapshot and erase an earlier
+        # encoder's metadata. Reacquire once per grid for the execution phase, then
+        # reuse that live handle for every write to the same grid.
+        if selected_grid not in live_groups:
+            live_groups[selected_grid] = open_grid(root, selected_grid)
+        group = live_groups[selected_grid]
 
         typer.echo(
             f"{slide_model_name} [{selected_grid}]: encoding from "

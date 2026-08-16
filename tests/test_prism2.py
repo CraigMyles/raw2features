@@ -8,17 +8,15 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
-import zarr
 
+from conftest import MockEmbedder
 from raw2features.embedders.fingerprint import (
     patch_output_fingerprint,
     resolved_slide_amp,
-    slide_output_dim,
     slide_output_fingerprint,
 )
 from raw2features.embedders.model_registry import get_spec
-from raw2features.pipeline.runner import _preflight_slide_encoders_for_grid
-from raw2features.slide_embedders.encoding import write_slide_embedding
+from raw2features.pipeline.runner import RunConfig, run_slide
 from raw2features.slide_embedders.model_registry import (
     get_slide_spec,
     validate_slide_encoder_runtime,
@@ -45,39 +43,6 @@ from raw2features.slide_embedders.prism2 import (
     _require_prism2_runtime,
     _verified_snapshot,
 )
-
-
-def _write_prism2_patch_grid(root, key: str):
-    group = root["grids"].create_group(key)
-    coords = group.create_array("coords", shape=(2, 2), dtype="int32")
-    coords[:] = np.asarray([[0, 0], [224, 0]], dtype=np.int32)
-    patch_spec = get_spec("virchow2")
-    patch_fingerprint = patch_output_fingerprint(patch_spec, "fp16")
-    features = group.create_group("features").create_array(
-        "virchow2",
-        shape=(2, patch_spec.embedding_dim),
-        chunks=(2, patch_spec.embedding_dim),
-        dtype="float32",
-    )
-    features[:] = 1.0
-    features.attrs.update(
-        {
-            "role": "features",
-            "model": "virchow2",
-            "output_fingerprint": patch_fingerprint,
-        }
-    )
-    group.attrs["raw2features"] = {
-        "schema_version": "0.1",
-        "models": {
-            "virchow2": {
-                "embedding_dim": patch_spec.embedding_dim,
-                "output_fingerprint": patch_fingerprint,
-            }
-        },
-        "patching": {"level0_patch": 224},
-    }
-    return group, patch_spec, patch_fingerprint
 
 
 def test_prism2_registry_records_both_published_embeddings():
@@ -363,13 +328,14 @@ def test_prism2_runtime_preflight_checks_packages_and_device(monkeypatch):
 
     validate_slide_encoder_runtime(["mean"], devices=["cpu"])
     assert calls == []
-    validate_slide_encoder_runtime(["prism2"], devices=["cuda:0"])
-    assert calls == [True]
     with pytest.raises(ValueError, match="requires a CUDA GPU"):
         validate_slide_encoder_runtime(
             ["prism2_diagnostic"],
             devices=["cpu"],
         )
+    assert calls == []
+    validate_slide_encoder_runtime(["prism2"], devices=["cuda:0"])
+    assert calls == [True]
 
 
 def test_prism2_restores_released_phi3_mask_contract():
@@ -623,64 +589,42 @@ def test_prism2_amp_contract_is_device_independent():
         assert resolved_slide_amp(spec, "cuda:0") == "bf16"
 
 
-def test_prism2_grid_preflight_uses_exact_grid_and_slide_device(
-    tmp_path, monkeypatch
+def test_run_slide_preflights_prism2_before_unrelated_patch_work(
+    synthetic_ngff, tmp_path, monkeypatch
 ):
-    path = str(tmp_path / "complete.embeddings.zarr")
-    root = zarr.open_group(path, mode="w", zarr_format=2)
-    root.create_group("grids")
-    group, patch_spec, patch_fingerprint = _write_prism2_patch_grid(
-        root, "mpp0.5_px224"
-    )
-    root.attrs["raw2features"] = {
-        "schema_version": "0.1",
-        "grids": {"mpp0.5_px224": {}},
-    }
+    import raw2features.slide_embedders.model_registry as slide_registry
 
-    slide_spec = get_slide_spec("prism2")
-    slide_fingerprint = slide_output_fingerprint(
-        slide_spec,
-        patch_model="virchow2",
-        patch_output_fingerprint=patch_fingerprint,
-        patch_dim=patch_spec.embedding_dim,
-        resolved_amp="bf16",
+    calls = []
+
+    def reject(names, *, devices):
+        calls.append((list(names), list(devices)))
+        raise RuntimeError("PRISM2 runtime missing")
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace())
+    monkeypatch.setattr(
+        "raw2features.core.device._accelerators", lambda: (False, False)
     )
-    write_slide_embedding(
-        group,
-        "prism2",
-        np.ones(slide_output_dim(slide_spec, patch_spec.embedding_dim)),
-        {
-            "patch_encoder": "virchow2",
-            "embedding_dim": slide_spec.embedding_dim,
-            "output_fingerprint": slide_fingerprint,
-        },
+    monkeypatch.setattr(slide_registry, "validate_slide_encoder_runtime", reject)
+    cfg = RunConfig(
+        models=["mock"],
+        slide_encoders=["prism2"],
+        no_seg=True,
+        target_mpp=0.5,
+        patch_px=64,
+        device="cpu",
+        amp="fp32",
     )
 
-    assert (
-        _preflight_slide_encoders_for_grid(
-            path,
-            "mpp0.5_px224",
-            ["prism2"],
-            ["virchow2"],
-            [],
-            "cpu",
+    with pytest.raises(RuntimeError, match="PRISM2 runtime missing"):
+        run_slide(
+            synthetic_ngff,
+            str(tmp_path / "out"),
+            cfg,
+            embedders=[MockEmbedder(dim=8, input_size=64, name="mock")],
         )
-        == []
-    )
 
-    _write_prism2_patch_grid(root, "mpp1_px224")
-    import raw2features.slide_embedders.prism2 as module
-
-    monkeypatch.setattr(module, "_require_prism2_runtime", lambda: None)
-    with pytest.raises(ValueError, match="requires a CUDA GPU"):
-        _preflight_slide_encoders_for_grid(
-            path,
-            "mpp1_px224",
-            ["prism2"],
-            ["virchow2"],
-            [],
-            "cpu",
-        )
+    assert calls == [(["prism2"], ["cpu"])]
+    assert not list((tmp_path / "out").glob("*.embeddings.zarr"))
 
 
 def test_prism2_fields_do_not_change_existing_prism_fingerprint_shape():

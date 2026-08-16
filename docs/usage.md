@@ -482,8 +482,9 @@ the header. Model-specific settings such as resolved AMP live in each output
 fingerprint instead, so changing them replaces that model in the same grid. "Present"
 is strict: a model counts only if `features/<model>` has the
 current expected dimension and a matching output fingerprint in both the array and
-grid header, is fully finite, has no unwritten (all-zero) tail, and has
-`len(coords) == n_patches`. The fingerprint covers the effective weights,
+grid header, is fully finite, and has `len(coords) == n_patches`. For legacy arrays
+without a post-write fingerprint commit marker, an all-zero final row is additionally
+treated as an unwritten tail. The fingerprint covers the effective weights,
 preprocessing, pooling, resolved AMP, and loader construction. A truncated, damaged,
 legacy-unfingerprinted, or stale-contract array is re-embedded; unrelated model arrays
 and coordinates remain untouched. A derived `slide/<model>` fingerprint includes its

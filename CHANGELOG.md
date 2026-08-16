@@ -3,7 +3,7 @@
 Notable changes to raw2features, newest first. This project follows
 [Semantic Versioning](https://semver.org).
 
-## [0.2.1] - Unreleased
+## [0.2.1] - 2026-08-16
 
 This focused model update adds KRONOS2 to the existing native multiplex path and PRISM2
 to slide embedding. The store layout, geometry-only `grid_hash`, and brightfield
@@ -47,6 +47,20 @@ extraction path are unchanged.
 - Keep native multiplex and ordinary RGB encoders in separate requests so each receives
   the correct source-channel view. Additive runs can still write their outputs into the
   same store when their grid geometry matches.
+
+### Reliability and compatibility
+
+- Keep standalone and inline slide embedding additive and idempotent. Multi-encoder
+  standalone runs retain every output's metadata, while a completed optional-runtime
+  output can be inspected or resumed without reinstalling that runtime or scheduling a
+  GPU. When computation is required, runtime validation still precedes unrelated patch
+  work.
+- Validate patch-feature shape and finiteness before writing and committing each output.
+  A matching array/header output fingerprint acts as the post-write completion marker,
+  so a legitimate all-zero final feature row remains valid; legacy arrays without that
+  marker retain the conservative unwritten-tail check.
+- Make a single resolved `embed-many --devices` value the serial worker's actual device,
+  and report device incompatibility before optional package/ABI errors.
 
 ## [0.2.0] - 2026-07-23
 
@@ -175,4 +189,4 @@ What 0.1.0 provides:
 
 [0.1.0]: https://github.com/CraigMyles/raw2features/releases/tag/v0.1.0
 [0.2.0]: https://github.com/CraigMyles/raw2features/compare/v0.1.0...v0.2.0
-[0.2.1]: https://github.com/CraigMyles/raw2features/compare/v0.2.0...HEAD
+[0.2.1]: https://github.com/CraigMyles/raw2features/compare/v0.2.0...v0.2.1

@@ -78,19 +78,29 @@ class count are read from each checkpoint. Weights are pinned from Zenodo
 
 GrandQC's **artifact** checkpoints (`GrandQC_MPP*.pth`) are *full-model*
 pickles saved against `smp==0.3.1` + `timm==0.4.12`, so they cannot be unpickled in a
-modern env. Convert each once to a plain state_dict (cached beside the download as
-`<sha16>-GrandQC_MPP15.statedict.pt`, which the loader then prefers):
+modern env. After the checkpoints have been downloaded (run `--qc grandqc` once), convert
+every cached one to a plain state_dict, saved beside the download as
+`<sha16>-GrandQC_MPP*.statedict.pt`; the loader prefers that file. Notebook 05 needs both
+MPP 1.5 and 2.0:
 
 ```bash
-uv venv /tmp/gqc && uv pip install --python /tmp/gqc/bin/python \
-    "segmentation_models_pytorch==0.3.1" "torch==2.0.1" six
-W=~/.cache/raw2features/weights
-/tmp/gqc/bin/python -c "import torch; m=torch.load('$W/<sha16>-GrandQC_MPP15.pth', \
-    map_location='cpu', weights_only=False); torch.save(m.state_dict(), \
-    '$W/<sha16>-GrandQC_MPP15.statedict.pt')"
+uv run --no-project --python 3.11 \
+    --with "segmentation_models_pytorch==0.3.1" --with "timm==0.4.12" \
+    --with "torch==2.0.1" --with six python - <<'PY'
+from pathlib import Path
+import torch
+
+for src in Path("~/.cache/raw2features/weights").expanduser().glob("*-GrandQC_MPP*.pth"):
+    dst = src.with_suffix(".statedict.pt")
+    if not dst.exists():
+        torch.save(torch.load(src, map_location="cpu", weights_only=False).state_dict(), dst)
+        print(f"Saved {dst}")
+PY
 ```
 
-The tissue checkpoint is already a clean state_dict and needs no conversion.
+It runs in a throwaway environment on Python 3.11 because this legacy PyTorch has no
+Python 3.12 wheel. The tissue checkpoint is already a clean state_dict and needs no
+conversion.
 
 **Domain limits - verify before trusting cohort-wide QC.** GrandQC was trained on specific
 H&E cohorts and does not generalise to every stain/scanner. It scored a set of cervical and
